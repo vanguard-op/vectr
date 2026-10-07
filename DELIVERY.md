@@ -1,7 +1,7 @@
 # Delivery
 
 ## Source of truth
-docs/Vectr/ — git submodule, pinned at abd4680, remote https://github.com/vanguard-op/vectr-docs.git. The docs are authoritative for what to build; this file tracks state only and never restates the spec.
+docs/Vectr/ — git submodule, pinned at 7d203fc, remote https://github.com/vanguard-op/vectr-docs.git. The docs are authoritative for what to build; this file tracks state only and never restates the spec.
 
 ## Team & file ownership
 | Member | Owns |
@@ -74,14 +74,17 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | T-004 | FEAT-003 | backend-engineer | Done | C-003 |
 | T-005 | FEAT-005 | backend-engineer | Done | C-001 |
 | T-006 | FEAT-004 | backend-engineer | Done | C-003 |
-| T-007 | FEAT-011 | backend-engineer | Ready | C-002, C-003 |
-| T-008 | FEAT-012 | backend-engineer | Backlog | C-002 |
-| T-009 | FEAT-013 | backend-engineer | Backlog | C-002 |
+| T-007 | FEAT-011 | backend-engineer | Done | C-002, C-003 |
+| T-008 | FEAT-012 | backend-engineer | Ready | C-002 |
+| T-009 | FEAT-013 | backend-engineer | Ready | C-002 |
 | T-010 | FEAT-024 | backend-engineer | Backlog | C-002 |
 | T-011 | FEAT-016 | backend-engineer | Backlog | C-004 |
-| T-012 | — (foundation) | infra-engineer | Backlog | — |
+| T-012 | — (foundation) | infra-engineer | Done | — |
 | T-013 | FEAT-002, FEAT-003 | product-shaper | Done | C-001 |
 | T-014 | FEAT-002, FEAT-003 | backend-engineer | Done | C-001, C-003 |
+| T-015 | — (foundation) | backend-engineer | Done | — |
+| T-016 | FEAT-011 | backend-engineer | Done | C-003 |
+| T-017 | FEAT-011 | backend-engineer | In Progress | C-001, C-002, C-003 |
 
 ## Decisions log
 | # | Decision | Rationale | By |
@@ -98,6 +101,9 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | D-010 | Vectr ships under MIT OR Apache-2.0. | The docs state no product licence; crates.io publishing (D-006) and NFR-041 require an SPDX licence. Dual permissive matches the Rust ecosystem and the docs' free/open intent (R-013). | user |
 | D-011 | The initial scene format version is 0.1. | The docs never name one; the language is pre-1.0 while the recipes (Phase 2) and agent surface (Phase 3) settle, avoiding release.md's one-way-door rule for schema changes (risk R-005). | user |
 | D-012 | The parser bounds a scene document at 64 MiB and refuses larger input with a defined size diagnostic. | NFR-021 requires bounded input size but the docs give no figure; 64 MiB covers the documented 50,000-element large scene while bounding memory, and refuses rather than truncating. | user |
+| D-013 | Style assets reach the compiler through a caller-supplied context: `compile(&Scene)` stays the no-style entry point and `compile_with_style(&Scene, &StyleContext)` resolves the palette and stroke profiles. | schema.md models Palette, StrokeProfile and StyleRecipe as separate documents referenced by id, so the library cannot load them itself without filesystem access; a caller-supplied context keeps the library deterministic and free of file or network access (NFR-010, NFR-021). | lead |
+| D-014 | The render model is serializable to camelCase JSON, and `vectr compile --out` writes it. | C-004 reserves `compile --out`, user-flow's compile stage yields a render model, and the MCP compile tool returns it; the model must cross the process/tool boundary as data. | lead |
+| D-015 | A stroke's colour is a palette token the element names (`strokeToken`), parallel to fill; `StrokeProfile` carries geometry only, and a stroke needs both a profile and a colour token. | The docs settled no stroke-colour source, so the user directed the gap to product-shaper; the spec now keeps every colour in the palette (FEAT-007) with no silent fallback. | user |
 
 ## Definition of Done
 - Every acceptance criterion in the task's FEAT file is met, including its edge cases and failure states.
