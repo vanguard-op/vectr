@@ -12,15 +12,19 @@
 
 use std::fmt;
 
+use serde::{Deserialize, Serialize};
+
 /// A concrete path: its subpaths in document order.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Path {
     /// The subpaths, in the order they appear in the path data.
     pub subpaths: Vec<SubPath>,
 }
 
 /// A single subpath: where it starts, its segments, and whether it is closed.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SubPath {
     /// The subpath's start point, in scene units.
     pub start: [f64; 2],
@@ -31,7 +35,15 @@ pub struct SubPath {
 }
 
 /// One drawing segment, with absolute endpoints and controls.
-#[derive(Debug, Clone, Copy, PartialEq)]
+///
+/// Serializes as a `kind`-tagged object — `{"kind":"cubic", ...}` — so a path's
+/// concrete segments survive the render model's JSON round trip (D-014).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum Segment {
     /// A straight line to `to`.
     Line {

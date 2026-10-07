@@ -566,7 +566,7 @@ mod tests {
         );
         let diagnostics = parse_error(&source);
         assert_eq!(
-            diagnostics.errors().next().map(|d| d.code),
+            diagnostics.errors().next().map(|d| d.code.clone()),
             Some(DiagnosticCode::SCHEMA)
         );
     }
@@ -589,7 +589,7 @@ mod tests {
     fn malformed_json_is_a_parse_error() {
         let diagnostics = parse_error("{ not json");
         assert_eq!(
-            diagnostics.errors().next().map(|d| d.code),
+            diagnostics.errors().next().map(|d| d.code.clone()),
             Some(DiagnosticCode::PARSE)
         );
     }
@@ -598,7 +598,7 @@ mod tests {
     fn non_object_document_is_a_parse_error() {
         let diagnostics = parse_error("[1, 2, 3]");
         assert_eq!(
-            diagnostics.errors().next().map(|d| d.code),
+            diagnostics.errors().next().map(|d| d.code.clone()),
             Some(DiagnosticCode::PARSE)
         );
     }
@@ -629,7 +629,7 @@ mod tests {
         );
         let diagnostics = parse_error(&source);
         assert_eq!(
-            diagnostics.errors().next().map(|d| d.code),
+            diagnostics.errors().next().map(|d| d.code.clone()),
             Some(DiagnosticCode::SCHEMA)
         );
     }
@@ -657,7 +657,7 @@ mod tests {
         let source = full_scene().replace(SHIPPED_VERSION, "v1");
         let diagnostics = parse_error(&source);
         assert_eq!(
-            diagnostics.errors().next().map(|d| d.code),
+            diagnostics.errors().next().map(|d| d.code.clone()),
             Some(DiagnosticCode::SCHEMA)
         );
     }
@@ -696,7 +696,7 @@ mod tests {
         let source = full_scene().replace("\"opacity\": 0.5", "\"opacity\": 1.5");
         let diagnostics = parse_error(&source);
         assert_eq!(
-            diagnostics.errors().next().map(|d| d.code),
+            diagnostics.errors().next().map(|d| d.code.clone()),
             Some(DiagnosticCode::SCHEMA)
         );
     }
@@ -706,7 +706,7 @@ mod tests {
         let source = full_scene().replace("\"order\": 1", "\"order\": -1");
         let diagnostics = parse_error(&source);
         assert_eq!(
-            diagnostics.errors().next().map(|d| d.code),
+            diagnostics.errors().next().map(|d| d.code.clone()),
             Some(DiagnosticCode::SCHEMA)
         );
     }
@@ -719,7 +719,7 @@ mod tests {
         );
         let diagnostics = parse_error(&source);
         assert_eq!(
-            diagnostics.errors().next().map(|d| d.code),
+            diagnostics.errors().next().map(|d| d.code.clone()),
             Some(DiagnosticCode::SCHEMA)
         );
     }

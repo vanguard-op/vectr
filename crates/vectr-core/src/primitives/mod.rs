@@ -353,7 +353,10 @@ mod tests {
     fn a_rectangle_missing_its_size_is_rejected() {
         let (shape, diagnostics) = resolve_one(ElementKind::Rect, Geometry::default());
         assert!(shape.is_none());
-        assert_eq!(diagnostics.errors().next().map(|d| d.code), Some(PRIMITIVE));
+        assert_eq!(
+            diagnostics.errors().next().map(|d| d.code.clone()),
+            Some(PRIMITIVE)
+        );
     }
 
     #[test]
@@ -482,7 +485,7 @@ mod tests {
         let (shape, diagnostics) = resolve_one(ElementKind::Path, geometry);
         assert!(shape.is_none());
         assert_eq!(
-            diagnostics.warnings().next().map(|d| d.code),
+            diagnostics.warnings().next().map(|d| d.code.clone()),
             Some(EMPTY_PATH)
         );
     }

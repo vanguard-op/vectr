@@ -5,10 +5,17 @@
 //! transform is applied later, when the scene is compiled, so nothing here
 //! reads it.
 
+use serde::{Deserialize, Serialize};
+
 use super::path::Path as PathGeometry;
 
 /// A concrete drawing primitive.
-#[derive(Debug, Clone, PartialEq)]
+///
+/// Serializes as a `kind`-tagged object — `{"kind":"rect", ...}` — so a render
+/// model carries its concrete geometry across a process boundary as data
+/// (D-014). The tag names match [`Shape::kind`], the scene language's names.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Shape {
     /// An axis-aligned rectangle, optionally with rounded corners.
     Rect(Rect),
@@ -48,7 +55,8 @@ impl Shape {
 }
 
 /// An axis-aligned rectangle with optional corner radii.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Rect {
     /// The rectangle's X origin.
     pub x: f64,
@@ -65,7 +73,8 @@ pub struct Rect {
 }
 
 /// An ellipse, carried as its centre and its two radii.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Ellipse {
     /// The centre's X coordinate.
     pub cx: f64,
@@ -78,15 +87,71 @@ pub struct Ellipse {
 }
 
 /// A closed point list.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Polygon {
     /// The vertices, in order.
     pub points: Vec<[f64; 2]>,
 }
 
 /// An open point list.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Line {
     /// The vertices, in order.
     pub points: Vec<[f64; 2]>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn round_trip(shape: &Shape) -> Shape {
+        let text = serde_json::to_string(shape).expect("serializable");
+        serde_json::from_str(&text).expect("deserializable")
+    }
+
+    #[test]
+    fn a_shape_is_tagged_by_its_scene_kind() {
+        let rect = Shape::Rect(Rect {
+            x: 1.0,
+            y: 2.0,
+            width: 3.0,
+            height: 4.0,
+            rx: 0.0,
+            ry: 0.0,
+        });
+        let text = serde_json::to_string(&rect).unwrap();
+        assert!(text.contains("\"kind\":\"rect\""), "{text}");
+        assert_eq!(round_trip(&rect), rect);
+    }
+
+    #[test]
+    fn every_geometry_kind_round_trips() {
+        let shapes = [
+            Shape::Rect(Rect {
+                x: 1.0,
+                y: 2.0,
+                width: 3.0,
+                height: 4.0,
+                rx: 1.0,
+                ry: 1.0,
+            }),
+            Shape::Ellipse(Ellipse {
+                cx: 5.0,
+                cy: 6.0,
+                rx: 7.0,
+                ry: 8.0,
+            }),
+            Shape::Polygon(Polygon {
+                points: vec![[0.0, 0.0], [10.0, 0.0], [5.0, 8.0]],
+            }),
+            Shape::Line(Line {
+                points: vec![[0.0, 0.0], [10.0, 10.0]],
+            }),
+        ];
+        for shape in shapes {
+            assert_eq!(round_trip(&shape), shape);
+        }
+    }
 }

@@ -187,7 +187,7 @@ mod tests {
         recipe.parameters.grid_size = Some(-1.0);
         let diagnostics = validate(&recipe);
         assert_eq!(
-            diagnostics.errors().next().map(|error| error.code),
+            diagnostics.errors().next().map(|error| error.code.clone()),
             Some(DiagnosticCode::SCHEMA)
         );
     }

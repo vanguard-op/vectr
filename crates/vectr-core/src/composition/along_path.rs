@@ -191,7 +191,7 @@ mod tests {
         assert!(placements.is_empty());
         assert!(!diagnostics.has_errors());
         assert_eq!(
-            diagnostics.warnings().next().map(|d| d.code),
+            diagnostics.warnings().next().map(|d| d.code.clone()),
             Some(COUNT_ZERO)
         );
     }
@@ -209,7 +209,7 @@ mod tests {
         let placements = placements(&guide, 3, &element(), &mut diagnostics);
         assert!(placements.is_empty());
         assert_eq!(
-            diagnostics.warnings().next().map(|d| d.code),
+            diagnostics.warnings().next().map(|d| d.code.clone()),
             Some(EMPTY_PATH)
         );
         assert!(!diagnostics.has_errors());

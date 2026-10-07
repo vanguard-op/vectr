@@ -113,7 +113,7 @@ mod tests {
         let mut diagnostics = Diagnostics::new();
         assert!(placements(&repeat(None, Some(10.0)), &mut diagnostics).is_empty());
         assert_eq!(
-            diagnostics.warnings().next().map(|d| d.code),
+            diagnostics.warnings().next().map(|d| d.code.clone()),
             Some(COUNT_ZERO)
         );
     }

@@ -10,6 +10,8 @@
 //! composed with the child's, which flattens a nested tree into concrete
 //! placements.
 
+use serde::{Deserialize, Serialize};
+
 use crate::scene::{ProjectionAxis, Transform};
 
 /// A 2D affine transform, stored as the six meaningful entries of a 3×2
@@ -20,8 +22,10 @@ use crate::scene::{ProjectionAxis, Transform};
 /// | b  d  f |
 /// ```
 ///
-/// A point `(x, y)` maps to `(a·x + c·y + e, b·x + d·y + f)`.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// A point `(x, y)` maps to `(a·x + c·y + e, b·x + d·y + f)`. It serializes as
+/// those six entries, so a render model carries its resolved world transform as
+/// data (D-014).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Affine {
     /// X scale and skew term.
     pub a: f64,

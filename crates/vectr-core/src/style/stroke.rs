@@ -149,7 +149,7 @@ mod tests {
         profile.width = -1.0;
         let diagnostics = validate(&profile);
         assert_eq!(
-            diagnostics.errors().next().map(|error| error.code),
+            diagnostics.errors().next().map(|error| error.code.clone()),
             Some(DiagnosticCode::SCHEMA)
         );
     }
