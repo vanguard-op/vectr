@@ -5,7 +5,7 @@
 //! geometry the render model carries (C-003). They are the pieces the compiler
 //! composes over the element tree: [`resolve_transform`] and [`inherit`] flatten
 //! a hierarchy, [`placements`] expands a repeat, [`combine`] folds a boolean,
-//! and [`projection`] supplies the isometric helper.
+//! and [`projection_for`] maps children onto a projection axis.
 //!
 //! Every operation here is pure and deterministic (NFR-010): the same scene
 //! always yields the same placements and geometry, and a failure is reported
@@ -23,7 +23,7 @@ pub use boolean::combine;
 pub use flatten::{flatten_shape, flatten_subpaths, Contour, Contours};
 pub use offset::offset_shape;
 pub use repeat::placements;
-pub use transform::Affine;
+pub use transform::{Affine, ProjectionAxis};
 
 use crate::scene::{Diagnostic, DiagnosticCode, Diagnostics, Element, ElementKind, Location};
 
@@ -88,6 +88,15 @@ pub fn inherit(parent: Affine, child: Affine) -> Affine {
 /// The isometric projection helper (FEAT-003).
 pub fn projection() -> Affine {
     Affine::isometric()
+}
+
+/// The projection helper for a given axis (FEAT-003).
+///
+/// The `projection` element's axis selects the mapping: the x and y axes
+/// flatten children onto that axis, and `isometric` maps them onto the scene's
+/// isometric axes.
+pub fn projection_for(axis: ProjectionAxis) -> Affine {
+    Affine::projection(axis)
 }
 
 #[cfg(test)]
@@ -191,5 +200,17 @@ mod tests {
         let y_axis = projection().apply([0.0, 1.0]);
         assert!(x_axis[0] > 0.0 && x_axis[1] > 0.0);
         assert!(y_axis[0] < 0.0 && y_axis[1] > 0.0);
+    }
+
+    #[test]
+    fn the_axis_projections_flatten_onto_their_axis() {
+        assert_eq!(
+            projection_for(ProjectionAxis::X).apply([3.0, 4.0]),
+            [3.0, 0.0]
+        );
+        assert_eq!(
+            projection_for(ProjectionAxis::Y).apply([3.0, 4.0]),
+            [0.0, 4.0]
+        );
     }
 }

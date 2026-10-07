@@ -2,8 +2,10 @@
 //!
 //! A scene element's transform is decomposed — translate, rotate, scale, skew —
 //! rather than an ordered list. This module fixes that decomposition to one
-//! matrix, `translate · rotate · skew · scale`, so a group's rotation turns its
-//! children about the group's own origin and the whole pipeline is
+//! matrix, `translate · rotate · scale · skew`: a local point is first skewed,
+//! then scaled, then rotated, then translated. Rotation and scaling are
+//! therefore about the element's origin, so a group's rotation turns its
+//! children about the group's own origin, and the whole pipeline is
 //! deterministic (NFR-010). A composition's transform is the parent's matrix
 //! composed with the child's, which flattens a nested tree into concrete
 //! placements.
@@ -33,6 +35,38 @@ pub struct Affine {
     pub e: f64,
     /// Y translation.
     pub f: f64,
+}
+
+/// The axis a `projection` element maps its children onto (FEAT-003).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ProjectionAxis {
+    /// Onto the local x-axis.
+    X,
+    /// Onto the local y-axis.
+    Y,
+    /// Onto the scene's isometric axes.
+    Isometric,
+}
+
+impl ProjectionAxis {
+    /// The axis name as it appears in the scene language.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ProjectionAxis::X => "x",
+            ProjectionAxis::Y => "y",
+            ProjectionAxis::Isometric => "isometric",
+        }
+    }
+
+    /// Parses an axis name, or `None` when it is not one of the three.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "x" => Some(ProjectionAxis::X),
+            "y" => Some(ProjectionAxis::Y),
+            "isometric" => Some(ProjectionAxis::Isometric),
+            _ => None,
+        }
+    }
 }
 
 impl Affine {
@@ -111,6 +145,34 @@ impl Affine {
         }
     }
 
+    /// The projection a `projection` element applies, per its axis (FEAT-003).
+    ///
+    /// An axis projection flattens the children onto that axis — the x axis
+    /// keeps the horizontal coordinate and drops the vertical, the y axis does
+    /// the reverse — while `isometric` maps both axes onto the scene's
+    /// isometric directions.
+    pub fn projection(axis: ProjectionAxis) -> Self {
+        match axis {
+            ProjectionAxis::X => Self {
+                a: 1.0,
+                b: 0.0,
+                c: 0.0,
+                d: 0.0,
+                e: 0.0,
+                f: 0.0,
+            },
+            ProjectionAxis::Y => Self {
+                a: 0.0,
+                b: 0.0,
+                c: 0.0,
+                d: 1.0,
+                e: 0.0,
+                f: 0.0,
+            },
+            ProjectionAxis::Isometric => Self::isometric(),
+        }
+    }
+
     /// Composes two transforms: the result applies `next` first, then `self`.
     ///
     /// This is how a child inherits its parent's transform: the parent composes
@@ -146,9 +208,10 @@ impl Affine {
 
     /// Builds the transform a scene element declares.
     ///
-    /// The decomposition is `translate · rotate · skew · scale`; rotation is
-    /// therefore about the element's own origin, moved into place by its
-    /// translation (FEAT-003).
+    /// The decomposition is `translate · rotate · scale · skew`: a local point
+    /// is first skewed, then scaled, then rotated, then translated. Rotation
+    /// and scaling are therefore about the element's own origin, moved into
+    /// place by its translation (FEAT-003).
     ///
     /// Returns the name of the first non-finite field, so a malformed transform
     /// is reported rather than silently dropped.
@@ -174,11 +237,11 @@ impl Affine {
         Ok(
             Self::translate(transform.translate_x, transform.translate_y)
                 .then(Self::rotate(transform.rotate))
+                .then(Self::scale(transform.scale_x, transform.scale_y))
                 .then(Self::skew(
                     transform.skew_x.unwrap_or(0.0),
                     transform.skew_y.unwrap_or(0.0),
-                ))
-                .then(Self::scale(transform.scale_x, transform.scale_y)),
+                )),
         )
     }
 }
@@ -257,6 +320,22 @@ mod tests {
     }
 
     #[test]
+    fn a_local_point_is_skewed_before_it_is_scaled() {
+        // skewX 45° maps (0, 1) to (1, 1); scaling by (2, 3) then maps it to
+        // (2, 3). The reverse order would give (3, 3).
+        let transform = Transform {
+            scale_x: 2.0,
+            scale_y: 3.0,
+            skew_x: Some(45.0),
+            ..scene_transform()
+        };
+        let affine = Affine::from_scene(&transform).unwrap();
+        let mapped = affine.apply([0.0, 1.0]);
+        assert!((mapped[0] - 2.0).abs() < 1e-9, "{mapped:?}");
+        assert!((mapped[1] - 3.0).abs() < 1e-9, "{mapped:?}");
+    }
+
+    #[test]
     fn a_non_finite_field_is_named() {
         let transform = Transform {
             scale_x: f64::NAN,
@@ -267,10 +346,34 @@ mod tests {
 
     #[test]
     fn the_isometric_projection_lifts_both_axes() {
-        let projection = Affine::isometric();
+        let projection = Affine::projection(ProjectionAxis::Isometric);
         let x_axis = projection.apply([1.0, 0.0]);
         let y_axis = projection.apply([0.0, 1.0]);
         assert!(x_axis[0] > 0.0 && x_axis[1] > 0.0);
         assert!(y_axis[0] < 0.0 && y_axis[1] > 0.0);
+    }
+
+    #[test]
+    fn the_x_projection_keeps_the_horizontal_axis() {
+        let projection = Affine::projection(ProjectionAxis::X);
+        assert_eq!(projection.apply([3.0, 4.0]), [3.0, 0.0]);
+    }
+
+    #[test]
+    fn the_y_projection_keeps_the_vertical_axis() {
+        let projection = Affine::projection(ProjectionAxis::Y);
+        assert_eq!(projection.apply([3.0, 4.0]), [0.0, 4.0]);
+    }
+
+    #[test]
+    fn projection_axis_names_round_trip() {
+        for axis in [
+            ProjectionAxis::X,
+            ProjectionAxis::Y,
+            ProjectionAxis::Isometric,
+        ] {
+            assert_eq!(ProjectionAxis::from_name(axis.as_str()), Some(axis));
+        }
+        assert_eq!(ProjectionAxis::from_name("both"), None);
     }
 }
