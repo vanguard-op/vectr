@@ -15,3 +15,7 @@ workspace = true
 # The scene document model and its strict JSON serialization (C-001).
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+# Boolean composition of filled regions for the composition primitives
+# (D-007, FEAT-003).
+i_overlay = { workspace = true }
