@@ -15,9 +15,9 @@ Response Ok: RenderModel, SVG text, or PNG bytes; identical input and seed yield
 Errors: Diagnostics — structured findings carrying severity (error|warning) and location (element id + JSON path); classes: invalid scene, unsupported feature, reference cycle, constraint conflict, defined size limit, missing rasterizer, missing font
 
 ### C-003: MODEL render model (compiler to exporter seam)
-Status: Frozen
+Status: Frozen (revision 1)
 Auth: Internal to vectr-core; read by every exporter (docs/Vectr/architecture.md, "Component: Compiler" and "Component: Export Layer").
-Request: RenderModel { canvas: {width: number, height: number, background: string}, nodes: ResolvedNode[], meta: {title?: string, description?: string}, diagnostics: Diagnostic[] }; ResolvedNode = { id: string, name?: string, order: integer, kind: string, geometry: concrete path/points/rect, transform: resolved, paint: {fill?: string, stroke?: {value: string, width: number, cap: string, join: string}}, opacity: number, visible: boolean }
+Request: RenderModel { canvas: {width: number, height: number, background: string}, nodes: ResolvedNode[], meta: {title?: string, description?: string}, diagnostics: Diagnostic[] }; ResolvedNode = { id: string, name?: string, order: integer, kind: string, geometry: concrete (one of rect {x, y, width, height}, ellipse {cx, cy, rx, ry}, polygon {points}, line {points}, path {segments, closed}), transform: resolved, paint: {fill?: string, stroke?: {value: string, width: number, cap: string, join: string}}, opacity: number, visible: boolean }
 Response Ok: SVG text, PNG bytes, or PDF bytes whose appearance matches the render model.
 Errors: none at this seam (compilation already succeeded); exporter findings are warnings: unsupported-feature (omitted with a warning), rasterizer-missing, font-missing
 
