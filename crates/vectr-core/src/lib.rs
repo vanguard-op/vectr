@@ -3,16 +3,19 @@
 //! The [`scene`] module owns the scene document model and its strict JSON
 //! reading and writing (C-001); [`primitives`] resolves the elemental shapes a
 //! scene draws (FEAT-002), [`composition`] composes them into concrete
-//! placements and geometry (FEAT-003), and [`style`] holds the palettes, stroke
-//! profiles and recipes applied to elements (FEAT-005). Later modules —
-//! compiler, render, export — build on the types re-exported here.
+//! placements and geometry (FEAT-003), [`constraints`] resolves stated
+//! relationships into concrete placements (FEAT-004), and [`style`] holds the
+//! palettes, stroke profiles and recipes applied to elements (FEAT-005). Later
+//! modules — compiler, render, export — build on the types re-exported here.
 
 pub mod composition;
+pub mod constraints;
 pub mod primitives;
 pub mod scene;
 pub mod style;
 
 pub use composition::{flatten_shape, is_composition, projection_for, resolve_transform, Affine};
+pub use constraints::{resolve as resolve_constraints, Attachment, Frame, Placement, Resolution};
 pub use primitives::{Ellipse, Line, Polygon, Rect, Shape};
 pub use scene::{
     parse, validate, Canvas, Constraint, ConstraintKind, Diagnostic, DiagnosticCode, Diagnostics,
