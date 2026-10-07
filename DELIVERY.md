@@ -68,8 +68,8 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 ### Active phase: Phase 1 — First Graphic
 | Task | Feature | Owner | Status | Contract |
 |---|---|---|---|---|
-| T-001 | — (foundation) | infra-engineer | Ready | — |
-| T-002 | FEAT-001 | backend-engineer | Backlog | C-001 |
+| T-001 | — (foundation) | infra-engineer | Done | — |
+| T-002 | FEAT-001 | backend-engineer | Ready | C-001 |
 | T-003 | FEAT-002 | backend-engineer | Backlog | C-003 |
 | T-004 | FEAT-003 | backend-engineer | Backlog | C-003 |
 | T-005 | FEAT-005 | backend-engineer | Backlog | C-001 |
@@ -79,6 +79,7 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | T-009 | FEAT-013 | backend-engineer | Backlog | C-002 |
 | T-010 | FEAT-024 | backend-engineer | Backlog | C-002 |
 | T-011 | FEAT-016 | backend-engineer | Backlog | C-004 |
+| T-012 | — (foundation) | infra-engineer | Backlog | — |
 
 ## Decisions log
 | # | Decision | Rationale | By |
