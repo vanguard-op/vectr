@@ -22,12 +22,21 @@ pub use version::{
 
 use std::collections::HashSet;
 
+/// The largest scene document the parser accepts, in bytes.
+///
+/// The input is untrusted (NFR-021); a document larger than this is refused
+/// with a defined size diagnostic rather than read. The bound covers the
+/// documented 50,000-element large scene while capping memory.
+pub const MAX_SCENE_BYTES: usize = 64 * 1024 * 1024;
+
 /// Reads a scene from a JSON document.
 ///
 /// On success the returned [`Scene`] is structurally valid and passes
 /// [`validate`]; parsing refuses rather than returning a scene carrying an
 /// unsupported format version or a duplicate identifier (NFR-011).
 pub fn parse(source: &str) -> Result<Scene, Diagnostics> {
+    ensure_within_size(source.len())?;
+
     // Syntax first: bad JSON, or JSON whose top level is not a scene object.
     let value: serde_json::Value = serde_json::from_str(source)
         .map_err(|error| diagnostics_from_serde(DiagnosticCode::PARSE, &error))?;
@@ -47,6 +56,19 @@ pub fn parse(source: &str) -> Result<Scene, Diagnostics> {
         return Err(findings);
     }
     Ok(scene)
+}
+
+/// Refuses a document longer than [`MAX_SCENE_BYTES`].
+fn ensure_within_size(byte_len: usize) -> Result<(), Diagnostics> {
+    if byte_len > MAX_SCENE_BYTES {
+        return Err(Diagnostics::from(Diagnostic::error(
+            DiagnosticCode::SIZE_LIMIT,
+            format!(
+                "scene document is {byte_len} bytes, exceeding the {MAX_SCENE_BYTES}-byte limit"
+            ),
+        )));
+    }
+    Ok(())
 }
 
 /// Checks a parsed scene against the language contract.
@@ -444,6 +466,48 @@ mod tests {
         assert!(scene.elements.is_empty());
         let reparsed = parse(&scene.to_json_string().unwrap()).expect("round-trips");
         assert_eq!(scene, reparsed);
+    }
+
+    #[test]
+    fn element_optional_fields_may_be_omitted() {
+        let source = format!(
+            r#"{{"id":"s","projectId":"p","name":"Scene","formatVersion":"{SHIPPED_VERSION}","canvas":{{"width":100,"height":100,"background":"transparent"}},"elements":[{{"id":"e1","sceneId":"s","order":0,"kind":"ellipse","geometry":{{}},"transform":{{"translateX":0,"translateY":0,"rotate":0,"scaleX":1,"scaleY":1}},"opacity":1,"visible":true}}]}}"#
+        );
+        let scene = parse(&source).expect("optional element fields may be omitted");
+        let element = scene.element("e1").expect("element present");
+        assert_eq!(element.parent_id, None);
+        assert_eq!(element.name, None);
+        assert_eq!(element.fill_token, None);
+        assert_eq!(element.stroke_profile_id, None);
+
+        let text = scene.to_json_string().expect("serializable");
+        assert!(
+            !text.contains("parentId"),
+            "an omitted optional field stays omitted"
+        );
+        assert!(!text.contains("fillToken"));
+    }
+
+    #[test]
+    fn size_limit_is_sixty_four_mib() {
+        assert_eq!(MAX_SCENE_BYTES, 64 * 1024 * 1024);
+    }
+
+    #[test]
+    fn document_at_the_limit_is_allowed() {
+        assert!(ensure_within_size(MAX_SCENE_BYTES).is_ok());
+    }
+
+    #[test]
+    fn oversized_document_is_refused_with_a_size_diagnostic() {
+        let diagnostics = ensure_within_size(MAX_SCENE_BYTES + 1).expect_err("over the limit");
+        let error = diagnostics.errors().next().expect("an error");
+        assert_eq!(error.code, DiagnosticCode::SIZE_LIMIT);
+        assert!(
+            error.message.contains(&MAX_SCENE_BYTES.to_string()),
+            "names the limit: {}",
+            error.message
+        );
     }
 
     #[test]

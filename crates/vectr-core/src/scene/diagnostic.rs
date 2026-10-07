@@ -48,6 +48,8 @@ impl DiagnosticCode {
     pub const FORMAT_VERSION: Self = Self("E_FORMAT_VERSION");
     /// Two elements share an identifier.
     pub const DUPLICATE_ID: Self = Self("E_DUPLICATE_ID");
+    /// The document exceeds the parser's defined input size limit.
+    pub const SIZE_LIMIT: Self = Self("E_SIZE_LIMIT");
 
     /// Builds a code from a literal; intended for stage owners defining new
     /// codes next to their logic.

@@ -83,7 +83,8 @@ pub struct Element {
     pub id: String,
     /// References the scene this element belongs to.
     pub scene_id: String,
-    /// References the parent element, or `null` for a root element.
+    /// References the parent element; absent or `null` marks a root element.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<String>,
     /// Paint order among siblings; lower values paint first.
     pub order: i64,
@@ -96,9 +97,11 @@ pub struct Element {
     pub geometry: Geometry,
     /// Affine transform applied to the element and its children.
     pub transform: Transform,
-    /// Palette token used as fill, or `null` for no fill.
+    /// Palette token used as fill; absent or `null` for no fill.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fill_token: Option<String>,
-    /// Stroke profile used for the stroke, or `null` for no stroke.
+    /// Stroke profile used for the stroke; absent or `null` for no stroke.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stroke_profile_id: Option<String>,
     /// Element opacity, from 0 to 1.
     pub opacity: f64,

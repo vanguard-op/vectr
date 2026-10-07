@@ -8,5 +8,5 @@ pub mod scene;
 
 pub use scene::{
     parse, validate, Canvas, Constraint, ConstraintKind, Diagnostic, DiagnosticCode, Diagnostics,
-    Element, ElementKind, Geometry, Location, Scene, Severity, Transform,
+    Element, ElementKind, Geometry, Location, Scene, Severity, Transform, MAX_SCENE_BYTES,
 };
