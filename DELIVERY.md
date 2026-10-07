@@ -6,8 +6,8 @@ docs/Vectr/ — git submodule, pinned at 4dda288, remote /tmp/opencode/vectr-doc
 ## Team & file ownership
 | Member | Owns |
 |---|---|
-| lead | DELIVERY.md, CONTRACTS.md, ASSETS.md, .delivery/** |
-| infra-engineer | Cargo.toml, Cargo.lock, rust-toolchain.toml, .gitignore, .github/**, scripts/**, assets/fonts/** |
+| lead | DELIVERY.md, CONTRACTS.md, ASSETS.md, .delivery/**, Cargo.lock |
+| infra-engineer | Cargo.toml, rust-toolchain.toml, .gitignore, .github/**, scripts/**, assets/fonts/** |
 | backend-engineer | crates/vectr-core/**, crates/vectr-cli/**, schema/** |
 | ai-engineer | crates/vectr-mcp/**, crates/vectr-eval/**, skills/** |
 | qa-engineer | tests/**, fixtures/**, corpus/** |
@@ -93,6 +93,7 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | D-007 | Rasterizer is resvg/tiny-skia behind the export layer; geometry via lyon + i_overlay; text via rustybuzz + ttf-parser. | Pure-Rust, deterministic and free of native system dependencies; swappable behind the export layer per risk R-008. | lead |
 | D-008 | CLI exit codes: 0 success, 1 invalid scene, 2 usage/input, 3 compile failure, 4 missing export dependency, 5 output I/O failure. | FEAT-016 requires exit codes to distinguish failure classes but the docs do not enumerate them. | lead |
 | D-009 | Project layout: vectr.project.json at the root; scenes/, palettes/, strokes/, recipes/ for entities; dist/ for output; default recipe flat. | schema.md models each entity as a separate document referenced by id, and FEAT-007 names flat the default; the docs leave the on-disk layout unnamed. | lead |
+| D-010 | Vectr ships under MIT OR Apache-2.0. | The docs state no product licence; crates.io publishing (D-006) and NFR-041 require an SPDX licence. Dual permissive matches the Rust ecosystem and the docs' free/open intent (R-013). | user |
 
 ## Definition of Done
 - Every acceptance criterion in the task's FEAT file is met, including its edge cases and failure states.
