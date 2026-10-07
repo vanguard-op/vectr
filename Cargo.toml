@@ -15,6 +15,10 @@ members = ["crates/*"]
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.99"
+# Product licence for every workspace crate (D-010): dual permissive, with the
+# full texts in LICENSE-MIT and LICENSE-APACHE at the repository root. Each
+# crate opts in with `license.workspace = true`.
+license = "MIT OR Apache-2.0"
 
 [workspace.lints.rust]
 # NFR-021: the shipped crates parse untrusted input; keep them free of
