@@ -1,3 +1,3 @@
 [submodule "docs"]
 	path = docs
-	url = /tmp/opencode/vectr-docs.git
+	url = https://github.com/vanguard-op/vectr-docs.git
