@@ -1,0 +1,3 @@
+# Font assets are registered in ASSETS.md (A-001 Inter, A-002 Noto Sans,
+# A-003 SIL OFL licence text). They are distribution assets with licensing
+# obligations (NFR-040) and are added by the asset handoff, not the scaffold.

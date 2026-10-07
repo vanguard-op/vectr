@@ -1,0 +1,16 @@
+[package]
+name = "vectr-cli"
+description = "Vectr command-line interface."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "vectr"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
