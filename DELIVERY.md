@@ -71,7 +71,7 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | T-001 | — (foundation) | infra-engineer | Done | — |
 | T-002 | FEAT-001 | backend-engineer | Done | C-001 |
 | T-003 | FEAT-002 | backend-engineer | Done | C-003 |
-| T-004 | FEAT-003 | backend-engineer | In Progress | C-003 |
+| T-004 | FEAT-003 | backend-engineer | Done | C-003 |
 | T-005 | FEAT-005 | backend-engineer | Ready | C-001 |
 | T-006 | FEAT-004 | backend-engineer | Ready | C-003 |
 | T-007 | FEAT-011 | backend-engineer | Backlog | C-002, C-003 |
@@ -80,7 +80,7 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | T-010 | FEAT-024 | backend-engineer | Backlog | C-002 |
 | T-011 | FEAT-016 | backend-engineer | Backlog | C-004 |
 | T-012 | — (foundation) | infra-engineer | Backlog | — |
-| T-013 | FEAT-002, FEAT-003 | product-shaper | In Progress | C-001 |
+| T-013 | FEAT-002, FEAT-003 | product-shaper | Done | C-001 |
 
 ## Decisions log
 | # | Decision | Rationale | By |
@@ -97,6 +97,7 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | D-010 | Vectr ships under MIT OR Apache-2.0. | The docs state no product licence; crates.io publishing (D-006) and NFR-041 require an SPDX licence. Dual permissive matches the Rust ecosystem and the docs' free/open intent (R-013). | user |
 | D-011 | The initial scene format version is 0.1. | The docs never name one; the language is pre-1.0 while the recipes (Phase 2) and agent surface (Phase 3) settle, avoiding release.md's one-way-door rule for schema changes (risk R-005). | user |
 | D-012 | The parser bounds a scene document at 64 MiB and refuses larger input with a defined size diagnostic. | NFR-021 requires bounded input size but the docs give no figure; 64 MiB covers the documented 50,000-element large scene while bounding memory, and refuses rather than truncating. | user |
+| D-013 | The docs submodule's local remote is ~/.local/share/vectr/vectr-docs.git, superseding D-003's /tmp path. | /tmp is wiped on restart and took the remote with it; a durable local path keeps the submodule pushable until a real remote replaces it. | lead |
 
 ## Definition of Done
 - Every acceptance criterion in the task's FEAT file is met, including its edge cases and failure states.
