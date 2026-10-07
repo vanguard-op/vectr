@@ -69,10 +69,10 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | Task | Feature | Owner | Status | Contract |
 |---|---|---|---|---|
 | T-001 | — (foundation) | infra-engineer | Done | — |
-| T-002 | FEAT-001 | backend-engineer | Ready | C-001 |
-| T-003 | FEAT-002 | backend-engineer | Backlog | C-003 |
+| T-002 | FEAT-001 | backend-engineer | Done | C-001 |
+| T-003 | FEAT-002 | backend-engineer | Ready | C-003 |
 | T-004 | FEAT-003 | backend-engineer | Backlog | C-003 |
-| T-005 | FEAT-005 | backend-engineer | Backlog | C-001 |
+| T-005 | FEAT-005 | backend-engineer | Ready | C-001 |
 | T-006 | FEAT-004 | backend-engineer | Backlog | C-003 |
 | T-007 | FEAT-011 | backend-engineer | Backlog | C-002, C-003 |
 | T-008 | FEAT-012 | backend-engineer | Backlog | C-002 |
@@ -94,6 +94,8 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | D-008 | CLI exit codes: 0 success, 1 invalid scene, 2 usage/input, 3 compile failure, 4 missing export dependency, 5 output I/O failure. | FEAT-016 requires exit codes to distinguish failure classes but the docs do not enumerate them. | lead |
 | D-009 | Project layout: vectr.project.json at the root; scenes/, palettes/, strokes/, recipes/ for entities; dist/ for output; default recipe flat. | schema.md models each entity as a separate document referenced by id, and FEAT-007 names flat the default; the docs leave the on-disk layout unnamed. | lead |
 | D-010 | Vectr ships under MIT OR Apache-2.0. | The docs state no product licence; crates.io publishing (D-006) and NFR-041 require an SPDX licence. Dual permissive matches the Rust ecosystem and the docs' free/open intent (R-013). | user |
+| D-011 | The initial scene format version is 0.1. | The docs never name one; the language is pre-1.0 while the recipes (Phase 2) and agent surface (Phase 3) settle, avoiding release.md's one-way-door rule for schema changes (risk R-005). | user |
+| D-012 | The parser bounds a scene document at 64 MiB and refuses larger input with a defined size diagnostic. | NFR-021 requires bounded input size but the docs give no figure; 64 MiB covers the documented 50,000-element large scene while bounding memory, and refuses rather than truncating. | user |
 
 ## Definition of Done
 - Every acceptance criterion in the task's FEAT file is met, including its edge cases and failure states.
