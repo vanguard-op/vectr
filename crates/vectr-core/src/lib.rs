@@ -1,4 +1,12 @@
 //! Vectr scene engine: parse, validate, resolve, style, compile, and export.
 //!
-//! Foundation scaffold. The engine is implemented by the crate owner; this
-//! crate exists so the workspace builds and CI is green from the first commit.
+//! The [`scene`] module owns the scene document model and its strict JSON
+//! reading and writing (C-001). Later modules — primitives, style, compiler,
+//! render, export — build on the types re-exported here.
+
+pub mod scene;
+
+pub use scene::{
+    parse, validate, Canvas, Constraint, ConstraintKind, Diagnostic, DiagnosticCode, Diagnostics,
+    Element, ElementKind, Geometry, Location, Scene, Severity, Transform,
+};

@@ -12,3 +12,6 @@ publish = false
 workspace = true
 
 [dependencies]
+# The scene document model and its strict JSON serialization (C-001).
+serde = { workspace = true }
+serde_json = { workspace = true }
