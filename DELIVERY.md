@@ -81,6 +81,7 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | T-011 | FEAT-016 | backend-engineer | Backlog | C-004 |
 | T-012 | — (foundation) | infra-engineer | Backlog | — |
 | T-013 | FEAT-002, FEAT-003 | product-shaper | Done | C-001 |
+| T-014 | FEAT-002, FEAT-003 | backend-engineer | Done | C-001, C-003 |
 
 ## Decisions log
 | # | Decision | Rationale | By |
