@@ -103,6 +103,13 @@ pub struct Element {
     /// Stroke profile used for the stroke; absent or `null` for no stroke.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stroke_profile_id: Option<String>,
+    /// Palette token used as stroke colour; absent or `null` for no stroke.
+    ///
+    /// Required when `stroke_profile_id` is set and absent otherwise: a stroke
+    /// needs both a profile for its geometry and a token for its colour, so
+    /// every colour lives in the palette (D-015).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stroke_token: Option<String>,
     /// Element opacity, from 0 to 1.
     pub opacity: f64,
     /// Whether the element is rendered.

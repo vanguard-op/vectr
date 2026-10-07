@@ -170,6 +170,7 @@ mod tests {
             },
             fill_token: None,
             stroke_profile_id: None,
+            stroke_token: None,
             opacity: 1.0,
             visible: true,
         }

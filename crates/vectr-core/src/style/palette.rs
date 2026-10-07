@@ -127,7 +127,14 @@ pub fn validate_usage(scene: &Scene, palette: &Palette) -> Diagnostics {
     let used: HashSet<&str> = scene
         .elements
         .iter()
-        .filter_map(|element| element.fill_token.as_deref())
+        .flat_map(|element| {
+            [
+                element.fill_token.as_deref(),
+                element.stroke_token.as_deref(),
+            ]
+            .into_iter()
+            .flatten()
+        })
         .collect();
 
     for (index, token) in palette.first_definitions() {
@@ -143,23 +150,28 @@ pub fn validate_usage(scene: &Scene, palette: &Palette) -> Diagnostics {
     }
 
     for (index, element) in scene.elements.iter().enumerate() {
-        let Some(token) = element.fill_token.as_deref() else {
-            continue;
-        };
-        if palette.resolve(token).is_none() {
-            diagnostics.push(
-                Diagnostic::error(
-                    UNDEFINED_TOKEN,
-                    format!(
-                        "element `{}` references undefined palette token `{token}`",
-                        element.id
-                    ),
-                )
-                .with_location(Location::element_at(
-                    element.id.clone(),
-                    format!("/elements/{index}/fillToken"),
-                )),
-            );
+        for (token, field) in [
+            (element.fill_token.as_deref(), "fillToken"),
+            (element.stroke_token.as_deref(), "strokeToken"),
+        ] {
+            let Some(token) = token else {
+                continue;
+            };
+            if palette.resolve(token).is_none() {
+                diagnostics.push(
+                    Diagnostic::error(
+                        UNDEFINED_TOKEN,
+                        format!(
+                            "element `{}` references undefined palette token `{token}`",
+                            element.id
+                        ),
+                    )
+                    .with_location(Location::element_at(
+                        element.id.clone(),
+                        format!("/elements/{index}/{field}"),
+                    )),
+                );
+            }
         }
     }
 
@@ -248,5 +260,47 @@ mod tests {
         let warning = diagnostics.warnings().next().expect("a warning");
         assert_eq!(warning.code, UNUSED_TOKEN);
         assert!(warning.message.contains("ink"));
+    }
+
+    #[test]
+    fn a_referenced_stroke_token_counts_as_used() {
+        let scene = crate::scene::parse(
+            r#"{"id":"s","projectId":"p","name":"S","formatVersion":"0.1","canvas":{"width":1,"height":1,"background":"transparent"},"elements":[{"id":"e1","sceneId":"s","order":0,"kind":"rect","geometry":{"width":1,"height":1},"transform":{"translateX":0,"translateY":0,"rotate":0,"scaleX":1,"scaleY":1},"strokeProfileId":"stroke-1","strokeToken":"ink","opacity":1,"visible":true}]}"#,
+        )
+        .unwrap();
+        let palette = parse(&palette()).unwrap();
+
+        let diagnostics = validate_usage(&scene, &palette);
+        assert!(!diagnostics.has_errors());
+        let unused: Vec<&str> = diagnostics
+            .warnings()
+            .filter(|warning| warning.code == UNUSED_TOKEN)
+            .map(|warning| warning.message.as_str())
+            .collect();
+        assert!(
+            !unused.iter().any(|message| message.contains("ink")),
+            "a stroke token is not unused: {unused:?}"
+        );
+    }
+
+    #[test]
+    fn an_undefined_stroke_token_is_an_error_naming_the_token() {
+        let scene = crate::scene::parse(
+            r#"{"id":"s","projectId":"p","name":"S","formatVersion":"0.1","canvas":{"width":1,"height":1,"background":"transparent"},"elements":[{"id":"e1","sceneId":"s","order":0,"kind":"rect","geometry":{"width":1,"height":1},"transform":{"translateX":0,"translateY":0,"rotate":0,"scaleX":1,"scaleY":1},"strokeProfileId":"stroke-1","strokeToken":"missing","opacity":1,"visible":true}]}"#,
+        )
+        .unwrap();
+        let palette = parse(&palette()).unwrap();
+
+        let diagnostics = validate_usage(&scene, &palette);
+        let error = diagnostics.errors().next().expect("an error");
+        assert_eq!(error.code, UNDEFINED_TOKEN);
+        assert!(error.message.contains("missing"));
+        assert_eq!(
+            error
+                .location
+                .as_ref()
+                .and_then(|location| location.json_path.as_deref()),
+            Some("/elements/0/strokeToken")
+        );
     }
 }

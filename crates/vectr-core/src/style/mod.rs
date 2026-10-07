@@ -98,6 +98,37 @@ pub fn resolve_stroke(
     }
 }
 
+/// Resolves an element's stroke colour against a palette.
+///
+/// Returns the resolved colour, or `None` when the element declares no stroke
+/// colour. A stroke carries its colour the same way a fill does, through a
+/// palette token the element names; when the token is not defined — including
+/// when no palette is supplied — an [`UNDEFINED_TOKEN`] error naming the token
+/// is recorded and `None` is returned, never a fallback colour (FEAT-005).
+pub fn resolve_stroke_color(
+    element: &Element,
+    palette: Option<&Palette>,
+    diagnostics: &mut Diagnostics,
+) -> Option<String> {
+    let token = element.stroke_token.as_deref()?;
+    match palette.and_then(|palette| palette.resolve(token)) {
+        Some(value) => Some(value.to_string()),
+        None => {
+            diagnostics.push(
+                Diagnostic::error(
+                    UNDEFINED_TOKEN,
+                    format!(
+                        "element `{}` references undefined palette token `{token}`",
+                        element.id
+                    ),
+                )
+                .with_location(Location::element_at(element.id.clone(), "/strokeToken")),
+            );
+            None
+        }
+    }
+}
+
 /// Reads any style document's JSON, refusing a top level that is not an object.
 pub(crate) fn parse_document<T>(source: &str, kind: &str) -> Result<T, Diagnostics>
 where
@@ -144,7 +175,7 @@ mod tests {
 
     fn scene_with_fill(token: &str, profile: Option<&str>) -> crate::scene::Scene {
         let stroke = match profile {
-            Some(id) => format!(r#","strokeProfileId":"{id}""#),
+            Some(id) => format!(r#","strokeProfileId":"{id}","strokeToken":"accent""#),
             None => r#","strokeProfileId":null"#.to_string(),
         };
         parse_scene(&format!(
@@ -219,5 +250,47 @@ mod tests {
         let error = diagnostics.errors().next().expect("an error");
         assert_eq!(error.code, UNDEFINED_STROKE);
         assert!(error.message.contains("missing"));
+    }
+
+    #[test]
+    fn a_stroke_takes_its_colour_from_the_token_it_names() {
+        let element = &scene_with_fill("accent", Some("stroke-1")).elements[0];
+        let colour = resolve_stroke_color(element, Some(&palette()), &mut Diagnostics::new());
+        assert_eq!(colour.as_deref(), Some("#ff0000"));
+    }
+
+    #[test]
+    fn a_changed_token_value_restyles_the_stroke() {
+        let element = &scene_with_fill("accent", Some("stroke-1")).elements[0];
+        let mut changed = palette();
+        changed.tokens[0].value = "#0000ff".to_string();
+        let colour = resolve_stroke_color(element, Some(&changed), &mut Diagnostics::new());
+        assert_eq!(colour.as_deref(), Some("#0000ff"));
+    }
+
+    #[test]
+    fn an_undefined_stroke_token_is_an_error_naming_the_token() {
+        let mut scene = scene_with_fill("accent", Some("stroke-1"));
+        scene.elements[0].stroke_token = Some("missing".to_string());
+        let mut diagnostics = Diagnostics::new();
+        let colour = resolve_stroke_color(&scene.elements[0], Some(&palette()), &mut diagnostics);
+        assert!(colour.is_none());
+        let error = diagnostics.errors().next().expect("an error");
+        assert_eq!(error.code, UNDEFINED_TOKEN);
+        assert!(error.message.contains("missing"));
+        assert_eq!(
+            error
+                .location
+                .as_ref()
+                .and_then(|location| location.json_path.as_deref()),
+            Some("/strokeToken")
+        );
+    }
+
+    #[test]
+    fn an_element_without_a_stroke_token_resolves_to_no_colour() {
+        let element = &scene_with_fill("accent", None).elements[0];
+        assert_eq!(element.stroke_token, None);
+        assert!(resolve_stroke_color(element, Some(&palette()), &mut Diagnostics::new()).is_none());
     }
 }

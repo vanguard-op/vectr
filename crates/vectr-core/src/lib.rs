@@ -29,7 +29,7 @@ pub use scene::{
 };
 pub use style::{
     parse_palette, parse_stroke_profile, parse_style_recipe, resolve_fill, resolve_stroke,
-    validate_palette, validate_palette_usage, validate_stroke_profile, validate_style_recipe,
-    Palette, PaletteToken, RecipeName, RecipeParameters, ResolvedStroke, Shading, StrokeCap,
-    StrokeJoin, StrokeProfile, StyleRecipe,
+    resolve_stroke_color, validate_palette, validate_palette_usage, validate_stroke_profile,
+    validate_style_recipe, Palette, PaletteToken, RecipeName, RecipeParameters, ResolvedStroke,
+    Shading, StrokeCap, StrokeJoin, StrokeProfile, StyleRecipe,
 };

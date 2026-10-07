@@ -191,7 +191,7 @@ mod tests {
           "id": "e1", "sceneId": "s", "order": 0, "kind": "rect",
           "geometry": { "x": 0, "y": 0, "width": 30, "height": 40 },
           "transform": { "translateX": 5, "translateY": 6, "rotate": 0, "scaleX": 1, "scaleY": 1 },
-          "fillToken": "accent", "strokeProfileId": "stroke-1",
+          "fillToken": "accent", "strokeProfileId": "stroke-1", "strokeToken": "accent",
           "opacity": 1, "visible": true
         },
         {
