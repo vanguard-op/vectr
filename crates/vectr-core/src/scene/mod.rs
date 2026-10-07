@@ -13,7 +13,7 @@ mod version;
 pub use diagnostic::{Diagnostic, DiagnosticCode, Diagnostics, Location, Severity};
 pub use model::{
     Axis, BooleanOperation, Canvas, Constraint, ConstraintKind, Element, ElementKind, Geometry,
-    Scene, Transform,
+    ProjectionAxis, Scene, Transform,
 };
 pub use version::{
     is_supported, is_supported_version, parse_version, supported_range, CURRENT_FORMAT_VERSION,
@@ -274,6 +274,12 @@ fn validate_geometry(diagnostics: &mut Diagnostics, geometry: &Geometry, base: &
         &format!("{base}/geometry/spacing"),
         "spacing",
     );
+    validate_optional_number(
+        diagnostics,
+        geometry.distance,
+        &format!("{base}/geometry/distance"),
+        "distance",
+    );
 
     if let Some(points) = &geometry.points {
         for (point_index, point) in points.iter().enumerate() {
@@ -508,6 +514,75 @@ mod tests {
             "names the limit: {}",
             error.message
         );
+    }
+
+    #[test]
+    fn geometry_carries_offset_distance_and_projection_axis() {
+        let source = format!(
+            r#"{{"id":"s","projectId":"p","name":"Scene","formatVersion":"{SHIPPED_VERSION}","canvas":{{"width":100,"height":100,"background":"transparent"}},"elements":[{{"id":"o1","sceneId":"s","order":0,"kind":"offset","geometry":{{"distance":4.5}},"transform":{{"translateX":0,"translateY":0,"rotate":0,"scaleX":1,"scaleY":1}},"opacity":1,"visible":true}},{{"id":"p1","sceneId":"s","order":1,"kind":"projection","geometry":{{"axis":"isometric"}},"transform":{{"translateX":0,"translateY":0,"rotate":0,"scaleX":1,"scaleY":1}},"opacity":1,"visible":true}}]}}"#
+        );
+        let scene = parse(&source).expect("the revised geometry parses");
+        assert_eq!(scene.element("o1").unwrap().geometry.distance, Some(4.5));
+        assert_eq!(
+            scene.element("p1").unwrap().geometry.axis,
+            Some(ProjectionAxis::Isometric)
+        );
+
+        let text = scene.to_json_string().expect("serializable");
+        assert!(text.contains("\"distance\":4.5"));
+        assert!(text.contains("\"axis\":\"isometric\""));
+        assert_eq!(parse(&text).expect("round-trips"), scene);
+    }
+
+    #[test]
+    fn negative_offset_distance_is_valid() {
+        let source = format!(
+            r#"{{"id":"s","projectId":"p","name":"Scene","formatVersion":"{SHIPPED_VERSION}","canvas":{{"width":1,"height":1,"background":"transparent"}},"elements":[{{"id":"o1","sceneId":"s","order":0,"kind":"offset","geometry":{{"distance":-2}},"transform":{{"translateX":0,"translateY":0,"rotate":0,"scaleX":1,"scaleY":1}},"opacity":1,"visible":true}}]}}"#
+        );
+        let scene = parse(&source).expect("an inward offset is valid");
+        assert_eq!(scene.element("o1").unwrap().geometry.distance, Some(-2.0));
+    }
+
+    #[test]
+    fn a_non_finite_offset_distance_is_rejected() {
+        let mut scene = parse(&full_scene()).expect("valid scene");
+        scene.elements[0].geometry.distance = Some(f64::INFINITY);
+
+        let diagnostics = validate(&scene);
+        let error = diagnostics
+            .errors()
+            .find(|d| {
+                d.location.as_ref().and_then(|l| l.json_path.as_deref())
+                    == Some("/elements/0/geometry/distance")
+            })
+            .expect("a located error");
+        assert_eq!(error.code, DiagnosticCode::SCHEMA);
+    }
+
+    #[test]
+    fn geometry_axis_rejects_the_constraint_axis_value() {
+        let source = format!(
+            r#"{{"id":"s","projectId":"p","name":"Scene","formatVersion":"{SHIPPED_VERSION}","canvas":{{"width":1,"height":1,"background":"transparent"}},"elements":[{{"id":"p1","sceneId":"s","order":0,"kind":"projection","geometry":{{"axis":"both"}},"transform":{{"translateX":0,"translateY":0,"rotate":0,"scaleX":1,"scaleY":1}},"opacity":1,"visible":true}}]}}"#
+        );
+        let diagnostics = parse_error(&source);
+        assert_eq!(
+            diagnostics.errors().next().map(|d| d.code),
+            Some(DiagnosticCode::SCHEMA)
+        );
+    }
+
+    #[test]
+    fn projection_axis_names_match_the_language() {
+        for (axis, name) in [
+            (ProjectionAxis::X, "x"),
+            (ProjectionAxis::Y, "y"),
+            (ProjectionAxis::Isometric, "isometric"),
+        ] {
+            assert_eq!(serde_json::to_string(&axis).unwrap(), format!("\"{name}\""));
+            assert_eq!(ProjectionAxis::from_name(name), Some(axis));
+            assert_eq!(axis.as_str(), name);
+        }
+        assert_eq!(ProjectionAxis::from_name("both"), None);
     }
 
     #[test]

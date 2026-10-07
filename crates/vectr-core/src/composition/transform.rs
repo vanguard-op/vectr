@@ -10,7 +10,7 @@
 //! composed with the child's, which flattens a nested tree into concrete
 //! placements.
 
-use crate::scene::Transform;
+use crate::scene::{ProjectionAxis, Transform};
 
 /// A 2D affine transform, stored as the six meaningful entries of a 3×2
 /// matrix:
@@ -35,38 +35,6 @@ pub struct Affine {
     pub e: f64,
     /// Y translation.
     pub f: f64,
-}
-
-/// The axis a `projection` element maps its children onto (FEAT-003).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ProjectionAxis {
-    /// Onto the local x-axis.
-    X,
-    /// Onto the local y-axis.
-    Y,
-    /// Onto the scene's isometric axes.
-    Isometric,
-}
-
-impl ProjectionAxis {
-    /// The axis name as it appears in the scene language.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            ProjectionAxis::X => "x",
-            ProjectionAxis::Y => "y",
-            ProjectionAxis::Isometric => "isometric",
-        }
-    }
-
-    /// Parses an axis name, or `None` when it is not one of the three.
-    pub fn from_name(name: &str) -> Option<Self> {
-        match name {
-            "x" => Some(ProjectionAxis::X),
-            "y" => Some(ProjectionAxis::Y),
-            "isometric" => Some(ProjectionAxis::Isometric),
-            _ => None,
-        }
-    }
 }
 
 impl Affine {

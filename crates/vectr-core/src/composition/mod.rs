@@ -23,9 +23,11 @@ pub use boolean::combine;
 pub use flatten::{flatten_shape, flatten_subpaths, Contour, Contours};
 pub use offset::offset_shape;
 pub use repeat::placements;
-pub use transform::{Affine, ProjectionAxis};
+pub use transform::Affine;
 
-use crate::scene::{Diagnostic, DiagnosticCode, Diagnostics, Element, ElementKind, Location};
+use crate::scene::{
+    Diagnostic, DiagnosticCode, Diagnostics, Element, ElementKind, Location, ProjectionAxis,
+};
 
 /// A composition is malformed: a boolean with too few operands, or invalid
 /// composition geometry.
