@@ -4,8 +4,9 @@ description = "Vectr scene engine: parse, validate, resolve, style, compile, and
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-# Not published until the crates.io metadata (including the project license)
-# is settled; see DELIVERY.md.
+license.workspace = true
+# Not published until the remaining crates.io metadata is settled; see
+# DELIVERY.md.
 publish = false
 
 [lints]
