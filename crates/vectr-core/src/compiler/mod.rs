@@ -1,0 +1,1350 @@
+//! The scene compiler: resolves a validated scene into one render model
+//! (FEAT-011).
+//!
+//! [`compile`] is the library entry point (C-002). It runs the pipeline the
+//! architecture names — validate, resolve, style, compile — and returns a
+//! [`RenderModel`] whose geometry is concrete and whose references between
+//! elements are gone (C-003).
+//!
+//! Compilation is deterministic (NFR-010): the element tree is walked in a fixed
+//! document order, constraints are resolved by the resolver's fixed rules, and
+//! no unseeded randomness or unordered collection feeds the output. A failure is
+//! reported as a located diagnostic and nothing is returned, never a partial
+//! model (NFR-011).
+//!
+//! # Element tree and composition
+//!
+//! Elements form a tree through `parentId`; a group or composition element acts
+//! on its children. A `group` passes its transform down to its children, a
+//! `repeat` emits one subtree per copy, an `alongPath` places its children along
+//! a guide, a `projection` maps its children onto an axis, a `boolean` combines
+//! its children, and an `offset` grows or shrinks its children. Every other
+//! element contributes one node. The one feature the compiler does not yet
+//! accept — a plain `raster` layer, which ships behind the raster-layers flag
+//! (FEAT-015) — is refused by name.
+//!
+//! # Paint
+//!
+//! [`compile`] runs without style assets, so it carries the scene's declared
+//! style references: a fill token name and — when a stroke profile is available
+//! — the profile's resolved settings. Callers that hold a project's palette and
+//! stroke profiles use [`compile_with_style`] to resolve fill colors and stroke
+//! settings, and to report a token or profile that does not resolve.
+
+use std::collections::{HashMap, HashSet};
+
+use crate::composition::{
+    self, along_path_placements, combine, flatten_shape, offset_shape,
+    placements as repeat_placements, Affine,
+};
+use crate::constraints::{self, Point, Resolution};
+use crate::primitives::{
+    self, parse as parse_path, Line, Path as PathGeometry, Segment, Shape, SubPath,
+};
+use crate::render::{NodeStroke, Paint, RenderCanvas, RenderMeta, RenderModel, ResolvedNode};
+use crate::scene::{
+    validate, BooleanOperation, Diagnostic, DiagnosticCode, Diagnostics, ElementKind, Location,
+    Scene,
+};
+use crate::style::{Palette, StrokeProfile, UNDEFINED_STROKE, UNDEFINED_TOKEN};
+
+/// Two elements reference each other, directly or through a chain.
+pub const CYCLE: DiagnosticCode = DiagnosticCode::new("E_CYCLE");
+
+/// An element references a parent the scene does not define.
+pub const REFERENCE: DiagnosticCode = DiagnosticCode::new("E_REFERENCE");
+
+/// An element uses a feature the compiler does not implement.
+pub const UNSUPPORTED: DiagnosticCode = DiagnosticCode::new("E_UNSUPPORTED");
+
+/// A stroke profile reference could not be resolved for lack of style assets.
+pub const UNRESOLVED_STROKE: DiagnosticCode = DiagnosticCode::new("W_UNRESOLVED_STROKE");
+
+/// A scene above the documented large-scene element count.
+pub const LARGE_SCENE: DiagnosticCode = DiagnosticCode::new("W_LARGE_SCENE");
+
+/// The element count above which a scene is processed with a warning (NFR-002).
+pub const LARGE_SCENE_ELEMENTS: usize = 50_000;
+
+/// The most render nodes one compilation may emit; beyond it the scene is
+/// refused with a defined size limit rather than allowed to grow without bound
+/// (NFR-021). A composition that expands (a large repeat) is bounded here.
+pub const MAX_RENDER_NODES: usize = 1_000_000;
+
+/// The color a stroke carries when the scene names no stroke color of its own.
+const STROKE_COLOR: &str = "#000000";
+
+/// The palette and stroke profiles a scene's style references resolve against.
+///
+/// A caller without style assets compiles without a context, and paint carries
+/// the scene's declared references instead of resolved values.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct StyleContext<'a> {
+    /// The palette the scene's fill tokens resolve against.
+    pub palette: Option<&'a Palette>,
+    /// The stroke profiles the scene's elements resolve against.
+    pub strokes: &'a [StrokeProfile],
+}
+
+/// Compiles a validated scene into its render model (C-002).
+///
+/// Runs without style assets, so paint carries the scene's declared references;
+/// use [`compile_with_style`] to resolve them against a project's palette and
+/// stroke profiles.
+pub fn compile(scene: &Scene) -> Result<RenderModel, Diagnostics> {
+    compile_with_style(scene, &StyleContext::default())
+}
+
+/// Compiles a scene, resolving its style references against the given context.
+///
+/// A fill token or stroke profile the context does not provide is a located
+/// error naming it; a scene with neither is unaffected.
+pub fn compile_with_style<'s>(
+    scene: &Scene,
+    style: &'s StyleContext<'s>,
+) -> Result<RenderModel, Diagnostics> {
+    let mut diagnostics = validate(scene);
+    if diagnostics.has_errors() {
+        return Err(diagnostics);
+    }
+
+    if scene.elements.len() > LARGE_SCENE_ELEMENTS {
+        diagnostics.push(Diagnostic::warning(
+            LARGE_SCENE,
+            format!(
+                "scene has {} elements, above the {LARGE_SCENE_ELEMENTS}-element limit; compilation continues",
+                scene.elements.len()
+            ),
+        ));
+    }
+
+    let resolution = match constraints::resolve(scene) {
+        Ok(resolution) => resolution,
+        Err(errors) => {
+            diagnostics.extend(errors);
+            return Err(diagnostics);
+        }
+    };
+
+    let attachments = resolution
+        .attachments()
+        .iter()
+        .map(|attachment| {
+            (
+                attachment.connector_id.clone(),
+                (attachment.from, attachment.to),
+            )
+        })
+        .collect();
+
+    let mut compiler = Compiler {
+        scene,
+        style,
+        resolution,
+        attachments,
+        diagnostics,
+        nodes: Vec::new(),
+        used_ids: HashSet::new(),
+        order: 0,
+        limit_hit: false,
+        parent: Vec::new(),
+        children: Vec::new(),
+    };
+
+    compiler.prepare();
+    if compiler.diagnostics.has_errors() {
+        return Err(compiler.diagnostics);
+    }
+    compiler.run();
+
+    let model = compiler.into_model();
+    if model.diagnostics.has_errors() {
+        Err(model.diagnostics)
+    } else {
+        Ok(model)
+    }
+}
+
+/// A stable suffix identifying one copy within a composition expansion.
+struct CopyTag {
+    path: String,
+}
+
+impl CopyTag {
+    fn child(parent: Option<&CopyTag>, owner: &str, index: usize) -> Self {
+        let path = match parent {
+            Some(parent) => format!("{}/{}#{}", parent.path, owner, index),
+            None => format!("{owner}#{index}"),
+        };
+        Self { path }
+    }
+}
+
+struct Compiler<'a, 's> {
+    scene: &'a Scene,
+    style: &'s StyleContext<'s>,
+    resolution: Resolution,
+    attachments: HashMap<String, (Point, Point)>,
+    diagnostics: Diagnostics,
+    nodes: Vec<ResolvedNode>,
+    used_ids: HashSet<String>,
+    order: usize,
+    limit_hit: bool,
+    parent: Vec<Option<usize>>,
+    children: Vec<Vec<usize>>,
+}
+
+impl Compiler<'_, '_> {
+    /// Builds the parent/child tree and refuses a dangling parent or a cycle.
+    fn prepare(&mut self) {
+        let count = self.scene.elements.len();
+        let mut index_of: HashMap<&str, usize> = HashMap::with_capacity(count);
+        for (index, element) in self.scene.elements.iter().enumerate() {
+            index_of.insert(element.id.as_str(), index);
+        }
+
+        let mut parent = vec![None; count];
+        let mut children = vec![Vec::new(); count];
+        for (index, element) in self.scene.elements.iter().enumerate() {
+            let Some(parent_id) = element.parent_id.as_deref() else {
+                continue;
+            };
+            match index_of.get(parent_id).copied() {
+                Some(ancestor) => {
+                    parent[index] = Some(ancestor);
+                    children[ancestor].push(index);
+                }
+                None => self.push_reference_error(index, parent_id),
+            }
+        }
+
+        if let Some(cycle) = detect_cycle(&parent) {
+            self.push_cycle_error(&cycle);
+        }
+
+        for list in children.iter_mut() {
+            list.sort_by(|&left, &right| {
+                self.scene.elements[left]
+                    .order
+                    .cmp(&self.scene.elements[right].order)
+                    .then(left.cmp(&right))
+            });
+        }
+
+        self.parent = parent;
+        self.children = children;
+    }
+
+    fn run(&mut self) {
+        let mut roots: Vec<usize> = (0..self.scene.elements.len())
+            .filter(|&index| self.parent[index].is_none())
+            .collect();
+        roots.sort_by(|&left, &right| {
+            self.scene.elements[left]
+                .order
+                .cmp(&self.scene.elements[right].order)
+                .then(left.cmp(&right))
+        });
+        for root in roots {
+            if self.limit_hit {
+                break;
+            }
+            self.emit(root, Affine::IDENTITY, 1.0, true, None);
+        }
+    }
+
+    /// Emits the subtree rooted at one element.
+    fn emit(
+        &mut self,
+        index: usize,
+        parent_world: Affine,
+        parent_opacity: f64,
+        parent_visible: bool,
+        copy: Option<&CopyTag>,
+    ) {
+        if self.limit_hit {
+            return;
+        }
+
+        let kind = self.scene.elements[index].kind;
+        let Some(local) = self.local_affine(index) else {
+            return;
+        };
+        let world = parent_world.then(local);
+        let opacity = parent_opacity * self.scene.elements[index].opacity;
+        let visible = parent_visible && self.scene.elements[index].visible;
+
+        match kind {
+            ElementKind::Raster => self.reject_unsupported(index, "raster"),
+            ElementKind::Rect
+            | ElementKind::Ellipse
+            | ElementKind::Polygon
+            | ElementKind::Line
+            | ElementKind::Path => {
+                if let Some((from, to)) = self.connector(index) {
+                    let geometry = Shape::Line(Line {
+                        points: vec![from, to],
+                    });
+                    self.push_node(index, geometry, Affine::IDENTITY, opacity, visible, copy);
+                    return;
+                }
+                let mut findings = Diagnostics::new();
+                let shape = primitives::resolve(&self.scene.elements[index], &mut findings);
+                let failed = findings.has_errors();
+                self.diagnostics.extend(findings);
+                if !failed {
+                    if let Some(shape) = shape {
+                        self.push_node(index, shape, world, opacity, visible, copy);
+                    }
+                }
+                self.emit_children(index, world, opacity, visible, copy);
+            }
+            ElementKind::Group => self.emit_children(index, world, opacity, visible, copy),
+            ElementKind::Repeat => {
+                let mut findings = Diagnostics::new();
+                let count = self.scene.elements[index].geometry.count.unwrap_or(0);
+                if !self.guard_count(index, count) {
+                    return;
+                }
+                let placements = repeat_placements(&self.scene.elements[index], &mut findings);
+                self.diagnostics.extend(findings);
+                let owner = self.scene.elements[index].id.clone();
+                for (copy_index, placement) in placements.iter().enumerate() {
+                    if self.limit_hit {
+                        break;
+                    }
+                    let tag = CopyTag::child(copy, &owner, copy_index);
+                    self.emit_children(index, world.then(*placement), opacity, visible, Some(&tag));
+                }
+            }
+            ElementKind::AlongPath => {
+                let Some(guide) = self.guide_path(index) else {
+                    return;
+                };
+                let count = self.scene.elements[index].geometry.count.unwrap_or(0);
+                if !self.guard_count(index, count) {
+                    return;
+                }
+                let mut findings = Diagnostics::new();
+                let placements = along_path_placements(
+                    &guide,
+                    count,
+                    &self.scene.elements[index],
+                    &mut findings,
+                );
+                self.diagnostics.extend(findings);
+                let owner = self.scene.elements[index].id.clone();
+                for (copy_index, placement) in placements.iter().enumerate() {
+                    if self.limit_hit {
+                        break;
+                    }
+                    let tag = CopyTag::child(copy, &owner, copy_index);
+                    self.emit_children(index, world.then(*placement), opacity, visible, Some(&tag));
+                }
+            }
+            ElementKind::Projection => {
+                let Some(axis) = self.scene.elements[index].geometry.axis else {
+                    self.reject_composition(index, "must declare a projection axis");
+                    return;
+                };
+                let projected = world.then(composition::projection_for(axis));
+                self.emit_children(index, projected, opacity, visible, copy);
+            }
+            ElementKind::Boolean => {
+                let Some(operation) = self.scene.elements[index].geometry.operation else {
+                    self.reject_composition(index, "must declare a boolean operation");
+                    return;
+                };
+                let shapes = self.lower_children(index);
+                let mut findings = Diagnostics::new();
+                let combined = combine(
+                    operation,
+                    &shapes,
+                    &self.scene.elements[index],
+                    &mut findings,
+                );
+                self.diagnostics.extend(findings);
+                if let Some(shape) = combined {
+                    self.push_node(index, shape, world, opacity, visible, copy);
+                }
+            }
+            ElementKind::Offset => {
+                let distance = self.scene.elements[index].geometry.distance.unwrap_or(0.0);
+                let children = self.children[index].clone();
+                for child in children {
+                    if self.limit_hit {
+                        break;
+                    }
+                    let Some(shape) = self.lower(child) else {
+                        continue;
+                    };
+                    let mut findings = Diagnostics::new();
+                    let offset =
+                        offset_shape(&shape, distance, &self.scene.elements[index], &mut findings);
+                    self.diagnostics.extend(findings);
+                    if let Some(shape) = offset {
+                        self.push_node(index, shape, world, opacity, visible, copy);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Lowers a composition element to a single concrete shape in its parent's
+    /// coordinates, used where an element is an operand rather than a drawing.
+    fn lower(&mut self, index: usize) -> Option<Shape> {
+        if self.limit_hit {
+            return None;
+        }
+        let kind = self.scene.elements[index].kind;
+        let local = self.local_affine(index)?;
+        match kind {
+            ElementKind::Raster => {
+                self.reject_unsupported(index, "raster");
+                None
+            }
+            ElementKind::Rect
+            | ElementKind::Ellipse
+            | ElementKind::Polygon
+            | ElementKind::Line
+            | ElementKind::Path => {
+                let mut findings = Diagnostics::new();
+                let shape = primitives::resolve(&self.scene.elements[index], &mut findings);
+                let failed = findings.has_errors();
+                self.diagnostics.extend(findings);
+                if failed {
+                    return None;
+                }
+                self.bake(shape?, local)
+            }
+            ElementKind::Group => {
+                let shapes = self.lower_children(index);
+                let combined = self.union_all(shapes, index)?;
+                self.bake(combined, local)
+            }
+            ElementKind::Projection => {
+                let Some(axis) = self.scene.elements[index].geometry.axis else {
+                    self.reject_composition(index, "must declare a projection axis");
+                    return None;
+                };
+                let shapes = self.lower_children(index);
+                let combined = self.union_all(shapes, index)?;
+                let projection = composition::projection_for(axis);
+                self.bake(combined, local.then(projection))
+            }
+            ElementKind::Repeat => {
+                let mut findings = Diagnostics::new();
+                let count = self.scene.elements[index].geometry.count.unwrap_or(0);
+                if !self.guard_count(index, count) {
+                    return None;
+                }
+                let placements = repeat_placements(&self.scene.elements[index], &mut findings);
+                self.diagnostics.extend(findings);
+                let children = self.children[index].clone();
+                let mut shapes = Vec::new();
+                for placement in &placements {
+                    for &child in &children {
+                        if let Some(shape) = self.lower(child) {
+                            if let Some(baked) = self.bake(shape, *placement) {
+                                shapes.push(baked);
+                            }
+                        }
+                    }
+                }
+                let combined = self.union_all(shapes, index)?;
+                self.bake(combined, local)
+            }
+            ElementKind::AlongPath => {
+                let guide = self.guide_path(index)?;
+                let count = self.scene.elements[index].geometry.count.unwrap_or(0);
+                if !self.guard_count(index, count) {
+                    return None;
+                }
+                let mut findings = Diagnostics::new();
+                let placements = along_path_placements(
+                    &guide,
+                    count,
+                    &self.scene.elements[index],
+                    &mut findings,
+                );
+                self.diagnostics.extend(findings);
+                let children = self.children[index].clone();
+                let mut shapes = Vec::new();
+                for placement in &placements {
+                    for &child in &children {
+                        if let Some(shape) = self.lower(child) {
+                            if let Some(baked) = self.bake(shape, *placement) {
+                                shapes.push(baked);
+                            }
+                        }
+                    }
+                }
+                let combined = self.union_all(shapes, index)?;
+                self.bake(combined, local)
+            }
+            ElementKind::Offset => {
+                let distance = self.scene.elements[index].geometry.distance.unwrap_or(0.0);
+                let children = self.children[index].clone();
+                let mut shapes = Vec::new();
+                for child in children {
+                    let Some(shape) = self.lower(child) else {
+                        continue;
+                    };
+                    let mut findings = Diagnostics::new();
+                    let offset =
+                        offset_shape(&shape, distance, &self.scene.elements[index], &mut findings);
+                    self.diagnostics.extend(findings);
+                    if let Some(shape) = offset {
+                        if let Some(baked) = self.bake(shape, Affine::IDENTITY) {
+                            shapes.push(baked);
+                        }
+                    }
+                }
+                let combined = self.union_all(shapes, index)?;
+                self.bake(combined, local)
+            }
+            ElementKind::Boolean => {
+                let Some(operation) = self.scene.elements[index].geometry.operation else {
+                    self.reject_composition(index, "must declare a boolean operation");
+                    return None;
+                };
+                let shapes = self.lower_children(index);
+                let mut findings = Diagnostics::new();
+                let combined = combine(
+                    operation,
+                    &shapes,
+                    &self.scene.elements[index],
+                    &mut findings,
+                );
+                self.diagnostics.extend(findings);
+                self.bake(combined?, local)
+            }
+        }
+    }
+
+    /// Emits each child of an element with the given resolved world transform.
+    fn emit_children(
+        &mut self,
+        index: usize,
+        world: Affine,
+        opacity: f64,
+        visible: bool,
+        copy: Option<&CopyTag>,
+    ) {
+        let children = self.children[index].clone();
+        for child in children {
+            if self.limit_hit {
+                break;
+            }
+            self.emit(child, world, opacity, visible, copy);
+        }
+    }
+
+    /// Lowers each child of an element to a shape.
+    fn lower_children(&mut self, index: usize) -> Vec<Shape> {
+        let children = self.children[index].clone();
+        let mut shapes = Vec::with_capacity(children.len());
+        for child in children {
+            if self.limit_hit {
+                break;
+            }
+            if let Some(shape) = self.lower(child) {
+                shapes.push(shape);
+            }
+        }
+        shapes
+    }
+
+    /// Unions a list of shapes, treating a single shape as itself and an empty
+    /// list as nothing.
+    fn union_all(&mut self, mut shapes: Vec<Shape>, index: usize) -> Option<Shape> {
+        match shapes.len() {
+            0 => None,
+            1 => shapes.pop(),
+            _ => {
+                let mut findings = Diagnostics::new();
+                let combined = combine(
+                    BooleanOperation::Union,
+                    &shapes,
+                    &self.scene.elements[index],
+                    &mut findings,
+                );
+                self.diagnostics.extend(findings);
+                combined
+            }
+        }
+    }
+
+    /// Bakes a transform into a shape, flattening it to concrete contours.
+    ///
+    /// Used only for operand math (booleans, offsets), where the result is
+    /// flattened again anyway; the identity transform keeps the exact shape.
+    fn bake(&self, shape: Shape, affine: Affine) -> Option<Shape> {
+        if affine == Affine::IDENTITY {
+            return Some(shape);
+        }
+        let mut subpaths = Vec::new();
+        for contour in flatten_shape(&shape) {
+            if contour.len() < 3 {
+                continue;
+            }
+            let points: Vec<[f64; 2]> = contour.iter().map(|point| affine.apply(*point)).collect();
+            let start = points[0];
+            let segments = points
+                .windows(2)
+                .map(|pair| Segment::Line { to: pair[1] })
+                .collect();
+            subpaths.push(SubPath {
+                start,
+                segments,
+                closed: true,
+            });
+        }
+        if subpaths.is_empty() {
+            None
+        } else {
+            Some(Shape::Path(PathGeometry { subpaths }))
+        }
+    }
+
+    /// The element's resolved local transform: its declared transform with the
+    /// constraint-resolved translation.
+    fn local_affine(&mut self, index: usize) -> Option<Affine> {
+        let (id, mut transform, declared) = {
+            let element = &self.scene.elements[index];
+            (
+                element.id.clone(),
+                element.transform.clone(),
+                [element.transform.translate_x, element.transform.translate_y],
+            )
+        };
+        let translation = self.resolution.translation(&id).unwrap_or(declared);
+        transform.translate_x = translation[0];
+        transform.translate_y = translation[1];
+        match Affine::from_scene(&transform) {
+            Ok(affine) if affine.is_finite() => Some(affine),
+            _ => {
+                self.diagnostics.push(
+                    Diagnostic::error(
+                        composition::TRANSFORM,
+                        format!("element `{id}` has a malformed transform"),
+                    )
+                    .with_location(Location::element(id)),
+                );
+                None
+            }
+        }
+    }
+
+    /// Parses an `alongPath` element's guide, or reports why it cannot.
+    fn guide_path(&mut self, index: usize) -> Option<PathGeometry> {
+        let Some(data) = self.scene.elements[index].geometry.path_data.clone() else {
+            self.reject_composition(index, "must declare a guide pathData");
+            return None;
+        };
+        match parse_path(&data) {
+            Ok(path) => Some(path),
+            Err(error) => {
+                self.reject_composition(index, &format!("has invalid guide path data: {error}"));
+                None
+            }
+        }
+    }
+
+    /// The connector endpoints for an element, when a constraint makes it one.
+    fn connector(&self, index: usize) -> Option<(Point, Point)> {
+        self.attachments
+            .get(self.scene.elements[index].id.as_str())
+            .copied()
+    }
+
+    /// Appends one drawing node for an element.
+    #[allow(clippy::too_many_arguments)]
+    fn push_node(
+        &mut self,
+        index: usize,
+        geometry: Shape,
+        transform: Affine,
+        opacity: f64,
+        visible: bool,
+        copy: Option<&CopyTag>,
+    ) {
+        if self.limit_hit {
+            return;
+        }
+        if self.nodes.len() >= MAX_RENDER_NODES {
+            self.limit_hit = true;
+            self.diagnostics.push(Diagnostic::error(
+                DiagnosticCode::SIZE_LIMIT,
+                format!("compilation produced more than {MAX_RENDER_NODES} nodes"),
+            ));
+            return;
+        }
+
+        let (base_id, name, kind, fill, stroke) = {
+            let element = &self.scene.elements[index];
+            (
+                element.id.clone(),
+                element.name.clone(),
+                kind_name(element.kind).to_string(),
+                element.fill_token.clone(),
+                element.stroke_profile_id.clone(),
+            )
+        };
+        let id = self.unique_id(&base_id, copy);
+        let paint = self.paint_for(&base_id, fill.as_deref(), stroke.as_deref());
+        let order = self.order;
+        self.order += 1;
+        self.nodes.push(ResolvedNode {
+            id,
+            name,
+            order,
+            kind,
+            geometry,
+            transform,
+            paint,
+            opacity,
+            visible,
+        });
+    }
+
+    /// Resolves the paint an element declares.
+    fn paint_for(&mut self, element_id: &str, fill: Option<&str>, stroke: Option<&str>) -> Paint {
+        let fill = match fill {
+            None => None,
+            Some(token) => match self.style.palette {
+                Some(palette) => match palette.resolve(token) {
+                    Some(value) => Some(value.to_string()),
+                    None => {
+                        self.diagnostics.push(
+                            Diagnostic::error(
+                                UNDEFINED_TOKEN,
+                                format!(
+                                    "element `{element_id}` references undefined palette token `{token}`"
+                                ),
+                            )
+                            .with_location(Location::element_at(element_id, "/fillToken")),
+                        );
+                        None
+                    }
+                },
+                None => Some(token.to_string()),
+            },
+        };
+
+        let stroke = match stroke {
+            None => None,
+            Some(profile_id) => match self
+                .style
+                .strokes
+                .iter()
+                .find(|profile| profile.id == profile_id)
+            {
+                Some(profile) => {
+                    let resolved = profile.resolved();
+                    Some(NodeStroke {
+                        value: STROKE_COLOR.to_string(),
+                        width: resolved.width,
+                        cap: resolved.cap,
+                        join: resolved.join,
+                    })
+                }
+                None if self.style.strokes.is_empty() => {
+                    self.diagnostics.push(
+                        Diagnostic::warning(
+                            UNRESOLVED_STROKE,
+                            format!(
+                                "stroke profile `{profile_id}` for element `{element_id}` was not resolved; compile with a style context to apply it"
+                            ),
+                        )
+                        .with_location(Location::element_at(element_id, "/strokeProfileId")),
+                    );
+                    None
+                }
+                None => {
+                    self.diagnostics.push(
+                        Diagnostic::error(
+                            UNDEFINED_STROKE,
+                            format!(
+                                "element `{element_id}` references undefined stroke profile `{profile_id}`"
+                            ),
+                        )
+                        .with_location(Location::element_at(element_id, "/strokeProfileId")),
+                    );
+                    None
+                }
+            },
+        };
+
+        Paint { fill, stroke }
+    }
+
+    /// A node identifier unique across the model.
+    fn unique_id(&mut self, base: &str, copy: Option<&CopyTag>) -> String {
+        let candidate = match copy {
+            Some(tag) => format!("{base}~{}", tag.path),
+            None => base.to_string(),
+        };
+        if self.used_ids.insert(candidate.clone()) {
+            return candidate;
+        }
+        let mut suffix = 1usize;
+        loop {
+            let alternative = format!("{candidate}~{suffix}");
+            if self.used_ids.insert(alternative.clone()) {
+                return alternative;
+            }
+            suffix += 1;
+        }
+    }
+
+    fn reject_unsupported(&mut self, index: usize, feature: &str) {
+        let id = self.scene.elements[index].id.clone();
+        self.diagnostics.push(
+            Diagnostic::error(
+                UNSUPPORTED,
+                format!("element `{id}` uses unsupported feature `{feature}`"),
+            )
+            .with_location(Location::element(id)),
+        );
+    }
+
+    /// Refuses a copy count that would expand past the node limit before the
+    /// expansion is materialised, so an untrusted scene cannot demand unbounded
+    /// memory (NFR-021).
+    fn guard_count(&mut self, index: usize, count: u32) -> bool {
+        if u64::from(count) <= MAX_RENDER_NODES as u64 {
+            return true;
+        }
+        let id = self.scene.elements[index].id.clone();
+        self.diagnostics.push(
+            Diagnostic::error(
+                DiagnosticCode::SIZE_LIMIT,
+                format!(
+                    "element `{id}` expands to {count} copies, above the {MAX_RENDER_NODES}-copy limit"
+                ),
+            )
+            .with_location(Location::element(id)),
+        );
+        false
+    }
+
+    fn reject_composition(&mut self, index: usize, reason: &str) {
+        let id = self.scene.elements[index].id.clone();
+        self.diagnostics.push(
+            Diagnostic::error(
+                composition::COMPOSITION,
+                format!("composition `{id}` {reason}"),
+            )
+            .with_location(Location::element(id)),
+        );
+    }
+
+    fn push_reference_error(&mut self, index: usize, parent_id: &str) {
+        let id = self.scene.elements[index].id.clone();
+        self.diagnostics.push(
+            Diagnostic::error(
+                REFERENCE,
+                format!("element `{id}` references unknown parent `{parent_id}`"),
+            )
+            .with_location(Location::element_at(id, "/parentId")),
+        );
+    }
+
+    fn push_cycle_error(&mut self, cycle: &[usize]) {
+        let names: Vec<&str> = cycle
+            .iter()
+            .map(|&index| self.scene.elements[index].id.as_str())
+            .collect();
+        let first = names.first().copied().unwrap_or_default().to_string();
+        let path = format!("{} -> {}", names.join(" -> "), first);
+        self.diagnostics.push(
+            Diagnostic::error(CYCLE, format!("circular reference: {path}"))
+                .with_location(Location::element(first)),
+        );
+    }
+
+    fn into_model(self) -> RenderModel {
+        RenderModel {
+            canvas: RenderCanvas {
+                width: self.scene.canvas.width,
+                height: self.scene.canvas.height,
+                background: self.scene.canvas.background.clone(),
+            },
+            nodes: self.nodes,
+            meta: RenderMeta {
+                title: self.scene.title.clone(),
+                description: self.scene.description.clone(),
+            },
+            diagnostics: self.diagnostics,
+        }
+    }
+}
+
+/// Finds one cycle in a parent-pointer forest, or `None` when it is acyclic.
+///
+/// Iterative so a deep, healthy tree of fifty thousand elements cannot exhaust
+/// the stack. Each element has at most one parent, so following parents from any
+/// node either reaches a root or re-enters a cycle.
+fn detect_cycle(parent: &[Option<usize>]) -> Option<Vec<usize>> {
+    const UNVISITED: u8 = 0;
+    const ON_PATH: u8 = 1;
+    const DONE: u8 = 2;
+
+    let mut state = vec![UNVISITED; parent.len()];
+    for start in 0..parent.len() {
+        if state[start] != UNVISITED {
+            continue;
+        }
+        let mut path = Vec::new();
+        let mut current = Some(start);
+        while let Some(node) = current {
+            match state[node] {
+                ON_PATH => {
+                    let position = path
+                        .iter()
+                        .position(|&visited| visited == node)
+                        .unwrap_or_default();
+                    return Some(path[position..].to_vec());
+                }
+                DONE => break,
+                _ => {}
+            }
+            state[node] = ON_PATH;
+            path.push(node);
+            current = parent[node];
+        }
+        for &node in &path {
+            state[node] = DONE;
+        }
+    }
+    None
+}
+
+fn kind_name(kind: ElementKind) -> &'static str {
+    match kind {
+        ElementKind::Rect => "rect",
+        ElementKind::Ellipse => "ellipse",
+        ElementKind::Polygon => "polygon",
+        ElementKind::Line => "line",
+        ElementKind::Path => "path",
+        ElementKind::Group => "group",
+        ElementKind::Repeat => "repeat",
+        ElementKind::Boolean => "boolean",
+        ElementKind::AlongPath => "alongPath",
+        ElementKind::Offset => "offset",
+        ElementKind::Projection => "projection",
+        ElementKind::Raster => "raster",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::primitives::{Ellipse, Rect as PrimRect};
+    use crate::style::{parse_palette, parse_stroke_profile};
+    use serde_json::{json, Value};
+
+    fn base(id: &str, order: u64, kind: &str, geometry: Value) -> Value {
+        json!({
+            "id": id,
+            "sceneId": "s",
+            "order": order,
+            "kind": kind,
+            "geometry": geometry,
+            "transform": {
+                "translateX": 0.0,
+                "translateY": 0.0,
+                "rotate": 0.0,
+                "scaleX": 1.0,
+                "scaleY": 1.0
+            },
+            "opacity": 1.0,
+            "visible": true
+        })
+    }
+
+    fn rect(id: &str, order: u64, width: f64, height: f64) -> Value {
+        base(
+            id,
+            order,
+            "rect",
+            json!({ "x": 0.0, "y": 0.0, "width": width, "height": height }),
+        )
+    }
+
+    fn scene_of(elements: Value, constraints: Option<Value>) -> Scene {
+        let mut document = json!({
+            "id": "s",
+            "projectId": "p",
+            "name": "S",
+            "formatVersion": "0.1",
+            "canvas": { "width": 400.0, "height": 400.0, "background": "#ffffff" },
+            "elements": elements
+        });
+        if let Some(constraints) = constraints {
+            document["constraints"] = constraints;
+        }
+        crate::scene::parse(&document.to_string()).expect("a valid scene")
+    }
+
+    fn compiled(elements: Value) -> RenderModel {
+        compile(&scene_of(elements, None)).expect("compiles")
+    }
+
+    #[test]
+    fn a_rect_compiles_to_one_concrete_node() {
+        let model = compiled(json!([rect("e1", 0, 30.0, 40.0)]));
+        assert_eq!(model.nodes.len(), 1);
+        let node = &model.nodes[0];
+        assert_eq!(node.id, "e1");
+        assert_eq!(node.kind, "rect");
+        assert_eq!(node.order, 0);
+        assert_eq!(
+            node.geometry,
+            Shape::Rect(PrimRect {
+                x: 0.0,
+                y: 0.0,
+                width: 30.0,
+                height: 40.0,
+                rx: 0.0,
+                ry: 0.0,
+            })
+        );
+        assert_eq!(model.canvas.width, 400.0);
+        assert_eq!(model.canvas.background, "#ffffff");
+    }
+
+    #[test]
+    fn an_element_transform_becomes_the_resolved_world_transform() {
+        let mut element = rect("e1", 0, 10.0, 10.0);
+        element["transform"]["translateX"] = json!(5.0);
+        element["transform"]["translateY"] = json!(6.0);
+        let model = compiled(json!([element]));
+        assert_eq!(model.nodes[0].transform.apply([0.0, 0.0]), [5.0, 6.0]);
+    }
+
+    #[test]
+    fn compilation_is_deterministic() {
+        let elements = json!([rect("a", 0, 10.0, 10.0), rect("b", 1, 10.0, 10.0)]);
+        let first = compiled(elements.clone());
+        let second = compiled(elements);
+        assert_eq!(
+            first, second,
+            "repeated runs must be byte-identical (NFR-010)"
+        );
+    }
+
+    #[test]
+    fn an_invalid_scene_fails_with_a_location() {
+        let mut scene = scene_of(json!([rect("e1", 0, 10.0, 10.0)]), None);
+        scene.elements[0].opacity = 1.5;
+        let diagnostics = compile(&scene).expect_err("an invalid scene is refused");
+        let error = diagnostics.errors().next().expect("an error");
+        assert_eq!(error.code, DiagnosticCode::SCHEMA);
+        assert_eq!(
+            error
+                .location
+                .as_ref()
+                .and_then(|location| location.json_path.as_deref()),
+            Some("/elements/0/opacity")
+        );
+    }
+
+    #[test]
+    fn constraints_resolve_into_concrete_translations() {
+        let elements = json!([
+            rect("a", 0, 10.0, 10.0),
+            rect("b", 1, 10.0, 10.0),
+            rect("c", 2, 10.0, 10.0),
+        ]);
+        let mut b = elements[1].clone();
+        b["transform"]["translateX"] = json!(50.0);
+        let mut c = elements[2].clone();
+        c["transform"]["translateX"] = json!(200.0);
+        let scene = scene_of(
+            json!([elements[0].clone(), b, c]),
+            Some(json!([{
+                "id": "sp",
+                "sceneId": "s",
+                "kind": "equalSpacing",
+                "elementIds": ["a", "b", "c"],
+                "axis": "x",
+                "value": 20.0
+            }])),
+        );
+        let model = compile(&scene).expect("compiles");
+        assert_eq!(
+            model.node("b").unwrap().transform.apply([0.0, 0.0]),
+            [30.0, 0.0]
+        );
+        assert_eq!(
+            model.node("c").unwrap().transform.apply([0.0, 0.0]),
+            [60.0, 0.0]
+        );
+    }
+
+    #[test]
+    fn an_attached_connector_meets_both_anchors() {
+        let wire = base(
+            "wire",
+            0,
+            "line",
+            json!({ "points": [[0.0, 0.0], [10.0, 0.0]] }),
+        );
+        let mut left = rect("left", 1, 20.0, 20.0);
+        left["transform"]["translateX"] = json!(0.0);
+        let mut right = rect("right", 2, 20.0, 20.0);
+        right["transform"]["translateX"] = json!(100.0);
+        right["transform"]["translateY"] = json!(40.0);
+        let scene = scene_of(
+            json!([wire, left, right]),
+            Some(json!([{
+                "id": "link",
+                "sceneId": "s",
+                "kind": "attach",
+                "elementIds": ["wire", "left", "right"]
+            }])),
+        );
+        let model = compile(&scene).expect("compiles");
+        let node = model.node("wire").expect("the connector");
+        assert_eq!(
+            node.geometry,
+            Shape::Line(Line {
+                points: vec![[10.0, 10.0], [110.0, 50.0]],
+            })
+        );
+        assert_eq!(node.transform, Affine::IDENTITY);
+    }
+
+    #[test]
+    fn a_boolean_compiles_to_one_concrete_path() {
+        let boolean = base("b1", 0, "boolean", json!({ "operation": "subtract" }));
+        let mut first = rect("c1", 0, 10.0, 10.0);
+        first["parentId"] = json!("b1");
+        let mut second = rect("c2", 1, 3.0, 3.0);
+        second["parentId"] = json!("b1");
+        second["geometry"]["x"] = json!(2.0);
+        second["geometry"]["y"] = json!(2.0);
+        let model = compiled(json!([boolean, first, second]));
+        assert_eq!(model.nodes.len(), 1);
+        let node = &model.nodes[0];
+        assert_eq!(node.kind, "boolean");
+        assert!(matches!(node.geometry, Shape::Path(_)));
+    }
+
+    #[test]
+    fn a_repeat_emits_one_node_per_copy_with_unique_ids() {
+        let repeat = base("r1", 0, "repeat", json!({ "count": 3, "spacing": 10.0 }));
+        let mut child = rect("c1", 0, 5.0, 5.0);
+        child["parentId"] = json!("r1");
+        let model = compiled(json!([repeat, child]));
+        assert_eq!(model.nodes.len(), 3);
+        let mut ids: Vec<&str> = model.nodes.iter().map(|node| node.id.as_str()).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), 3, "copy identifiers are unique");
+        let positions: Vec<f64> = model
+            .nodes
+            .iter()
+            .map(|node| node.transform.apply([0.0, 0.0])[0])
+            .collect();
+        assert_eq!(positions, vec![0.0, 10.0, 20.0]);
+    }
+
+    #[test]
+    fn an_oversized_copy_count_is_refused_with_a_size_limit() {
+        let repeat = base(
+            "r1",
+            0,
+            "repeat",
+            json!({ "count": u32::MAX, "spacing": 1.0 }),
+        );
+        let mut child = rect("c1", 0, 5.0, 5.0);
+        child["parentId"] = json!("r1");
+        let scene = scene_of(json!([repeat, child]), None);
+        let diagnostics = compile(&scene).expect_err("an unbounded expansion is refused");
+        let error = diagnostics.errors().next().expect("an error");
+        assert_eq!(error.code, DiagnosticCode::SIZE_LIMIT);
+    }
+
+    #[test]
+    fn a_projection_maps_its_children_onto_its_axis() {
+        let projection = base("p1", 0, "projection", json!({ "axis": "x" }));
+        let mut child = rect("c1", 0, 5.0, 5.0);
+        child["parentId"] = json!("p1");
+        child["transform"]["translateX"] = json!(3.0);
+        child["transform"]["translateY"] = json!(4.0);
+        let model = compiled(json!([projection, child]));
+        let node = model.node("c1").expect("the child");
+        assert_eq!(node.transform.apply([0.0, 0.0]), [3.0, 0.0]);
+    }
+
+    #[test]
+    fn an_along_path_element_places_its_children_along_the_guide() {
+        let along = base(
+            "a1",
+            0,
+            "alongPath",
+            json!({ "pathData": "M0 0 L30 0", "count": 3 }),
+        );
+        let mut child = rect("c1", 0, 4.0, 4.0);
+        child["parentId"] = json!("a1");
+        let model = compiled(json!([along, child]));
+        assert_eq!(model.nodes.len(), 3);
+        let positions: Vec<f64> = model
+            .nodes
+            .iter()
+            .map(|node| node.transform.apply([0.0, 0.0])[0])
+            .collect();
+        assert_eq!(positions, vec![0.0, 15.0, 30.0]);
+    }
+
+    #[test]
+    fn an_offset_compiles_to_concrete_path_geometry() {
+        let offset = base("o1", 0, "offset", json!({ "distance": 1.0 }));
+        let mut child = rect("c1", 0, 10.0, 10.0);
+        child["parentId"] = json!("o1");
+        let model = compiled(json!([offset, child]));
+        assert_eq!(model.nodes.len(), 1);
+        assert_eq!(model.nodes[0].kind, "offset");
+        assert!(matches!(model.nodes[0].geometry, Shape::Path(_)));
+    }
+
+    #[test]
+    fn a_group_transform_is_inherited_by_its_children() {
+        let mut group = base("g1", 0, "group", json!({}));
+        group["transform"]["translateX"] = json!(100.0);
+        group["transform"]["rotate"] = json!(90.0);
+        let mut child = rect("c1", 0, 5.0, 5.0);
+        child["parentId"] = json!("g1");
+        child["transform"]["translateX"] = json!(10.0);
+        let model = compiled(json!([group, child]));
+        let node = model.node("c1").expect("the child");
+        let origin = node.transform.apply([0.0, 0.0]);
+        assert!((origin[0] - 100.0).abs() < 1e-9, "{origin:?}");
+        assert!((origin[1] - 10.0).abs() < 1e-9, "{origin:?}");
+    }
+
+    #[test]
+    fn a_circular_reference_is_refused_naming_the_cycle() {
+        let mut a = rect("a", 0, 10.0, 10.0);
+        a["parentId"] = json!("b");
+        let mut b = rect("b", 1, 10.0, 10.0);
+        b["parentId"] = json!("a");
+        let scene = scene_of(json!([a, b]), None);
+        let diagnostics = compile(&scene).expect_err("a cycle is refused");
+        let error = diagnostics.errors().next().expect("an error");
+        assert_eq!(error.code, CYCLE);
+        assert!(error.message.contains('a') && error.message.contains('b'));
+    }
+
+    #[test]
+    fn an_unknown_parent_is_refused() {
+        let mut child = rect("c1", 0, 10.0, 10.0);
+        child["parentId"] = json!("ghost");
+        let scene = scene_of(json!([child]), None);
+        let diagnostics = compile(&scene).expect_err("a dangling parent is refused");
+        let error = diagnostics.errors().next().expect("an error");
+        assert_eq!(error.code, REFERENCE);
+        assert!(error.message.contains("ghost"));
+    }
+
+    #[test]
+    fn a_raster_element_is_refused_as_unsupported() {
+        let raster = base("r1", 0, "raster", json!({}));
+        let scene = scene_of(json!([raster]), None);
+        let diagnostics = compile(&scene).expect_err("raster is unsupported");
+        let error = diagnostics.errors().next().expect("an error");
+        assert_eq!(error.code, UNSUPPORTED);
+        assert!(error.message.contains("raster"));
+    }
+
+    #[test]
+    fn an_empty_path_emits_no_node_and_keeps_its_warning() {
+        let path = base("p1", 0, "path", json!({}));
+        let model = compiled(json!([path]));
+        assert!(model.nodes.is_empty());
+        assert!(!model.diagnostics.has_errors());
+        assert!(model
+            .diagnostics
+            .warnings()
+            .any(|warning| warning.code == primitives::EMPTY_PATH));
+    }
+
+    #[test]
+    fn style_resolves_against_a_supplied_context() {
+        let mut element = rect("e1", 0, 10.0, 10.0);
+        element["fillToken"] = json!("accent");
+        element["strokeProfileId"] = json!("stroke-1");
+        let scene = scene_of(json!([element]), None);
+
+        let palette = parse_palette(
+            r##"{"id":"pal","projectId":"p","name":"P","tokens":[{"name":"accent","value":"#ff0000"}]}"##,
+        )
+        .expect("a palette");
+        let profile = parse_stroke_profile(
+            r#"{"id":"stroke-1","projectId":"p","name":"O","width":3,"cap":"butt","join":"miter"}"#,
+        )
+        .expect("a profile");
+        let style = StyleContext {
+            palette: Some(&palette),
+            strokes: std::slice::from_ref(&profile),
+        };
+
+        let model = compile_with_style(&scene, &style).expect("compiles");
+        let paint = &model.nodes[0].paint;
+        assert_eq!(paint.fill.as_deref(), Some("#ff0000"));
+        let stroke = paint.stroke.as_ref().expect("a resolved stroke");
+        assert_eq!(stroke.width, 3.0);
+        assert_eq!(stroke.cap, crate::style::StrokeCap::Butt);
+    }
+
+    #[test]
+    fn fill_references_pass_through_without_a_palette() {
+        let mut element = rect("e1", 0, 10.0, 10.0);
+        element["fillToken"] = json!("accent");
+        element["strokeProfileId"] = json!("stroke-1");
+        let model = compiled(json!([element]));
+        assert_eq!(model.nodes[0].paint.fill.as_deref(), Some("accent"));
+        assert!(model.nodes[0].paint.stroke.is_none());
+        assert!(model
+            .diagnostics
+            .warnings()
+            .any(|warning| warning.code == UNRESOLVED_STROKE));
+    }
+
+    #[test]
+    fn visibility_and_opacity_are_composed_down_the_tree() {
+        let mut group = base("g1", 0, "group", json!({}));
+        group["opacity"] = json!(0.5);
+        group["visible"] = json!(false);
+        let mut child = rect("c1", 0, 5.0, 5.0);
+        child["parentId"] = json!("g1");
+        child["opacity"] = json!(0.5);
+        let model = compiled(json!([group, child]));
+        let node = model.node("c1").expect("the child");
+        assert!((node.opacity - 0.25).abs() < 1e-12, "{}", node.opacity);
+        assert!(!node.visible);
+    }
+
+    #[test]
+    fn an_ellipse_keeps_its_concrete_geometry() {
+        let element = base(
+            "e1",
+            0,
+            "ellipse",
+            json!({ "x": 0.0, "y": 0.0, "width": 80.0, "height": 40.0 }),
+        );
+        let model = compiled(json!([element]));
+        assert_eq!(
+            model.nodes[0].geometry,
+            Shape::Ellipse(Ellipse {
+                cx: 40.0,
+                cy: 20.0,
+                rx: 40.0,
+                ry: 20.0,
+            })
+        );
+    }
+}
