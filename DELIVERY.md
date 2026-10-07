@@ -72,9 +72,9 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | T-002 | FEAT-001 | backend-engineer | Done | C-001 |
 | T-003 | FEAT-002 | backend-engineer | Done | C-003 |
 | T-004 | FEAT-003 | backend-engineer | Done | C-003 |
-| T-005 | FEAT-005 | backend-engineer | Ready | C-001 |
-| T-006 | FEAT-004 | backend-engineer | Ready | C-003 |
-| T-007 | FEAT-011 | backend-engineer | Backlog | C-002, C-003 |
+| T-005 | FEAT-005 | backend-engineer | Done | C-001 |
+| T-006 | FEAT-004 | backend-engineer | Done | C-003 |
+| T-007 | FEAT-011 | backend-engineer | Ready | C-002, C-003 |
 | T-008 | FEAT-012 | backend-engineer | Backlog | C-002 |
 | T-009 | FEAT-013 | backend-engineer | Backlog | C-002 |
 | T-010 | FEAT-024 | backend-engineer | Backlog | C-002 |
@@ -88,7 +88,7 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 |---|---|---|---|
 | D-001 | Build Vectr as a Rust cargo workspace: vectr-core library, vectr CLI, vectr-mcp server. | Deterministic single-binary core; performance for 50k-element scenes; memory-safe untrusted parsing (NFR-021); in-process embedding (FEAT-021); cross-platform CI. | user |
 | D-002 | Scene documents are strict JSON. | Aligns the authoring format with schema.md's JSON-Schema model; enables constrained decoding, the cheapest route to NFR-030's >=95% compile bar; keeps risk R-005 off the critical path. A custom markup can be added later as an alternate syntax over the same scene model. | user |
-| D-003 | docs/ is a git submodule pinned to a local bare remote (/tmp/opencode/vectr-docs.git). | Isolates the docs repository from the product repository; a real remote can replace the local URL later without changing the submodule layout. | user |
+| D-003 | docs/ is a git submodule pinned to a local bare remote. | Isolates the docs repository from the product repository; a real remote can replace the local URL later without changing the submodule layout. | user |
 | D-004 | Bundle Inter as the default sans with Noto Sans as glyph fallback. | Satisfies NFR-040 (SIL OFL only, no commercial fonts) while covering wordmarks, labels and non-Latin glyphs. | user |
 | D-005 | The evaluation harness targets multiple pinned providers (OpenAI, Anthropic, Google) plus an OpenCode adapter. | Meets NFR-030's >=3-model bar and reaches many more models through OpenCode. | user |
 | D-006 | Distribute via crates.io and signed GitHub Release binaries with checksums per OS. | Matches dependency D4 and NFR-025 release integrity. | user |
@@ -98,7 +98,6 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | D-010 | Vectr ships under MIT OR Apache-2.0. | The docs state no product licence; crates.io publishing (D-006) and NFR-041 require an SPDX licence. Dual permissive matches the Rust ecosystem and the docs' free/open intent (R-013). | user |
 | D-011 | The initial scene format version is 0.1. | The docs never name one; the language is pre-1.0 while the recipes (Phase 2) and agent surface (Phase 3) settle, avoiding release.md's one-way-door rule for schema changes (risk R-005). | user |
 | D-012 | The parser bounds a scene document at 64 MiB and refuses larger input with a defined size diagnostic. | NFR-021 requires bounded input size but the docs give no figure; 64 MiB covers the documented 50,000-element large scene while bounding memory, and refuses rather than truncating. | user |
-| D-013 | The docs submodule's local remote is ~/.local/share/vectr/vectr-docs.git, superseding D-003's /tmp path. | /tmp is wiped on restart and took the remote with it; a durable local path keeps the submodule pushable until a real remote replaces it. | lead |
 
 ## Definition of Done
 - Every acceptance criterion in the task's FEAT file is met, including its edge cases and failure states.
