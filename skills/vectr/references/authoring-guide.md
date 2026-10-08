@@ -169,11 +169,25 @@ graphic restyles by editing one value. `palettes/brand.json`:
 {
   "id": "brand",
   "projectId": "project",
-  "name": "Habit Brand",
+  "name": "Brand",
   "tokens": [
     { "name": "accent", "value": "#4f46e5", "description": "Primary accent" },
     { "name": "ink", "value": "#0f172a", "description": "Primary text" },
-    { "name": "paper", "value": "#ffffff", "description": "Surfaces" }
+    { "name": "paper", "value": "#ffffff", "description": "Surfaces and snow" },
+    { "name": "sky", "value": "#bae6fd", "description": "Sky" },
+    { "name": "dawn", "value": "#fde68a", "description": "Dawn glow" },
+    { "name": "mist", "value": "#e2e8f0", "description": "Haze" },
+    { "name": "sun", "value": "#f59e0b", "description": "Sun" },
+    { "name": "ridge", "value": "#475569", "description": "Far ridge" },
+    { "name": "rock", "value": "#64748b", "description": "Near peak" },
+    { "name": "snow", "value": "#f8fafc", "description": "Snow" },
+    { "name": "pine", "value": "#15803d", "description": "Pine foliage" },
+    { "name": "pine-dark", "value": "#14532d", "description": "Deep foliage and shore" },
+    { "name": "trunk", "value": "#7c2d12", "description": "Trunks and timber" },
+    { "name": "water", "value": "#0284c7", "description": "Lake water" },
+    { "name": "water-light", "value": "#38bdf8", "description": "Ripples" },
+    { "name": "stone", "value": "#94a3b8", "description": "Stepping stones" },
+    { "name": "reed", "value": "#4d7c0f", "description": "Reeds" }
   ]
 }
 ```
@@ -276,8 +290,116 @@ Geometry notes worth keeping in mind:
 - A `polygon` and a `line` carry `points` — an array of `[x, y]` pairs.
 - A `path` carries `pathData` (SVG path syntax); an `alongPath` element uses
   `pathData` as the guide its children follow.
-- Compositions (`boolean`, `offset`, `projection`, `repeat`) act on their child
-  elements; give each child `parentId` equal to the composition's `id`.
+- A composition element acts on its children — the elements whose `parentId` is
+  the composition's `id`. `group` moves its children together; `repeat` lays
+  `count` copies of each child in a row along the element's local x-axis,
+  `spacing` apart, the first at the origin; `alongPath` places `count` copies
+  evenly along the guide and turns each to the path's direction; `boolean` folds
+  the children with `operation` (`union`, `subtract` removes later children from
+  the first, `intersect` keeps their common area); `offset` outlines each child
+  by `distance` (positive outward); and `projection` maps the children onto
+  `axis` (`x`, `y`, or `isometric`). A grid is a row placed inside a group and
+  translated into further rows.
+
+### Worked example: a complex illustration
+
+A detailed request is not a reason to simplify, and the language carries
+complexity through composition rather than a wider set of shape kinds: build
+the illustration from its parts by grouping them and layering the composition
+elements over them. Never reduce a detailed request to a single mark or drop
+the parts it names.
+
+"An alpine lake at dawn — mountains with snow, a pine forest, a lake with reeds
+and a trail of stepping stones, and a low sun" becomes the scene below. It
+exercises nested groups; a cloud row and a pine forest (`repeat`); a snow cap
+(`boolean` intersect) and a glacier (`boolean` subtract); a lake (`boolean`
+union) with ripples and reeds placed along guides (`alongPath`); a sun halo
+(`offset`); an isometric boardwalk (`projection`); and a planting row laid out
+by an `equalSpacing` constraint. It validates, compiles, and exports as written
+against the palette above; read the schema for a composition kind only when you
+are about to use it.
+
+```json
+{
+  "id": "alpine-lake",
+  "projectId": "project",
+  "name": "Alpine lake at dawn",
+  "formatVersion": "0.2",
+  "paletteId": "brand",
+  "title": "Alpine lake at dawn",
+  "canvas": {"width": 800, "height": 600, "background": "transparent"},
+  "elements": [
+    {"id": "sky", "sceneId": "alpine-lake", "order": 0, "kind": "rect", "geometry": {"x": 0, "y": 0, "width": 800, "height": 600}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "name": "Sky", "fill": {"kind": "token", "ref": "sky"}},
+    {"id": "sun", "sceneId": "alpine-lake", "order": 1, "kind": "group", "geometry": {}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "name": "Sun"},
+    {"id": "halo", "sceneId": "alpine-lake", "order": 0, "kind": "offset", "geometry": {"distance": 30}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 0.55, "visible": true, "parentId": "sun", "name": "Halo", "fill": {"kind": "token", "ref": "dawn"}},
+    {"id": "halo-src", "sceneId": "alpine-lake", "order": 0, "kind": "ellipse", "geometry": {"x": 600, "y": 60, "width": 110, "height": 110}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "halo", "name": "Halo source"},
+    {"id": "sun-disc", "sceneId": "alpine-lake", "order": 1, "kind": "ellipse", "geometry": {"x": 600, "y": 60, "width": 110, "height": 110}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "sun", "name": "Disc", "fill": {"kind": "token", "ref": "sun"}},
+    {"id": "clouds", "sceneId": "alpine-lake", "order": 2, "kind": "repeat", "geometry": {"count": 2, "spacing": 250}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "name": "Clouds"},
+    {"id": "cloud", "sceneId": "alpine-lake", "order": 0, "kind": "group", "geometry": {}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "clouds", "name": "Cloud"},
+    {"id": "cloud-a", "sceneId": "alpine-lake", "order": 0, "kind": "ellipse", "geometry": {"x": 90, "y": 120, "width": 150, "height": 50}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "cloud", "fill": {"kind": "token", "ref": "paper"}},
+    {"id": "cloud-b", "sceneId": "alpine-lake", "order": 1, "kind": "ellipse", "geometry": {"x": 150, "y": 100, "width": 130, "height": 60}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "cloud", "fill": {"kind": "token", "ref": "paper"}},
+    {"id": "cloud-c", "sceneId": "alpine-lake", "order": 2, "kind": "ellipse", "geometry": {"x": 210, "y": 130, "width": 140, "height": 45}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "cloud", "fill": {"kind": "token", "ref": "paper"}},
+    {"id": "haze", "sceneId": "alpine-lake", "order": 3, "kind": "group", "geometry": {}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "name": "Haze"},
+    {"id": "haze-band", "sceneId": "alpine-lake", "order": 0, "kind": "rect", "geometry": {"x": 0, "y": 300, "width": 800, "height": 72}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 0.4, "visible": true, "parentId": "haze", "fill": {"kind": "token", "ref": "mist"}},
+    {"id": "peaks", "sceneId": "alpine-lake", "order": 4, "kind": "group", "geometry": {}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "name": "Peaks"},
+    {"id": "peak-far", "sceneId": "alpine-lake", "order": 0, "kind": "polygon", "geometry": {"points": [[40, 350], [260, 150], [480, 350]]}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "peaks", "fill": {"kind": "token", "ref": "ridge"}},
+    {"id": "peak-near", "sceneId": "alpine-lake", "order": 1, "kind": "polygon", "geometry": {"points": [[300, 350], [520, 120], [740, 350]]}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "peaks", "fill": {"kind": "token", "ref": "rock"}},
+    {"id": "snow", "sceneId": "alpine-lake", "order": 2, "kind": "boolean", "geometry": {"operation": "intersect"}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "peaks", "name": "Snow cap", "fill": {"kind": "token", "ref": "snow"}},
+    {"id": "snow-mask", "sceneId": "alpine-lake", "order": 0, "kind": "polygon", "geometry": {"points": [[455, 205], [520, 120], [585, 205], [520, 235]]}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "snow"},
+    {"id": "snow-clip", "sceneId": "alpine-lake", "order": 1, "kind": "polygon", "geometry": {"points": [[430, 350], [520, 120], [610, 350]]}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "snow"},
+    {"id": "glacier", "sceneId": "alpine-lake", "order": 3, "kind": "boolean", "geometry": {"operation": "subtract"}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "peaks", "name": "Glacier", "fill": {"kind": "token", "ref": "paper"}},
+    {"id": "ice-mass", "sceneId": "alpine-lake", "order": 0, "kind": "polygon", "geometry": {"points": [[70, 370], [130, 300], [200, 370]]}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "glacier"},
+    {"id": "ice-cut", "sceneId": "alpine-lake", "order": 1, "kind": "polygon", "geometry": {"points": [[110, 370], [150, 300], [150, 370]]}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "glacier"},
+    {"id": "ridge", "sceneId": "alpine-lake", "order": 5, "kind": "group", "geometry": {}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "name": "Near shore"},
+    {"id": "hillside", "sceneId": "alpine-lake", "order": 0, "kind": "polygon", "geometry": {"points": [[0, 430], [220, 320], [430, 430], [640, 360], [800, 320], [800, 600], [0, 600]]}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "ridge", "fill": {"kind": "token", "ref": "pine-dark"}},
+    {"id": "pond", "sceneId": "alpine-lake", "order": 6, "kind": "group", "geometry": {}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "name": "Lake"},
+    {"id": "pond-shape", "sceneId": "alpine-lake", "order": 0, "kind": "boolean", "geometry": {"operation": "union"}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "pond", "name": "Water", "fill": {"kind": "token", "ref": "water"}},
+    {"id": "pond-a", "sceneId": "alpine-lake", "order": 0, "kind": "ellipse", "geometry": {"x": 110, "y": 420, "width": 320, "height": 100}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "pond-shape"},
+    {"id": "pond-b", "sceneId": "alpine-lake", "order": 1, "kind": "ellipse", "geometry": {"x": 330, "y": 420, "width": 320, "height": 100}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "pond-shape"},
+    {"id": "ripples", "sceneId": "alpine-lake", "order": 1, "kind": "alongPath", "geometry": {"pathData": "M160 468 L620 468", "count": 5}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "pond", "name": "Ripples"},
+    {"id": "ripple", "sceneId": "alpine-lake", "order": 0, "kind": "ellipse", "geometry": {"x": -22, "y": -5, "width": 44, "height": 10}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 0.8, "visible": true, "parentId": "ripples", "fill": {"kind": "token", "ref": "water-light"}},
+    {"id": "reeds", "sceneId": "alpine-lake", "order": 2, "kind": "alongPath", "geometry": {"pathData": "M138 512 L246 446", "count": 6}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "pond", "name": "Reeds"},
+    {"id": "reed", "sceneId": "alpine-lake", "order": 0, "kind": "rect", "geometry": {"x": -3, "y": -46, "width": 6, "height": 46}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "reeds", "fill": {"kind": "token", "ref": "reed"}},
+    {"id": "forest", "sceneId": "alpine-lake", "order": 7, "kind": "group", "geometry": {}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "name": "Forest"},
+    {"id": "pines", "sceneId": "alpine-lake", "order": 0, "kind": "repeat", "geometry": {"count": 6, "spacing": 108}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "forest", "name": "Pines"},
+    {"id": "pine", "sceneId": "alpine-lake", "order": 0, "kind": "group", "geometry": {}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "pines", "name": "Pine"},
+    {"id": "trunk", "sceneId": "alpine-lake", "order": 0, "kind": "rect", "geometry": {"x": 76, "y": 388, "width": 8, "height": 46}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "pine", "fill": {"kind": "token", "ref": "trunk"}},
+    {"id": "canopy-low", "sceneId": "alpine-lake", "order": 1, "kind": "polygon", "geometry": {"points": [[80, 300], [46, 420], [114, 420]]}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "pine", "fill": {"kind": "token", "ref": "pine"}},
+    {"id": "canopy-high", "sceneId": "alpine-lake", "order": 2, "kind": "polygon", "geometry": {"points": [[80, 344], [40, 442], [120, 442]]}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "pine", "fill": {"kind": "token", "ref": "pine-dark"}},
+    {"id": "shrub-a", "sceneId": "alpine-lake", "order": 8, "kind": "group", "geometry": {}, "transform": {"translateX": 540.0, "translateY": 438.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "name": "Shrub A"},
+    {"id": "shrub-a-leaf", "sceneId": "alpine-lake", "order": 0, "kind": "ellipse", "geometry": {"x": -26, "y": -18, "width": 52, "height": 36}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "shrub-a", "fill": {"kind": "token", "ref": "pine"}},
+    {"id": "shrub-b", "sceneId": "alpine-lake", "order": 9, "kind": "group", "geometry": {}, "transform": {"translateX": 600.0, "translateY": 438.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "name": "Shrub B"},
+    {"id": "shrub-b-leaf", "sceneId": "alpine-lake", "order": 0, "kind": "ellipse", "geometry": {"x": -26, "y": -18, "width": 52, "height": 36}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "shrub-b", "fill": {"kind": "token", "ref": "pine"}},
+    {"id": "shrub-c", "sceneId": "alpine-lake", "order": 10, "kind": "group", "geometry": {}, "transform": {"translateX": 660.0, "translateY": 438.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "name": "Shrub C"},
+    {"id": "shrub-c-leaf", "sceneId": "alpine-lake", "order": 0, "kind": "ellipse", "geometry": {"x": -26, "y": -18, "width": 52, "height": 36}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "shrub-c", "fill": {"kind": "token", "ref": "pine"}},
+    {"id": "flowers", "sceneId": "alpine-lake", "order": 10, "kind": "group", "geometry": {}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "name": "Wildflowers"},
+    {"id": "flower-0", "sceneId": "alpine-lake", "order": 0, "kind": "ellipse", "geometry": {"x": 646, "y": 470, "width": 16, "height": 16}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "flowers", "fill": {"kind": "token", "ref": "accent"}},
+    {"id": "flower-1", "sceneId": "alpine-lake", "order": 1, "kind": "ellipse", "geometry": {"x": 676, "y": 488, "width": 16, "height": 16}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "flowers", "fill": {"kind": "token", "ref": "accent"}},
+    {"id": "flower-2", "sceneId": "alpine-lake", "order": 2, "kind": "ellipse", "geometry": {"x": 704, "y": 468, "width": 16, "height": 16}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "flowers", "fill": {"kind": "token", "ref": "accent"}},
+    {"id": "trail", "sceneId": "alpine-lake", "order": 11, "kind": "alongPath", "geometry": {"pathData": "M50 566 C 250 520 430 596 760 506", "count": 9}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "name": "Trail"},
+    {"id": "step", "sceneId": "alpine-lake", "order": 0, "kind": "ellipse", "geometry": {"x": -16, "y": -8, "width": 32, "height": 16}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "trail", "fill": {"kind": "token", "ref": "stone"}},
+    {"id": "pier", "sceneId": "alpine-lake", "order": 12, "kind": "projection", "geometry": {"axis": "isometric"}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "name": "Pier"},
+    {"id": "pier-deck", "sceneId": "alpine-lake", "order": 0, "kind": "rect", "geometry": {"x": 560, "y": 430, "width": 140, "height": 26}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "pier", "fill": {"kind": "token", "ref": "trunk"}},
+    {"id": "caption", "sceneId": "alpine-lake", "order": 13, "kind": "text", "geometry": {"text": "Alpine Lake", "fontSize": 42, "x": 48, "y": 76, "align": "start", "lineHeight": 48, "letterSpacing": 0}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "name": "Title", "fill": {"kind": "token", "ref": "ink"}}
+  ],
+  "constraints": [
+    {"id": "shrub-row", "sceneId": "alpine-lake", "kind": "equalSpacing", "elementIds": ["shrub-a", "shrub-b", "shrub-c"], "axis": "x", "value": 44}
+  ]
+}
+```
+
+Compose it in passes rather than in one shot:
+
+1. Block in the large shapes first — sky, peaks, shore, lake — as siblings with
+   increasing `order`, and validate.
+2. Group what belongs together (the sun, the lake, the forest) and add the
+   detail inside each group, where the group's transform carries it.
+3. Reach for a composition element for repetition, booleans, paths, and
+   outlines, and give every operand `parentId` equal to the composition's `id`.
+4. Render and inspect. A small shape lost behind a larger one is an `order`
+   problem; a repeated row that drifts is a `spacing` problem; a copy facing the
+   wrong way along a guide is an `alongPath` direction problem; a copy far from
+   where you expected is a composition-relative coordinate problem.
 
 ## 5. Validate, then compile
 
@@ -381,16 +503,17 @@ in one line, and proceed rather than stopping to ask:
 |---|---|
 | Canvas size | 512×512 |
 | Background | `transparent` |
-| Scope of the graphic | One simple mark — a primary shape plus an optional wordmark |
+| Scope of the graphic | When the request leaves it open, one simple mark — a primary shape plus an optional wordmark. A request that asks for a detailed or complex illustration is authored in full |
 | Shape placement | Centred, with an even margin from each edge |
 | Colours | A palette named for the request (`accent`, `ink`, `paper`) so it restyles |
 | Text font | The bundled open-licensed sans (omit `fontId`) |
 | Recipe | The project's `defaultRecipeId`; set `recipeId` only when the request names a look |
 | Icon set | Every icon on the same canvas and style, each exported to its own file |
 
-Keep the first version minimal and valid, render it, then refine toward the
-request. A print-ready or highly detailed drawing is a later iteration, not a
-reason to stall.
+Keep the first version valid and renderable, then refine it toward the request:
+block in the composition, validate, render, and add detail between passes. A
+detailed or complex request is built out over those passes, not simplified to a
+simple mark.
 
 ## 9. Licensing and cost
 

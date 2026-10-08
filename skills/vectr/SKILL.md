@@ -1,16 +1,17 @@
 ---
 name: vectr
 description: >
-  Author Vectr vector graphics from a natural-language request: logos, icons,
-  wordmarks, badges, diagrams, and simple illustrations built as Vectr scene
-  documents and rendered to SVG or PNG. Use this skill whenever the user asks
-  for a vector graphic, logo, or icon set and Vectr is the target toolchain,
-  including when they only describe the picture and never say "Vectr": read the
-  scene schema, author the scene, validate it, render a preview, and refine the
-  result. Also use it to edit, restyle, or debug an existing Vectr scene, or to
-  wire the Vectr tools into an agent. Do not use it for photographic or bitmap
-  image generation, for hand-writing raw SVG or HTML/CSS, or for graphics in
-  another tool's format.
+  Author Vectr vector graphics from a natural-language request: logos,
+  wordmarks, icons and icon sets, badges, diagrams, and illustrations from a
+  simple mark to a very complex, many-element composition. Use this skill
+  whenever the user asks for a vector graphic, logo, or icon set and Vectr is
+  the target toolchain, including when they only describe the picture and never
+  say "Vectr": read the scene schema, author the scene, validate it, render a
+  preview, and refine the result — authoring, validating, rendering and
+  exporting, editing, restyling through palette tokens, and debugging. Also use
+  it to wire the Vectr tools into an agent. Do not use it for photographic or
+  bitmap image generation, for hand-writing raw SVG or HTML/CSS, or for graphics
+  in another tool's format.
 version: 0.1.0
 license: MIT OR Apache-2.0
 compatibility: Requires the Vectr toolchain — the `vectr` CLI or the `vectr-mcp` server — available to the agent.
@@ -25,9 +26,13 @@ tools are the source of truth; this skill is the workflow around them.
 
 **Read `references/authoring-guide.md` before authoring your first scene, and
 treat it as the single source of the procedure.** It holds the end-to-end
-walkthrough, the worked example, the rules the schema does not state, the
-default set for ambiguous requests, and the inspect-and-correct loop. This file
-only orients you: the workflow, the tool surface, and the version check.
+walkthrough, the worked examples for a simple mark and for a very complex
+illustration, the rules the schema does not state, the default set for
+ambiguous requests, and the inspect-and-correct loop. This file only orients
+you: the workflow, the tool surface, and the version check.
+
+A request's complexity sets the scene's scope: a detailed illustration is
+composed in full from its elements, never simplified to a simple mark.
 
 ## Workflow
 
