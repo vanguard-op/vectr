@@ -29,8 +29,8 @@ Response Exit 0: success; output written, or nothing written under --check. The 
 Errors: Exit 1 (scene invalid; diagnostics printed), Exit 2 (usage error, missing/unreadable input, or an unknown schema type — the type error lists similar type names), Exit 3 (compilation failure: constraint conflict, cycle, defined size limit), Exit 4 (export dependency missing: rasterizer or font), Exit 5 (output I/O failure: unwritable path). Every non-zero exit prints a structured diagnostic with its location; no partial output is written and existing files are left untouched (NFR-011).
 
 ### C-005: MCP vectr-mcp server
-Status: Frozen
-Auth: Local. The server binds to the loopback interface by default and widens filesystem scope only on explicit opt-in; it makes no network calls unless configured (NFR-024).
+Status: Frozen (revision 2)
+Auth: Local. The server serves over stdio by default, with an opt-in loopback HTTP listener opened by an explicit bind flag; it widens filesystem scope only on explicit opt-in and makes no network calls unless configured (NFR-024).
 Tools: validate (scene → diagnostics); compile (scene → render model); render (scene, format svg|png, width?, height?, density?, background? → the rendered output at the requested path); schema (full|compact|type:"<name>" → the language contract). Each tool publishes a discoverable JSON schema for its input and output; `tools/list` returns all four with their schemas and `tools/call` invokes one with arguments matching its schema.
 Response Ok: the tool's structured result; `compile` returns the render model, `render` returns the written output's path, `validate` and `compile` return diagnostics alongside the result. Concurrent calls are safe with no shared mutable state (FEAT-021, FEAT-019).
 Errors: a structured error (code, message, location) for an invalid scene or an unsupported capability; never a crash and never a partial file left behind (NFR-011).

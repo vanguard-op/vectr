@@ -544,6 +544,10 @@ version = "0.1.0"
 [[package]]
 name = "vectr-mcp"
 version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "vectr-core",
+]
 
 [[package]]
 name = "yoke"

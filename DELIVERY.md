@@ -74,8 +74,8 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | T-038 | FEAT-018 | backend-engineer | Done | C-001, C-002, C-004 |
 | T-042 | FEAT-018 | backend-engineer | Done | C-002 |
 | T-039 | FEAT-017 | backend-engineer | Done | C-002, C-004 |
-| T-040 | FEAT-019 | ai-engineer | In Progress | C-002, C-005 |
-| T-041 | FEAT-020 | ai-engineer | Backlog | C-004, C-005 |
+| T-040 | FEAT-019 | ai-engineer | Done | C-002, C-005 |
+| T-041 | FEAT-020 | ai-engineer | In Progress | C-004, C-005 |
 
 ## Decisions log
 | # | Decision | Rationale | By |
@@ -110,6 +110,7 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | D-028 | A scene `recipeId` or project `defaultRecipeId` that does not resolve is a missing project asset (exit 2, `E_PROJECT_ASSET`), mirroring a missing palette. | The docs classify no error for an unresolved recipe reference; the project loader already treats other missing style documents this way. | lead |
 | D-029 | A colour value is a validated capability: any format SVG supports, optionally carrying alpha, so fill and stroke carry independent transparency; a value that is not such a colour is a located error and no output is produced. | The user decided alpha is worth having as a supported capability; the docs now define the colour model (FEAT-005, FEAT-018) where values were previously an unchecked pass-through. | user |
 | D-030 | Single-layer shading is a real feature (FEAT-028) scheduled in Phase 6; until it ships, a recipe that requests shading it does not apply reports a warning rather than rendering a silent flat result. | The user chose to build the look rather than retract it; the flat recipe's promise is reconciled to point at the new feature. | user |
+| D-031 | The MCP server serves over stdio by default, with an opt-in loopback HTTP listener behind an explicit bind flag, rather than binding a port by default. | MCP's canonical local transport is a subprocess over stdio, which is strictly more local than a listening socket and matches NFR-024's local-only intent. Clarifies C-005. | lead |
 
 ## Definition of Done
 - Every acceptance criterion in the task's FEAT file is met, including its edge cases and failure states.
