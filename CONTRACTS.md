@@ -22,7 +22,7 @@ Response Ok: SVG text, PNG bytes, or PDF bytes whose appearance matches the rend
 Errors: none at this seam (compilation already succeeded); exporter findings are warnings: unsupported-feature (omitted with a warning), rasterizer-missing, font-missing, missing-glyph
 
 ### C-004: CLI vectr
-Status: Frozen (revision 7)
+Status: Implemented
 Auth: None. Runs as the local user; no authentication and no network (docs/Vectr/architecture.md, "Cross-Cutting Concerns").
 Request: vectr init [dir]; vectr validate [<scene>] [--json]; vectr compile [<scene>] [--out <file>] [--check]; vectr export [<scene>] --format svg|png [--out <file>] [--width <n>] [--height <n>] [--density <n>] [--background <color|transparent>]; vectr schema [--type <name>] [--compact]. `<scene>` is a scene identifier resolved among the project's scene documents; the project is found from the working directory. Omitting `<scene>` uses the project's `defaultSceneId`; a project that names no default is an error rather than a choice among its scenes. (render and inspect reserved for FEAT-022.)
 Response Exit 0: success; output written, or nothing written under --check. The schema command prints the published language contract (FEAT-017). `init` writes the project scaffold — configuration, the scene directory holding a starter scene the project names as its default, the default recipe, and an authoring guide for coding agents at the project root; it writes no scene document at the project root (FEAT-016, FEAT-020).
