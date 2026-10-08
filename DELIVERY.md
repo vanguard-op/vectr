@@ -1,7 +1,7 @@
 # Delivery
 
 ## Source of truth
-docs/Vectr/ — git submodule, pinned at 974979a, remote https://github.com/vanguard-op/vectr-docs.git. The docs are authoritative for what to build; this file tracks state only and never restates the spec.
+docs/Vectr/ — git submodule, pinned at f026ecf, remote https://github.com/vanguard-op/vectr-docs.git. The docs are authoritative for what to build; this file tracks state only and never restates the spec.
 
 ## Team & file ownership
 | Member | Owns |
@@ -75,17 +75,20 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | T-005 | FEAT-005 | backend-engineer | Done | C-001 |
 | T-006 | FEAT-004 | backend-engineer | Done | C-003 |
 | T-007 | FEAT-011 | backend-engineer | Done | C-002, C-003 |
-| T-008 | FEAT-012 | backend-engineer | In Progress | C-002 |
-| T-009 | FEAT-013 | backend-engineer | Ready | C-002 |
-| T-010 | FEAT-024 | backend-engineer | Backlog | C-002 |
-| T-011 | FEAT-016 | backend-engineer | Backlog | C-004 |
+| T-008 | FEAT-012 | backend-engineer | Done | C-002 |
+| T-009 | FEAT-013 | backend-engineer | Done | C-002 |
+| T-010 | FEAT-024 | backend-engineer | Blocked | C-002 |
+| T-011 | FEAT-016 | backend-engineer | Done | C-004 |
+| T-020 | FEAT-002, FEAT-011 | backend-engineer | In Progress | C-001, C-003 |
+| T-022 | FEAT-016, FEAT-024 | backend-engineer | Backlog | C-004 |
 | T-012 | — (foundation) | infra-engineer | Done | — |
 | T-013 | FEAT-002, FEAT-003 | product-shaper | Done | C-001 |
 | T-014 | FEAT-002, FEAT-003 | backend-engineer | Done | C-001, C-003 |
 | T-015 | — (foundation) | backend-engineer | Done | — |
 | T-016 | FEAT-011 | backend-engineer | Done | C-003 |
 | T-017 | FEAT-011 | backend-engineer | Done | C-001, C-002, C-003 |
-| T-018 | FEAT-011 | backend-engineer | Ready | C-003 |
+| T-018 | FEAT-011 | backend-engineer | Done | C-003 |
+| T-019 | — (foundation) | infra-engineer | Done | — |
 
 ## Decisions log
 | # | Decision | Rationale | By |
