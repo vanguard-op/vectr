@@ -25,7 +25,7 @@ Errors: none at this seam (compilation already succeeded); exporter findings are
 Status: Frozen (revision 6)
 Auth: None. Runs as the local user; no authentication and no network (docs/Vectr/architecture.md, "Cross-Cutting Concerns").
 Request: vectr init [dir]; vectr validate <scene> [--json]; vectr compile <scene> [--out <file>] [--check]; vectr export <scene> --format svg|png [--out <file>] [--width <n>] [--height <n>] [--density <n>] [--background <color|transparent>]; vectr schema [--type <name>] [--compact]. (render and inspect reserved for FEAT-022.)
-Response Exit 0: success; output written, or nothing written under --check. The schema command prints the published language contract (FEAT-017).
+Response Exit 0: success; output written, or nothing written under --check. The schema command prints the published language contract (FEAT-017). `init` writes the project scaffold — configuration, a starter scene, the default recipe, and an authoring guide for coding agents at the project root (FEAT-020).
 Errors: Exit 1 (scene invalid; diagnostics printed), Exit 2 (usage error, missing/unreadable input, or an unknown schema type — the type error lists similar type names), Exit 3 (compilation failure: constraint conflict, cycle, defined size limit), Exit 4 (export dependency missing: rasterizer or font), Exit 5 (output I/O failure: unwritable path). Every non-zero exit prints a structured diagnostic with its location; no partial output is written and existing files are left untouched (NFR-011).
 
 ### C-005: MCP vectr-mcp server
