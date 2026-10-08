@@ -66,17 +66,7 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 |---|---|---|
 | Phase 1 — First Graphic | 2026-10-08 | FEAT-001, FEAT-002, FEAT-003, FEAT-004, FEAT-005, FEAT-011, FEAT-012, FEAT-013, FEAT-016, FEAT-024 shipped; C-001–C-004 implemented; A-001–A-004 sourced. |
 | Phase 2 — Style Core | 2026-10-08 | FEAT-027, FEAT-007, FEAT-008, FEAT-009, FEAT-010 shipped; the element paint model unified with linear/radial gradients; recipe selection wired through the CLI; C-001–C-003 re-implemented at revision 5. |
-
-### Active phase: Phase 3 — Any Model Can Author
-| Task | Feature | Owner | Status | Contract |
-|---|---|---|---|---|
-| T-037 | FEAT-007 | backend-engineer | Done | C-002 |
-| T-038 | FEAT-018 | backend-engineer | Done | C-001, C-002, C-004 |
-| T-042 | FEAT-018 | backend-engineer | Done | C-002 |
-| T-039 | FEAT-017 | backend-engineer | Done | C-002, C-004 |
-| T-040 | FEAT-019 | ai-engineer | Done | C-002, C-005 |
-| T-041 | FEAT-020 | ai-engineer | Done | C-004, C-005 |
-| T-043 | FEAT-016, FEAT-020 | backend-engineer | Done | C-004 |
+| Phase 3 — Any Model Can Author | 2026-10-08 | FEAT-017, FEAT-018, FEAT-019, FEAT-020 shipped; validated alpha colour model (FEAT-005) and the shading-request warning (FEAT-007); C-001–C-005 implemented. |
 
 ## Decisions log
 | # | Decision | Rationale | By |
