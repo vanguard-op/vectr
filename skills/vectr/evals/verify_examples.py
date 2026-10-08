@@ -3,7 +3,9 @@
 
 The skill's value is that a model can follow the authoring guide against the
 published schema and the installed tool. These checks pin that contract: the
-frontmatter and JSON are well-formed, and the guide's own worked example — and
+frontmatter and JSON are well-formed, the guide stands alone as the single
+source of the authoring procedure (the scaffold embeds it verbatim, so it must
+not depend on the skill's other files), and the guide's own worked example — and
 the scene template — validate, compile, and export through the real toolchain.
 
 Nothing here grades authored scenes; measuring cross-model authoring quality is
@@ -89,6 +91,32 @@ def check_static(skill_dir: Path) -> list[str]:
         raise CheckError("evals.json skill_name does not match the skill folder")
 
     guide = (skill_dir / "references/authoring-guide.md").read_text()
+
+    # The guide is the single source of the authoring procedure: it is what the
+    # scaffold embeds into a project, so it must carry the whole workflow, name
+    # the versions it targets, and stand alone — a scaffolded project has none
+    # of the skill's other files.
+    for command in ("vectr schema", "vectr validate", "vectr compile", "vectr export"):
+        if command not in guide:
+            raise CheckError(f"the guide does not teach `{command}`")
+    for section in (
+        "Inspect and correct",
+        "Retry once",
+        "Never export",
+        "Defaults for an ambiguous request",
+        "Licensing",
+    ):
+        if section not in guide:
+            raise CheckError(f"the guide is missing `{section}`")
+    if version and version not in guide:
+        raise CheckError(f"the guide does not name the tool version {version!r}")
+    for skill_only in ("SKILL.md", "assets/scene.template.json", "evals/"):
+        if skill_only in guide:
+            raise CheckError(
+                f"the guide references the skill-only {skill_only!r}; it must stand "
+                "alone so the scaffold can embed it verbatim"
+            )
+
     blocks = fenced_json_blocks(guide)
     palette = next((b for b in blocks if "tokens" in b), None)
     stroke = next((b for b in blocks if {"cap", "join", "width"} <= set(b)), None)

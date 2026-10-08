@@ -1,13 +1,12 @@
-# Vectr authoring guide
+# Authoring Vectr scenes
 
-This is the worked procedure behind the Vectr skill: how to read the language
-contract, author a scene a model has never been trained on, validate it, render
-it, and correct what the render shows. Follow it in order.
+This is the procedure for turning a described graphic into a Vectr scene: plain
+JSON that compiles to a render model and exports as SVG or PNG. Work through it
+in order. It is written to be read alongside the published schema, which is the
+source of truth for every type and every allowed value; this guide adds the
+workflow and the rules the schema does not spell out.
 
-A Vectr scene is plain JSON. A project is a directory holding the scene, a
-palette, stroke profiles, a recipe, and optionally gradients and font assets. The
-toolchain parses the scene, validates it, resolves it against the project's
-style, compiles one render model, and exports SVG or PNG from that model.
+This guide targets `vectr` 0.1.0 and scene `formatVersion` `0.2`.
 
 ## 0. Check the tool and the contract
 
@@ -17,42 +16,70 @@ Confirm the installed tool before authoring:
 vectr --version        # prints: vectr 0.1.0
 ```
 
-The skill declares its own version in `SKILL.md` (`version: 0.1.0`). If the two
-differ, report the mismatch and name both versions before authoring; the skill
-was written for a specific build. Over MCP, read `serverInfo.version` from the
-`initialize` response instead of shelling out.
+If it prints a different version, stop and report the mismatch, naming both
+versions: this guide was written for 0.1.0, and a scene written against a
+different contract may not compile. The same applies if `vectr schema` fails
+with `E_SCHEMA_VERSION` — the installed tool and the published contract
+disagree; report it rather than working around it. Over MCP, read
+`serverInfo.version` from the `initialize` response instead of shelling out.
 
-The scene language is at `formatVersion` `"0.2"`. The published schema carries
-`x-vectr-formatVersion: "0.2"`; if `vectr schema` fails with `E_SCHEMA_VERSION`,
-the contract and the tool disagree and you should report it, not work around it.
+The scene language is at `formatVersion` `"0.2"`; the published schema carries
+`x-vectr-formatVersion: "0.2"`.
 
-## 1. Scaffold a project
+## 1. What a project holds
 
-If the working directory is not already a Vectr project:
-
-```sh
-vectr init habit-tracker
-```
-
-This writes `vectr.project.json`, an empty starter scene at
-`scenes/example.json`, a default flat recipe at `recipes/flat.json`, and the
-entity folders `scenes/ palettes/ strokes/ gradients/ recipes/ assets/ dist/`.
-Running `vectr init` again reports the project as already initialized and leaves
-every file untouched.
-
-A project references its documents by `id`, never by file name, so the file can
-be called anything. The loader looks in the matching folder:
+A project is a directory with `vectr.project.json` and one folder per document
+kind. Documents are referenced by `id`, never by file name, so a file can be
+called anything:
 
 | Document | Folder | Referenced by |
 |---|---|---|
 | Scene | `scenes/` | the file you run |
-| Palette | `palettes/` | `scene.paletteId`, and paint `ref` for `kind: "token"` |
+| Palette | `palettes/` | `scene.paletteId`, and a paint `ref` with `kind: "token"` |
 | StrokeProfile | `strokes/` | `element.stroke.profileId` |
-| StyleRecipe | `recipes/` | `scene.recipeId`, or the project's `defaultRecipeId` |
-| Gradient | `gradients/` | paint `ref` for `kind: "gradient"` |
+| StyleRecipe | `recipes/` | `scene.recipeId`, else the project's `defaultRecipeId` |
+| Gradient | `gradients/` | a paint `ref` with `kind: "gradient"` |
 | Asset (font) | `assets/` | `element.fontId` on a text element |
 
-## 2. Read the schema for the types you will write
+Run the tools from inside the project so the root is found. If there is no
+project yet, scaffold one with `vectr init [dir]`; it writes the configuration,
+a starter scene under `scenes/`, a default recipe, the entity folders
+`scenes/ palettes/ strokes/ gradients/ recipes/ assets/ dist/`, and this guide
+at the project root. Running it again reports the project as already
+initialized and leaves every file untouched.
+
+## 2. The workflow
+
+1. Read the schema for the types you will write (`vectr schema`).
+2. Author the scene as JSON.
+3. Validate it (`vectr validate`). Correct and re-validate until it passes.
+4. Compile with `--check` to confirm the project's references resolve
+   (`vectr compile <scene> --check`).
+5. Render a PNG preview and look at it against the request
+   (`vectr export <scene> --format png`).
+6. If it does not match, correct the scene and re-render, then export the final
+   SVG and PNG (`vectr export <scene> --format svg`).
+
+Never render before validation passes, and never export from a scene that failed
+to compile. A failed step stops the pipeline; there is no partial output.
+
+Prefer the MCP tools when the host exposes them; otherwise use the CLI. Both
+produce identical results.
+
+| Step | MCP tool | CLI |
+|---|---|---|
+| Read the contract | `schema` `{form?, type?}` | `vectr schema [--compact] [--type <name>]` |
+| Validate | `validate` `{scene, project?}` | `vectr validate <scene> [--json]` |
+| Compile | `compile` `{scene, project?}` | `vectr compile <scene> [--check] [--out <file>]` |
+| Render | `render` `{scene, format, out?, width?, height?, density?, background?}` | `vectr export <scene> --format svg\|png [--out <file>] [--width <n>] [--height <n>] [--density <n>] [--background <color\|transparent>]` |
+
+An MCP tool failure is a result with `isError: true` and a body
+`{code, message, location, diagnostics}`; read the whole `diagnostics` list, not
+just `message`. A CLI failure exits non-zero, prints a diagnostic with its
+location, and writes nothing. The `scene` argument to an MCP tool is either the
+scene document as JSON text or a path to one.
+
+## 3. Read the schema for the types you will write
 
 Do not author from memory. Read the contract, in full or one type at a time:
 
@@ -78,7 +105,7 @@ closest names listed. The whole contract is large, so for a basic scene read
 rather than dumping everything into context. Over MCP the same reads are
 `schema` with `{"type": "Element"}` or `{"form": "compact"}`.
 
-### What the schema does not state
+### Rules the schema does not state
 
 The contract gives properties, types, and allowed values. These rules are
 enforced by the engine and are easy to miss:
@@ -90,8 +117,8 @@ enforced by the engine and are easy to miss:
 - **Paints are tokens or gradients, never raw colours.** An element's fill or
   stroke paint is `{"kind": "token", "ref": "<tokenName>"}` or
   `{"kind": "gradient", "ref": "<gradientId>"}`. Every colour an element draws
-  comes from the palette; the only raw colour fields are the scene's
-  `canvas.background` and an export `background` override.
+  comes from the palette; the only raw colour fields are the canvas
+  `background` and an export `background` override.
 - **A stroke pairs a profile and a paint.** `{"profileId": "...", "paint":
   {...}}`; the profile supplies width, cap, and join, the paint supplies colour.
   Both are required, and the profile id must resolve under `strokes/`.
@@ -113,10 +140,10 @@ enforced by the engine and are easy to miss:
   compilation. Leave them out for a simple scene.
 - **`formatVersion` must be `"0.2"`.**
 
-## 3. Author the scene
+## 4. Author the scene
 
-Start from `assets/scene.template.json` or the starter scene and edit it. The
-skeleton of every valid scene:
+Start from the skeleton below or from the starter scene under `scenes/`, and
+edit it. The skeleton of every valid scene:
 
 ```json
 {
@@ -252,7 +279,7 @@ Geometry notes worth keeping in mind:
 - Compositions (`boolean`, `offset`, `projection`, `repeat`) act on their child
   elements; give each child `parentId` equal to the composition's `id`.
 
-## 4. Validate, then compile
+## 5. Validate, then compile
 
 ```sh
 vectr validate scenes/logo.json
@@ -273,9 +300,11 @@ array:
 ```
 
 The MCP tools return the same diagnostics in the tool body under `diagnostics`,
-with `isError: true` on failure.
+with `isError: true` on failure. Exit codes: `0` success, `1` invalid scene, `2`
+usage or unreadable input, `3` compilation failure, `4` export dependency
+missing, `5` output I/O failure.
 
-## 5. Render and look at the result
+## 6. Render and look at the result
 
 Render a preview you can see:
 
@@ -292,9 +321,10 @@ vectr export scenes/logo.json --format svg --out dist/logo.svg
 vectr export scenes/logo.json --format png --out dist/logo.png --width 512 --height 512
 ```
 
-`--density` applies to PNG only; passing it with `--format svg` is a usage
-error. `--background <color|transparent>` overrides the canvas background for
-that export.
+Exports default to `dist/<scene-stem>.<ext>`; `--out`/`out` chooses another path.
+`--density` applies to PNG only; passing it with `--format svg` is a usage error.
+`--background <color|transparent>` overrides the canvas background for that
+export.
 
 ### Inspect and correct
 
@@ -307,14 +337,14 @@ re-render:
 | A shape covers one it should sit behind | Wrong `order` | Raise the covering element's `order`, or reorder siblings |
 | The mark and its label come apart when moved | Children not grouped | Give them a common `group` parent and set their `parentId` |
 | Text sits too high, low, or off the shape | `x`/`y` anchor the first-line baseline, not the box | Adjust `y` to the baseline you want; use `align` for horizontal centring |
-| A colour does not match the brand | Element hard-codes a look or names the wrong token | Point the paint at the right palette token, or fix the token value |
+| A colour does not match the brand | Element names the wrong token | Point the paint at the right palette token, or fix the token value |
 | A stroke is invisible or too heavy | Hairline profile width `0` in a non-stroke recipe, or too large | Name a scaled profile, or a stroke-based recipe whose `strokeWeight` fits |
-| Nothing changed after a style edit | The element never referenced the token | Move the element's paint to `{kind: "token", ref: ...}` |
+| Nothing changed after a style edit | The element never referenced the token | Move the element's paint to `{"kind": "token", "ref": ...}` |
 
 Re-render after each correction and look again; stop when the render matches the
 request.
 
-## 6. When authoring fails
+## 7. When authoring fails
 
 Validation diagnostics name the problem and its location. The usual findings:
 
@@ -322,7 +352,7 @@ Validation diagnostics name the problem and its location. The usual findings:
   the `jsonPath` points at it. The most common cause is a partial `transform` or
   a missing `geometry`.
 - `E_PARSE` — the document is not valid JSON. Reparse the file.
-- `E_FORMAT_VERSION` — `formatVersion` is not `0.2`; set it and retry.
+- `E_FORMAT_VERSION` — `formatVersion` is not `"0.2"`; set it and retry.
 - `E_INVALID_COLOR` — a canvas background or export background is not a colour
   SVG supports and not `transparent`.
 - `E_PROJECT_ASSET` — a referenced palette, recipe, gradient, or stroke
@@ -338,10 +368,11 @@ Validation diagnostics name the problem and its location. The usual findings:
 Correct the scene from the diagnostics and re-validate. **Retry once.** If the
 scene still fails after that correction, report the failure together with its
 diagnostics and produce no output. Never export from a scene that did not
-validate and compile. If the authoring model is unavailable, report that
-authoring cannot proceed and produce no output; never emit a placeholder asset.
+validate and compile. If the authoring model is unavailable, stop and report
+that authoring cannot proceed and produce no output; never emit a placeholder
+asset.
 
-## 7. Defaults for an ambiguous request
+## 8. Defaults for an ambiguous request
 
 When the request leaves something open, choose the documented default, state it
 in one line, and proceed rather than stopping to ask:
@@ -361,7 +392,7 @@ Keep the first version minimal and valid, render it, then refine toward the
 request. A print-ready or highly detailed drawing is a later iteration, not a
 reason to stall.
 
-## 8. Licensing and cost
+## 9. Licensing and cost
 
 Vectr claims no ownership of the content an authoring model produces. That
 content may carry the model provider's own terms; check your provider's terms
