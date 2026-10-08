@@ -1,5 +1,7 @@
 # Build output.
 /target/
+# The acceptance suite is a nested workspace with its own target dir.
+/tests/acceptance/target/
 /dist/
 
 # Per-task scratch and task routes.
