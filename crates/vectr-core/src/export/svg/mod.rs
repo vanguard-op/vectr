@@ -1,12 +1,14 @@
 //! SVG export: the render model as a portable, inert SVG document (FEAT-012).
 //!
 //! [`export_svg`] is the library entry point (C-002). It walks the model's flat
-//! node list in paint order and emits one group per node, carrying the node's
-//! stable identifier and, when the scene named it, its human-readable name; the
-//! concrete geometry becomes a native SVG shape and the resolved paint becomes
-//! fill and stroke attributes. The document carries no script, event handler, or
-//! foreign content, so it is inert when opened (NFR-023), and identical input
-//! yields byte-identical output (NFR-010).
+//! node list in paint order, rebuilding the named-group nesting each node's
+//! ancestor chain declares so every named group survives at its own level, and
+//! emits one group per node carrying the node's stable identifier and, when the
+//! scene named it, its human-readable name; the concrete geometry becomes a
+//! native SVG shape and the resolved paint becomes fill and stroke attributes.
+//! An unnamed group is collapsed, which FEAT-012 permits. The document carries
+//! no script, event handler, or foreign content, so it is inert when opened
+//! (NFR-023), and identical input yields byte-identical output (NFR-010).
 //!
 //! # Unsupported content
 //!
@@ -419,6 +421,134 @@ mod tests {
             node("e1", Some("A"), rect(1.0, 2.0, 3.0, 4.0)),
             node("e2", None, rect(5.0, 6.0, 7.0, 8.0)),
         ]);
+        assert_eq!(export(&document), export(&document));
+    }
+
+    fn compile_scene(scene: &str) -> RenderModel {
+        crate::compiler::compile(&crate::scene::parse(scene).expect("a valid scene"))
+            .expect("compiles")
+    }
+
+    /// A named group inside a named group, holding one named shape.
+    const NESTED_GROUPS: &str = r##"{
+      "id": "s", "projectId": "p", "name": "S", "formatVersion": "0.1",
+      "canvas": { "width": 100, "height": 100, "background": "#ffffff" },
+      "elements": [
+        {
+          "id": "outer", "sceneId": "s", "order": 0, "kind": "group", "name": "Outer",
+          "geometry": {},
+          "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
+          "opacity": 1, "visible": true
+        },
+        {
+          "id": "inner", "sceneId": "s", "order": 0, "kind": "group", "name": "Inner", "parentId": "outer",
+          "geometry": {},
+          "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
+          "opacity": 1, "visible": true
+        },
+        {
+          "id": "c1", "sceneId": "s", "order": 0, "kind": "rect", "name": "Leaf", "parentId": "inner",
+          "geometry": { "x": 0, "y": 0, "width": 10, "height": 10 },
+          "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
+          "opacity": 1, "visible": true
+        }
+      ]
+    }"##;
+
+    #[test]
+    fn named_group_nesting_is_reconstructed() {
+        let svg = export(&compile_scene(NESTED_GROUPS));
+        let outer = svg
+            .find("<g id=\"outer\" data-name=\"Outer\">")
+            .expect("the outer group");
+        let inner = svg
+            .find("<g id=\"inner\" data-name=\"Inner\">")
+            .expect("the inner group");
+        let leaf = svg
+            .find("<g id=\"c1\" data-name=\"Leaf\">")
+            .expect("the named shape");
+        assert!(outer < inner && inner < leaf, "{svg}");
+
+        // Each group closes inside its parent, so the closes run leaf, inner,
+        // outer.
+        let closes: Vec<usize> = svg.match_indices("</g>").map(|(at, _)| at).collect();
+        assert_eq!(closes.len(), 3, "{svg}");
+        assert!(
+            leaf < closes[0] && closes[0] < closes[1] && closes[1] < closes[2],
+            "{svg}"
+        );
+    }
+
+    #[test]
+    fn an_unnamed_group_is_collapsed_but_keeps_its_named_child_in_place() {
+        const SCENE: &str = r##"{
+          "id": "s", "projectId": "p", "name": "S", "formatVersion": "0.1",
+          "canvas": { "width": 100, "height": 100, "background": "#ffffff" },
+          "elements": [
+            {
+              "id": "outer", "sceneId": "s", "order": 0, "kind": "group", "name": "Outer",
+              "geometry": {},
+              "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
+              "opacity": 1, "visible": true
+            },
+            {
+              "id": "middle", "sceneId": "s", "order": 0, "kind": "group", "parentId": "outer",
+              "geometry": {},
+              "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
+              "opacity": 1, "visible": true
+            },
+            {
+              "id": "c1", "sceneId": "s", "order": 0, "kind": "rect", "name": "Leaf", "parentId": "middle",
+              "geometry": { "x": 0, "y": 0, "width": 10, "height": 10 },
+              "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
+              "opacity": 1, "visible": true
+            }
+          ]
+        }"##;
+        let svg = export(&compile_scene(SCENE));
+        assert!(!svg.contains("id=\"middle\""), "{svg}");
+        let outer = svg.find("<g id=\"outer\"").expect("the outer group");
+        let leaf = svg.find("<g id=\"c1\"").expect("the named shape");
+        assert!(outer < leaf, "{svg}");
+        assert_eq!(svg.matches("<g id=").count(), 2, "{svg}");
+    }
+
+    #[test]
+    fn a_named_group_spans_all_of_its_children() {
+        const SCENE: &str = r##"{
+          "id": "s", "projectId": "p", "name": "S", "formatVersion": "0.1",
+          "canvas": { "width": 100, "height": 100, "background": "#ffffff" },
+          "elements": [
+            {
+              "id": "outer", "sceneId": "s", "order": 0, "kind": "group", "name": "Outer",
+              "geometry": {},
+              "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
+              "opacity": 1, "visible": true
+            },
+            {
+              "id": "c1", "sceneId": "s", "order": 0, "kind": "rect", "parentId": "outer",
+              "geometry": { "x": 0, "y": 0, "width": 10, "height": 10 },
+              "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
+              "opacity": 1, "visible": true
+            },
+            {
+              "id": "c2", "sceneId": "s", "order": 1, "kind": "rect", "parentId": "outer",
+              "geometry": { "x": 20, "y": 0, "width": 10, "height": 10 },
+              "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
+              "opacity": 1, "visible": true
+            }
+          ]
+        }"##;
+        let svg = export(&compile_scene(SCENE));
+        assert_eq!(svg.matches("<g id=\"outer\"").count(), 1, "{svg}");
+        assert_eq!(svg.matches("<g id=\"c1\"").count(), 1, "{svg}");
+        assert_eq!(svg.matches("<g id=\"c2\"").count(), 1, "{svg}");
+        assert_eq!(svg.matches("</g>").count(), 3, "{svg}");
+    }
+
+    #[test]
+    fn grouped_exports_are_identical() {
+        let document = compile_scene(NESTED_GROUPS);
         assert_eq!(export(&document), export(&document));
     }
 

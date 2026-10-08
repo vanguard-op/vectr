@@ -1,7 +1,8 @@
 //! SVG document emission (FEAT-012).
 //!
 //! The writer is a pure function of the render model and the resolved output
-//! size: it walks the flat node list in paint order, wraps each node in a group
+//! size: it walks the flat node list in paint order, rebuilds the named-group
+//! nesting each node's ancestor chain declares, wraps each node in a group
 //! carrying its stable identifier and name, and turns its concrete geometry and
 //! paint into native SVG. Every value is formatted by one deterministic number
 //! routine and every text or attribute is XML-escaped, so the same model always
@@ -13,7 +14,7 @@ use std::fmt::Write as _;
 
 use crate::composition::Affine;
 use crate::primitives::{Path as PathGeometry, Rect, Segment, Shape};
-use crate::render::{RenderModel, ResolvedNode};
+use crate::render::{NodeGroup, RenderModel, ResolvedNode};
 use crate::scene::{Diagnostic, Diagnostics, Location};
 use crate::style::{StrokeCap, StrokeJoin};
 
@@ -66,42 +67,96 @@ pub(crate) fn document(
     }
 
     let mut ids = IdAllocator::default();
-    for node in &model.nodes {
-        emit_node(&mut out, node, "  ", &mut ids, diagnostics);
-    }
+    emit_nodes(&mut out, &model.nodes, &mut ids, diagnostics);
 
     out.push_str("</svg>\n");
     out
 }
 
-/// Emits one node as a group, or omits it with a warning.
-fn emit_node(
+/// Emits every node in paint order, opening and closing the named-group
+/// elements their ancestor chains imply (FEAT-012).
+///
+/// The render model is flat, but each node carries its ancestor group chain
+/// outermost first. Walking the list in paint order and keeping the chain that
+/// is currently open reconstructs the nesting: a shared prefix stays open, a
+/// shorter chain closes the groups it no longer needs, and a longer one opens
+/// the groups it adds. Because the compiler emits a group's subtree as one
+/// contiguous run, a group is opened once and spans all of its drawing
+/// descendants. An unnamed group carries no name to preserve and no visual
+/// state of its own — its transform and opacity are already resolved into its
+/// nodes — so it is collapsed, as FEAT-012 permits; a named group nested inside
+/// one still lands at the correct level.
+fn emit_nodes(
     out: &mut String,
-    node: &ResolvedNode,
-    indent: &str,
+    nodes: &[ResolvedNode],
     ids: &mut IdAllocator,
     diagnostics: &mut Diagnostics,
 ) {
-    if node.kind == "raster" {
-        omit(
-            diagnostics,
-            node,
-            "is a raster layer, which SVG export omits",
-        );
-        return;
-    }
-    if !is_finite(node) {
-        omit(
-            diagnostics,
-            node,
-            "has non-finite geometry or transform, so SVG export omits it",
-        );
-        return;
-    }
-    let Some(shape) = shape_element(node) else {
-        return;
-    };
+    let mut open: Vec<String> = Vec::new();
+    for node in nodes {
+        if let Some(reason) = unsupported(node) {
+            omit(diagnostics, node, reason);
+            continue;
+        }
+        // A node that draws nothing (an empty path) opens no group either.
+        let Some(shape) = shape_element(node) else {
+            continue;
+        };
 
+        let chain: Vec<&NodeGroup> = node
+            .groups
+            .iter()
+            .filter(|group| group.name.is_some())
+            .collect();
+        let common = open
+            .iter()
+            .zip(&chain)
+            .take_while(|(id, group)| id.as_str() == group.id.as_str())
+            .count();
+        while open.len() > common {
+            open.pop();
+            let _ = writeln!(out, "{}</g>", indent(open.len() + 1));
+        }
+        for group in &chain[common..] {
+            let id = ids.allocate(&group.id);
+            let name = group.name.as_deref().unwrap_or_default();
+            let _ = writeln!(
+                out,
+                "{}<g id=\"{}\" data-name=\"{}\">",
+                indent(open.len() + 1),
+                id,
+                escape_attr(name),
+            );
+            open.push(group.id.clone());
+        }
+
+        emit_node(out, node, &shape, &indent(open.len() + 1), ids);
+    }
+    while !open.is_empty() {
+        open.pop();
+        let _ = writeln!(out, "{}</g>", indent(open.len() + 1));
+    }
+}
+
+/// The reason a node cannot be represented, or `None` when it can.
+fn unsupported(node: &ResolvedNode) -> Option<&'static str> {
+    if node.kind == "raster" {
+        Some("is a raster layer, which SVG export omits")
+    } else if !is_finite(node) {
+        Some("has non-finite geometry or transform, so SVG export omits it")
+    } else {
+        None
+    }
+}
+
+/// Emits one node as a group carrying its identifier and name.
+fn emit_node(
+    out: &mut String,
+    node: &ResolvedNode,
+    shape: &str,
+    indent: &str,
+    ids: &mut IdAllocator,
+) {
     let id = ids.allocate(&node.id);
     let mut group = format!("<g id=\"{id}\"");
     if let Some(name) = &node.name {
@@ -122,6 +177,12 @@ fn emit_node(
     }
     let _ = writeln!(out, "{indent}  {shape}");
     let _ = writeln!(out, "{indent}</g>");
+}
+
+/// The two-space indentation of a nesting level (level 1 is the document root's
+/// children).
+fn indent(level: usize) -> String {
+    "  ".repeat(level)
 }
 
 fn omit(diagnostics: &mut Diagnostics, node: &ResolvedNode, reason: &str) {
