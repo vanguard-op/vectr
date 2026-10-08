@@ -29,21 +29,31 @@ The scene language is at `formatVersion` `"0.2"`; the published schema carries
 ## 1. What a project holds
 
 A project is a directory with `vectr.project.json` and one folder per document
-kind. Documents are referenced by `id`, never by file name, so a file can be
-called anything:
+kind. A command names a scene by its **identifier** — the scene's `id` — and its
+document is `scenes/<id>.json`, so a scene's file is named for its identifier.
+The other documents (palette, stroke profile, recipe, gradient, font) are found
+by the `id` they declare, whatever their file is called.
 
-| Document | Folder | Referenced by |
+| Document | Folder | Addressed or referenced by |
 |---|---|---|
-| Scene | `scenes/` | the file you run |
+| Scene | `scenes/<id>.json` | the identifier a command names, else the project's `defaultSceneId` |
 | Palette | `palettes/` | `scene.paletteId`, and a paint `ref` with `kind: "token"` |
 | StrokeProfile | `strokes/` | `element.stroke.profileId` |
 | StyleRecipe | `recipes/` | `scene.recipeId`, else the project's `defaultRecipeId` |
 | Gradient | `gradients/` | a paint `ref` with `kind: "gradient"` |
 | Asset (font) | `assets/` | `element.fontId` on a text element |
 
+A command that omits the scene uses the project's `defaultSceneId`; a command
+that names one always operates on that scene alone, whatever the default says,
+resolving the project's style assets for it. A project that names no default
+reports that no scene was selected rather than choosing among its scenes, and a
+default that resolves to no document names the missing scene. Both are errors —
+the tools never pick a scene by accident.
+
 Run the tools from inside the project so the root is found. If there is no
 project yet, scaffold one with `vectr init [dir]`; it writes the configuration,
-a starter scene under `scenes/`, a default recipe, the entity folders
+a starter scene at `scenes/example.json` that the project names as its default,
+a default recipe, the entity folders
 `scenes/ palettes/ strokes/ gradients/ recipes/ assets/ dist/`, and this guide
 at the project root. Running it again reports the project as already
 initialized and leaves every file untouched.
@@ -64,7 +74,9 @@ Never render before validation passes, and never export from a scene that failed
 to compile. A failed step stops the pipeline; there is no partial output.
 
 Prefer the MCP tools when the host exposes them; otherwise use the CLI. Both
-produce identical results.
+produce identical results. In the CLI, `<scene>` is a scene identifier resolved
+among the project's scenes (`scenes/<id>.json`), not a file path; omit it to use
+the project's default scene.
 
 | Step | MCP tool | CLI |
 |---|---|---|
@@ -142,8 +154,8 @@ enforced by the engine and are easy to miss:
 
 ## 4. Author the scene
 
-Start from the skeleton below or from the starter scene under `scenes/`, and
-edit it. The skeleton of every valid scene:
+Start from the skeleton below or from the starter scene (`scenes/example.json`,
+identifier `example`), and edit it. The skeleton of every valid scene:
 
 ```json
 {
@@ -160,7 +172,9 @@ edit it. The skeleton of every valid scene:
 
 Keep `id`s short and stable: each element's `id` is unique within the scene, and
 a child's `parentId` names it. Every element repeats `sceneId` with the scene's
-`id`.
+`id`. Save the scene as `scenes/<id>.json` — the file is named for the scene's
+`id` — and address it by that identifier on the command line (the skeleton below
+becomes `scenes/habit-logo.json`, addressed as `habit-logo`).
 
 Use a named palette rather than hard-coding colour per element, so the whole
 graphic restyles by editing one value. `palettes/brand.json`:
@@ -403,19 +417,26 @@ Compose it in passes rather than in one shot:
 
 ## 5. Validate, then compile
 
+Name the scene by its identifier; the document is `scenes/<id>.json`:
+
 ```sh
-vectr validate scenes/logo.json
-vectr compile scenes/logo.json --check
+vectr validate habit-logo
+vectr compile habit-logo --check
 ```
 
-`validate` checks the scene against the contract and the project's references —
-a palette token, stroke profile, gradient, or font that does not resolve is an
-error naming the element. `compile --check` confirms the scene resolves to a
-render model without writing anything. On success both exit `0` and print
-nothing; a broken scene exits non-zero with diagnostics.
+Omitting the identifier uses the project's default scene, so `vectr validate`
+alone validates that one. `validate` checks the scene against the contract and
+the project's references — a palette token, stroke profile, gradient, or font
+that does not resolve is an error naming the element. `compile --check` confirms
+the scene resolves to a render model without writing anything. On success both
+exit `0` and print nothing; a broken scene exits non-zero with diagnostics.
 
-Use `vectr validate --json` (or the MCP `validate` result) for a machine-readable
-array:
+An identifier no scene document provides, a project that names no default when
+the scene is omitted, and a `defaultSceneId` that resolves to no document each
+report `E_SCENE` and exit `2`, naming the scene or the missing default.
+
+Use `vectr validate --json habit-logo` (or the MCP `validate` result) for a
+machine-readable array:
 
 ```json
 [{"severity":"error","code":"E_SCHEMA","message":"`opacity` must be between 0 and 1","location":{"jsonPath":"/elements/0/opacity"}}]
@@ -431,7 +452,7 @@ missing, `5` output I/O failure.
 Render a preview you can see:
 
 ```sh
-vectr export scenes/logo.json --format png --out dist/logo.png --width 512 --height 512
+vectr export habit-logo --format png --out dist/habit-logo.png --width 512 --height 512
 ```
 
 Then open the PNG and compare it against the request. Reading the image is the
@@ -439,11 +460,11 @@ step that catches what a structural check cannot. Export the final deliverables
 once the preview matches:
 
 ```sh
-vectr export scenes/logo.json --format svg --out dist/logo.svg
-vectr export scenes/logo.json --format png --out dist/logo.png --width 512 --height 512
+vectr export habit-logo --format svg --out dist/habit-logo.svg
+vectr export habit-logo --format png --out dist/habit-logo.png --width 512 --height 512
 ```
 
-Exports default to `dist/<scene-stem>.<ext>`; `--out`/`out` chooses another path.
+Exports default to `dist/<scene-id>.<ext>`; `--out`/`out` chooses another path.
 `--density` applies to PNG only; passing it with `--format svg` is a usage error.
 `--background <color|transparent>` overrides the canvas background for that
 export.
@@ -480,6 +501,10 @@ Validation diagnostics name the problem and its location. The usual findings:
 - `E_PROJECT_ASSET` — a referenced palette, recipe, gradient, or stroke
   document is missing, unreadable, or declares a different `id`; check the
   folder and the `id`.
+- `E_SCENE` — the scene identifier the command named has no document at
+  `scenes/<id>.json`, the project names no default scene, or its
+  `defaultSceneId` resolves to no document; run the command from inside the
+  project and check the identifier.
 - `E_SCHEMA_TYPE` — a `schema --type` name does not exist; pick one of the
   listed similar names.
 - `E_CYCLE` — elements reference each other as parents; break the loop.
@@ -502,6 +527,7 @@ in one line, and proceed rather than stopping to ask:
 | Open point | Default |
 |---|---|
 | Canvas size | 512×512 |
+| Scene identifier | A short kebab-case name for the request (e.g. `habit-logo`); its file is `scenes/<id>.json` and commands address it by that id |
 | Background | `transparent` |
 | Scope of the graphic | When the request leaves it open, one simple mark — a primary shape plus an optional wordmark. A request that asks for a detailed or complex illustration is authored in full |
 | Shape placement | Centred, with an even margin from each edge |
