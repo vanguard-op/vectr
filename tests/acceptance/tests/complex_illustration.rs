@@ -562,6 +562,37 @@ fn a_large_composition_reports_an_unprocessable_element_rather_than_dropping_it(
 }
 
 #[test]
+fn a_text_element_as_any_composition_operand_is_refused_naming_the_combination() {
+    // FEAT-011's edge case names every composition kind a text element cannot be
+    // lowered into — boolean, offset, projection, repeat, and alongPath — so
+    // each is refused with the text element and the parent kind named, rather
+    // than dropped or lowered to a wrong shape.
+    let parents: [(&str, serde_json::Value); 5] = [
+        ("boolean", json!({ "operation": "union" })),
+        ("offset", json!({ "distance": 5.0 })),
+        ("projection", json!({ "axis": "x" })),
+        ("repeat", json!({ "count": 2, "spacing": 10.0 })),
+        ("alongPath", json!({ "count": 2, "pathData": "M0 0 L10 0" })),
+    ];
+
+    for (kind, geometry) in parents {
+        let parent = element("parent", 0, kind, geometry);
+        let mut child = text("t1", 0, 0.0, 0.0, "Hi", 12.0);
+        child["parentId"] = json!("parent");
+        let document = scene(vec![parent, child]);
+
+        let diagnostics =
+            vectr_core::parse(&document.to_string()).expect_err("a text operand is refused");
+        assert!(
+            diagnostics.errors().any(|error| {
+                error.message.contains("text element `t1`") && error.message.contains(kind)
+            }),
+            "a text element as a `{kind}` operand is refused naming the combination: {diagnostics}"
+        );
+    }
+}
+
+#[test]
 fn a_composition_whose_expansion_exceeds_the_limit_is_refused_naming_it() {
     // Each individual count is under the per-element budget, but the nested
     // expansion is above it: the error must name the composition that

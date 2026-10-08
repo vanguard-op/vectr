@@ -349,6 +349,30 @@ fn the_guide_directs_recovery_from_an_invalid_scene() {
     );
 }
 
+#[test]
+fn the_guide_directs_a_detailed_request_to_be_composed_in_full() {
+    // FEAT-020's edge case: a request for a very complex or detailed
+    // illustration is answered by composing the required elements, never by a
+    // refusal or a simplification to a simple mark.
+    let root = workspace_root();
+    let skill = fs::read_to_string(root.join("skills/vectr/SKILL.md")).expect("SKILL.md");
+    let guide = fs::read_to_string(root.join("skills/vectr/references/authoring-guide.md"))
+        .expect("the authoring guide");
+
+    assert!(
+        skill.contains("never simplified to a simple mark"),
+        "the skill forbids simplifying a detailed request"
+    );
+    assert!(
+        guide.contains("Never reduce a detailed request to a single mark"),
+        "the guide forbids reducing a detailed request"
+    );
+    assert!(
+        guide.contains("authored in full"),
+        "the guide directs a detailed request to be authored in full"
+    );
+}
+
 /// The skill's frontmatter description as a lowercased string.
 fn skill_description() -> String {
     let skill = fs::read_to_string(workspace_root().join("skills/vectr/SKILL.md"))
