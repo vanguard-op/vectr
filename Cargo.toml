@@ -35,16 +35,20 @@ schemars = "1.2.2"
 lyon = "1.0.19"
 i_overlay = "9.0.0"
 
-# Text shaping and font parsing (D-004, D-007, FEAT-024).
-rustybuzz = "0.20.1"
-ttf-parser = "0.25.1"
+# Text shaping and font parsing (D-004, D-019, FEAT-024). rustybuzz and
+# ttf-parser are unmaintained (RUSTSEC-2026-0206, RUSTSEC-2026-0192) with no
+# safe upgrade; harfrust and skrifa are their maintained successors, so
+# NFR-020's dependency gate stays green without an ignore. Both build on the
+# same read-fonts release, so shaping and outlining share one font parser.
+harfrust = "0.14.0"
+skrifa = "0.48.0"
 
 # Rasterizer behind the export layer (D-007, FEAT-013).
 #
 # Default features are disabled so a member that inherits this entry cannot
 # pull resvg's native system-font, text, SVGZ or raster-image support: the
 # rasterizer must stay pure-Rust and free of native system dependencies
-# (D-007). Vectr shapes and outlines text itself (rustybuzz + ttf-parser) and
+# (D-007). Vectr shapes and outlines text itself (harfrust + skrifa) and
 # rasterizes the SVG it has already emitted, so none of those defaults are
 # wanted.
 resvg = { version = "0.48.1", default-features = false }
