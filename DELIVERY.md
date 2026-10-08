@@ -1,13 +1,13 @@
 # Delivery
 
 ## Source of truth
-docs/Vectr/ — git submodule, pinned at 4dda288, remote /tmp/opencode/vectr-docs.git. The docs are authoritative for what to build; this file tracks state only and never restates the spec.
+docs/Vectr/ — git submodule, remote https://github.com/vanguard-op/vectr-docs.git; working tree at 2fc3a64 (gradient fills, unified element paint model), the recorded pointer advancing with the Phase 2 rework. The docs are authoritative for what to build; this file tracks state only and never restates the spec.
 
 ## Team & file ownership
 | Member | Owns |
 |---|---|
-| lead | DELIVERY.md, CONTRACTS.md, ASSETS.md, .delivery/** |
-| infra-engineer | Cargo.toml, Cargo.lock, rust-toolchain.toml, .gitignore, .github/**, scripts/**, assets/fonts/** |
+| lead | DELIVERY.md, CONTRACTS.md, ASSETS.md, .delivery/**, Cargo.lock |
+| infra-engineer | Cargo.toml, rust-toolchain.toml, .gitignore, .github/**, scripts/**, assets/fonts/** |
 | backend-engineer | crates/vectr-core/**, crates/vectr-cli/**, schema/** |
 | ai-engineer | crates/vectr-mcp/**, crates/vectr-eval/**, skills/** |
 | qa-engineer | tests/**, fixtures/**, corpus/** |
@@ -17,7 +17,7 @@ docs/Vectr/ — git submodule, pinned at 4dda288, remote /tmp/opencode/vectr-doc
 Scratch: scratch/<task>/ — gitignored, private to the task's owner.
 
 ## Stack
-Rust (stable, pinned by rust-toolchain.toml), cargo workspace. serde + schemars for the scene model and the generated JSON Schema; lyon + i_overlay for path geometry, boolean and offset; rustybuzz + ttf-parser for text and outlining; resvg/tiny-skia as the rasterizer behind the export layer; an in-crate vector PDF emitter. Evaluation harness: multiple pinned providers (OpenAI, Anthropic, Google) plus an OpenCode adapter. Distributed as crates.io packages and signed GitHub Release binaries with checksums for macOS, Linux and Windows.
+Rust (stable, pinned by rust-toolchain.toml), cargo workspace. serde + schemars for the scene model and the generated JSON Schema; lyon + i_overlay for path geometry, boolean and offset; harfrust + skrifa for text and outlining; resvg/tiny-skia as the rasterizer behind the export layer; an in-crate vector PDF emitter. Evaluation harness: multiple pinned providers (OpenAI, Anthropic, Google) plus an OpenCode adapter. Distributed as crates.io packages and signed GitHub Release binaries with checksums for macOS, Linux and Windows.
 
 ## Structure
 - Cargo.toml, Cargo.lock, rust-toolchain.toml
@@ -64,38 +64,44 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 ### Completed phases
 | Phase | Closed | Notes |
 |---|---|---|
-
-### Active phase: Phase 1 — First Graphic
-| Task | Feature | Owner | Status | Contract |
-|---|---|---|---|---|
-| T-001 | — (foundation) | infra-engineer | Ready | — |
-| T-002 | FEAT-001 | backend-engineer | Backlog | C-001 |
-| T-003 | FEAT-002 | backend-engineer | Backlog | C-003 |
-| T-004 | FEAT-003 | backend-engineer | Backlog | C-003 |
-| T-005 | FEAT-005 | backend-engineer | Backlog | C-001 |
-| T-006 | FEAT-004 | backend-engineer | Backlog | C-003 |
-| T-007 | FEAT-011 | backend-engineer | Backlog | C-002, C-003 |
-| T-008 | FEAT-012 | backend-engineer | Backlog | C-002 |
-| T-009 | FEAT-013 | backend-engineer | Backlog | C-002 |
-| T-010 | FEAT-024 | backend-engineer | Backlog | C-002 |
-| T-011 | FEAT-016 | backend-engineer | Backlog | C-004 |
+| Phase 1 — First Graphic | 2026-10-08 | FEAT-001, FEAT-002, FEAT-003, FEAT-004, FEAT-005, FEAT-011, FEAT-012, FEAT-013, FEAT-016, FEAT-024 shipped; C-001–C-004 implemented; A-001–A-004 sourced. |
+| Phase 2 — Style Core | 2026-10-08 | FEAT-027, FEAT-007, FEAT-008, FEAT-009, FEAT-010 shipped; the element paint model unified with linear/radial gradients; recipe selection wired through the CLI; C-001–C-003 re-implemented at revision 5. |
 
 ## Decisions log
 | # | Decision | Rationale | By |
 |---|---|---|---|
 | D-001 | Build Vectr as a Rust cargo workspace: vectr-core library, vectr CLI, vectr-mcp server. | Deterministic single-binary core; performance for 50k-element scenes; memory-safe untrusted parsing (NFR-021); in-process embedding (FEAT-021); cross-platform CI. | user |
 | D-002 | Scene documents are strict JSON. | Aligns the authoring format with schema.md's JSON-Schema model; enables constrained decoding, the cheapest route to NFR-030's >=95% compile bar; keeps risk R-005 off the critical path. A custom markup can be added later as an alternate syntax over the same scene model. | user |
-| D-003 | docs/ is a git submodule pinned to a local bare remote (/tmp/opencode/vectr-docs.git). | Isolates the docs repository from the product repository; a real remote can replace the local URL later without changing the submodule layout. | user |
+| D-003 | docs/ is a git submodule pinned to a local bare remote. | Isolates the docs repository from the product repository; a real remote can replace the local URL later without changing the submodule layout. | user |
 | D-004 | Bundle Inter as the default sans with Noto Sans as glyph fallback. | Satisfies NFR-040 (SIL OFL only, no commercial fonts) while covering wordmarks, labels and non-Latin glyphs. | user |
 | D-005 | The evaluation harness targets multiple pinned providers (OpenAI, Anthropic, Google) plus an OpenCode adapter. | Meets NFR-030's >=3-model bar and reaches many more models through OpenCode. | user |
 | D-006 | Distribute via crates.io and signed GitHub Release binaries with checksums per OS. | Matches dependency D4 and NFR-025 release integrity. | user |
 | D-007 | Rasterizer is resvg/tiny-skia behind the export layer; geometry via lyon + i_overlay; text via rustybuzz + ttf-parser. | Pure-Rust, deterministic and free of native system dependencies; swappable behind the export layer per risk R-008. | lead |
 | D-008 | CLI exit codes: 0 success, 1 invalid scene, 2 usage/input, 3 compile failure, 4 missing export dependency, 5 output I/O failure. | FEAT-016 requires exit codes to distinguish failure classes but the docs do not enumerate them. | lead |
 | D-009 | Project layout: vectr.project.json at the root; scenes/, palettes/, strokes/, recipes/ for entities; dist/ for output; default recipe flat. | schema.md models each entity as a separate document referenced by id, and FEAT-007 names flat the default; the docs leave the on-disk layout unnamed. | lead |
+| D-010 | Vectr ships under MIT OR Apache-2.0. | The docs state no product licence; crates.io publishing (D-006) and NFR-041 require an SPDX licence. Dual permissive matches the Rust ecosystem and the docs' free/open intent (R-013). | user |
+| D-011 | The initial scene format version is 0.1. | The docs never name one; the language is pre-1.0 while the recipes (Phase 2) and agent surface (Phase 3) settle, avoiding release.md's one-way-door rule for schema changes (risk R-005). | user |
+| D-012 | The parser bounds a scene document at 64 MiB and refuses larger input with a defined size diagnostic. | NFR-021 requires bounded input size but the docs give no figure; 64 MiB covers the documented 50,000-element large scene while bounding memory, and refuses rather than truncating. | user |
+| D-013 | Style assets reach the compiler through a caller-supplied context: `compile(&Scene)` stays the no-style entry point and `compile_with_style(&Scene, &StyleContext)` resolves the palette and stroke profiles. | schema.md models Palette, StrokeProfile and StyleRecipe as separate documents referenced by id, so the library cannot load them itself without filesystem access; a caller-supplied context keeps the library deterministic and free of file or network access (NFR-010, NFR-021). | lead |
+| D-014 | The render model is serializable to camelCase JSON, and `vectr compile --out` writes it. | C-004 reserves `compile --out`, user-flow's compile stage yields a render model, and the MCP compile tool returns it; the model must cross the process/tool boundary as data. | lead |
+| D-015 | A stroke's colour is a palette token the element names (`strokeToken`), parallel to fill; `StrokeProfile` carries geometry only, and a stroke needs both a profile and a colour token. | The docs settled no stroke-colour source, so the user directed the gap to product-shaper; the spec now keeps every colour in the palette (FEAT-007) with no silent fallback. | user |
+| D-016 | The render model retains element names and group nesting: each node carries its ancestor group chain, and the SVG exporter emits nested named groups. | FEAT-011 and FEAT-012 require named-group preservation in Phase 1; the flat paint-order node list keeps the seam simple while carrying the structure the exporter needs. FEAT-026 is the accessible-metadata layer above it. | lead |
+| D-017 | A text element that names no font resolves to the caller-supplied font asset with id `default`, loaded from the bundled open-licensed font. | The docs say text with no font uses the default open-licensed font but name no id; the convention gives the compiler and the font manager a stable key, and the caller decides which font fills it. | lead |
+| D-018 | A font asset with id `fallback` supplies the fallback font for glyphs the resolved font lacks, and the compiler carries it into the render model's font table. | FEAT-024 requires a missing glyph to be substituted from a fallback font rather than drawn as a blank box, but the docs name no fallback id and no text node references it; the convention makes the fallback reachable. | lead |
+| D-019 | Migrate the text stack from rustybuzz + ttf-parser to harfrust + skrifa. | RustSec flags rustybuzz (RUSTSEC-2026-0206) and ttf-parser (RUSTSEC-2026-0192) unmaintained with no safe upgrade; harfrust and skrifa are the named maintained successors, keeping NFR-020's dependency gate green without ignores. Supersedes the text portion of D-007. | user |
+| D-020 | The project layout includes an `assets/` store of Asset documents (id, kind, path, license) for user-supplied fonts, scaffolded by `vectr init`. | D-009 named no home for a user-supplied font, which FEAT-024 requires; the Asset entity already models a font by path and licence. Extends D-009. | lead |
+| D-021 | Element paint is unified: `fill` and `stroke` each carry a `{kind, ref}` paint, and a new Gradient entity (linear or radial, palette-token stops) supplies gradient paints; texture is deferred to raster-assisted layers (FEAT-015). | The flat recipe's gradient and texture edge cases had no expressible trigger, so the user directed the gap to product-shaper, which made a gradient request expressible and removed the ambiguity of separate fill and stroke fields. Extends D-013 and D-015. | user |
+| D-022 | The scene format version moves to 0.2. | The paint-model change is a breaking change to the scene document; the pre-1.0 version signals it. Supersedes D-011's 0.1. | lead |
+| D-023 | The project layout gains a `gradients/` directory of Gradient documents, scaffolded by `vectr init`. | Gradients are project documents referenced by paint, parallel to palettes and strokes; the docs name no on-disk layout. Extends D-009. | lead |
+| D-024 | In a line-art scene, a stroke profile whose width is 0 takes the recipe's `strokeWeight`; a positive profile width is the explicit weight the recipe honors. | FEAT-008 requires the recipe to fix a consistent weight while honoring explicitly varied weights, but the scene language has no separate per-element weight field and a profile's width is required. Width 0 is the only channel that reads as "no explicit weight". | lead |
+| D-025 | The minimum renderable stroke weight is 0.05 scene units; a line-art stroke below it is clamped and warned. | FEAT-008 requires a minimum renderable unit but the docs name no figure. | lead |
+| D-026 | The minimum usable grid spacing is 0.05 scene units; a geometric recipe with a finer grid is reported as a performance warning and the grid is not applied. | FEAT-009 requires a performance warning for a grid finer than the renderable resolution but the docs name no figure; mirrors D-025. | lead |
+| D-027 | The isometric recipe snaps to the lattice its two 30-degree axes span and orders siblings back-to-front by isometric grid row, ties broken by document order; geometry is projected only through an explicit projection element. | FEAT-010 requires axis alignment and depth ordering but names no grid geometry or depth rule, and the schema has no flag to mark a billboard. | lead |
+| D-028 | A scene `recipeId` or project `defaultRecipeId` that does not resolve is a missing project asset (exit 2, `E_PROJECT_ASSET`), mirroring a missing palette. | The docs classify no error for an unresolved recipe reference; the project loader already treats other missing style documents this way. | lead |
 
 ## Definition of Done
 - Every acceptance criterion in the task's FEAT file is met, including its edge cases and failure states.
-- Unit tests for the unit pass; cargo test --workspace, cargo fmt --check, and cargo clippy -D warnings are clean.
+- Unit tests for the unit pass; `scripts/check.sh` (cargo fmt --check, clippy -D warnings, workspace build, workspace tests, and the acceptance suite) is clean.
 - Determinism holds: repeated runs on the same input produce byte-identical output (NFR-010).
 - Every failure is reported with a location and a non-zero exit, with no partial output (NFR-011).
 - The task's contract is implemented and marked Implemented in CONTRACTS.md.
@@ -105,7 +111,8 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 ## Key commands
 - cargo build --workspace
 - cargo test --workspace
+- cargo test --manifest-path tests/acceptance/Cargo.toml --locked
 - cargo fmt --all -- --check
 - cargo clippy --workspace --all-targets -- -D warnings
 - cargo run -p vectr-cli -- validate fixtures/scene.json
-- cargo run -p vectr-cli -- export fixtures/scene.json --format svg --out dist/
+- cargo run -p vectr-cli -- export fixtures/scene.json --format svg --out dist/scene.svg

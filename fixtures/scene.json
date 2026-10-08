@@ -1,0 +1,70 @@
+{
+  "id": "example",
+  "projectId": "project",
+  "name": "Example",
+  "formatVersion": "0.2",
+  "canvas": { "width": 512, "height": 512, "background": "#ffffff" },
+  "paletteId": "brand",
+  "title": "Example mark",
+  "description": "A rounded card, an inner dot, and a wordmark",
+  "elements": [
+    {
+      "id": "mark",
+      "sceneId": "example",
+      "order": 0,
+      "name": "Mark",
+      "kind": "group",
+      "geometry": {},
+      "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
+      "opacity": 1,
+      "visible": true
+    },
+    {
+      "id": "card",
+      "sceneId": "example",
+      "parentId": "mark",
+      "order": 0,
+      "name": "Card",
+      "kind": "rect",
+      "geometry": { "x": 64, "y": 64, "width": 384, "height": 384, "rx": 32, "ry": 32 },
+      "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
+      "fill": { "kind": "gradient", "ref": "brand-fade" },
+      "stroke": { "profileId": "outline", "paint": { "kind": "token", "ref": "ink" } },
+      "opacity": 1,
+      "visible": true
+    },
+    {
+      "id": "dot",
+      "sceneId": "example",
+      "parentId": "mark",
+      "order": 1,
+      "name": "Dot",
+      "kind": "ellipse",
+      "geometry": { "x": 192, "y": 192, "width": 128, "height": 128 },
+      "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
+      "fill": { "kind": "token", "ref": "paper" },
+      "opacity": 1,
+      "visible": true
+    },
+    {
+      "id": "wordmark",
+      "sceneId": "example",
+      "order": 1,
+      "name": "Wordmark",
+      "kind": "text",
+      "geometry": {
+        "x": 256,
+        "y": 470,
+        "text": "Vectr",
+        "fontSize": 48,
+        "align": "center",
+        "lineHeight": 56,
+        "letterSpacing": 0
+      },
+      "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
+      "fill": { "kind": "token", "ref": "ink" },
+      "opacity": 1,
+      "visible": true
+    }
+  ]
+}

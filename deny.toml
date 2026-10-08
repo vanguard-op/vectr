@@ -1,0 +1,51 @@
+# cargo-deny configuration: dependency, advisory and license gate.
+#
+# Enforces NFR-020 (supply chain: advisories, pinned wildcard-free versions,
+# trusted sources) and NFR-041 (third-party license compliance). Run by CI
+# (.github/workflows/ci.yml) and against the release dependency graph.
+
+[graph]
+# Whole-workspace graph; no target pruning.
+targets = []
+
+[advisories]
+# Use the RustSec advisory database. Any unignored vulnerability fails the
+# build; ignore entries must carry a reason.
+ignore = []
+
+[licenses]
+confidence-threshold = 0.9
+# Permissive and notice-only licenses compatible with distribution.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "MPL-2.0",
+    "CC0-1.0",
+    "0BSD",
+    "OFL-1.1",
+]
+exceptions = []
+
+[licenses.private]
+# Workspace crates are unpublished placeholders while the project license is
+# still being settled; do not license-check them. Flip to false once crates
+# carry a real SPDX license and are published.
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+# NFR-020: no `*` version requirements anywhere in the graph.
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

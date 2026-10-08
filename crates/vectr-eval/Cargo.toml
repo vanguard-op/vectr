@@ -1,0 +1,16 @@
+[package]
+name = "vectr-eval"
+description = "Vectr evaluation harness."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "vectr-eval"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]

@@ -1,0 +1,69 @@
+# Vectr workspace root.
+#
+# The workspace pins the shared toolchain contract (rust-toolchain.toml) and
+# the dependency versions every crate consumes through `workspace = true`, so
+# the version of the geometry, text, and raster stack is declared once.
+#
+# Build, test, lint and release commands are listed in DELIVERY.md and
+# implemented in scripts/; the same scripts run locally and in CI.
+
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.99"
+# Product licence for every workspace crate (D-010): dual permissive, with the
+# full texts in LICENSE-MIT and LICENSE-APACHE at the repository root. Each
+# crate opts in with `license.workspace = true`.
+license = "MIT OR Apache-2.0"
+
+[workspace.lints.rust]
+# NFR-021: the shipped crates parse untrusted input; keep them free of
+# hand-written unsafe code.
+unsafe_code = "deny"
+
+[workspace.dependencies]
+# Serialization and the published JSON Schema (C-001).
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+schemars = "1.2.2"
+
+# Path geometry, boolean and offset operations (D-007).
+lyon = "1.0.19"
+i_overlay = "9.0.0"
+
+# Text shaping and font parsing (D-004, D-019, FEAT-024). rustybuzz and
+# ttf-parser are unmaintained (RUSTSEC-2026-0206, RUSTSEC-2026-0192) with no
+# safe upgrade; harfrust and skrifa are their maintained successors, so
+# NFR-020's dependency gate stays green without an ignore. Both build on the
+# same read-fonts release, so shaping and outlining share one font parser.
+harfrust = "0.14.0"
+skrifa = "0.48.0"
+
+# Rasterizer behind the export layer (D-007, FEAT-013).
+#
+# Default features are disabled so a member that inherits this entry cannot
+# pull resvg's native system-font, text, SVGZ or raster-image support: the
+# rasterizer must stay pure-Rust and free of native system dependencies
+# (D-007). Vectr shapes and outlines text itself (harfrust + skrifa) and
+# rasterizes the SVG it has already emitted, so none of those defaults are
+# wanted.
+resvg = { version = "0.48.1", default-features = false }
+tiny-skia = "0.12.0"
+
+# Command-line interface (C-004).
+clap = { version = "4.6.7", features = ["derive"] }
+
+# Diagnostic plumbing.
+anyhow = "1.0.104"
+thiserror = "2.0.21"
+
+# Evaluation harness providers (FEAT-023).
+tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls-tls"] }
+
+[profile.release]
+lto = "thin"

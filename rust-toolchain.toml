@@ -1,0 +1,8 @@
+# Single source of truth for the Rust toolchain.
+#
+# Pinned to an exact stable release so local builds, CI, and release builds
+# use an identical compiler. Bump this file in one place when upgrading.
+[toolchain]
+channel = "1.99.0"
+profile = "minimal"
+components = ["rustfmt", "clippy"]

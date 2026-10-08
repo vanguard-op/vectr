@@ -1,0 +1,10 @@
+{
+  "id": "brand",
+  "projectId": "project",
+  "name": "Brand",
+  "tokens": [
+    { "name": "ink", "value": "#1a1a2e", "description": "Primary text and outline" },
+    { "name": "accent", "value": "#e94560", "description": "Mark fill" },
+    { "name": "paper", "value": "#ffffff", "description": "Inner highlight" }
+  ]
+}

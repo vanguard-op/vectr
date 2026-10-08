@@ -1,5 +1,20 @@
+# Build output.
 /target/
+# The acceptance suite is a nested workspace with its own target dir.
+/tests/acceptance/target/
+/dist/
+
+# Per-task scratch and task routes.
 /scratch/
 /.delivery/
-/dist/
+
+# Local environment files never carry real values into the repository
+# (NFR-026: Vectr stores and transmits no secrets).
+.env
+.env.*
+!.env.example
+
+# Editor and OS noise.
 *.tmp
+*.swp
+.DS_Store

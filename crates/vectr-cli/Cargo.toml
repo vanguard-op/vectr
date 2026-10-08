@@ -1,0 +1,25 @@
+[package]
+name = "vectr-cli"
+description = "Vectr command-line interface."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "vectr"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+# The engine the CLI drives: parse, validate, compile and export (C-002).
+# The explicit version keeps the path dependency from registering as a `*`
+# wildcard in the dependency graph (NFR-020); it must track vectr-core's
+# package version in the workspace manifest.
+vectr-core = { version = "0.1.0", path = "../vectr-core" }
+
+# Structured output for `validate --json` (C-004).
+serde_json = { workspace = true }

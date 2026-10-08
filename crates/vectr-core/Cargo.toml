@@ -1,0 +1,48 @@
+[package]
+name = "vectr-core"
+description = "Vectr scene engine: parse, validate, resolve, style, compile, and export."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+# Not published until the remaining crates.io metadata is settled; see
+# DELIVERY.md.
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+# The scene document model and its strict JSON serialization (C-001).
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Boolean composition of filled regions for the composition primitives
+# (D-007, FEAT-003).
+i_overlay = { workspace = true }
+
+# Text shaping and font parsing for the Font & Asset Manager (D-004, D-019,
+# FEAT-024). The workspace pins both versions; text is shaped with harfrust
+# and glyph outlines are read with skrifa, so shaping and outlining share one
+# font parser (read-fonts) and the unmaintained rustybuzz/ttf-parser stack
+# stays out of the tree (NFR-020).
+harfrust = { workspace = true }
+skrifa = { workspace = true }
+
+# The rasterizer behind PNG export (D-007, FEAT-013). It is optional so a build
+# without it still validates, compiles and exports SVG, and reports PNG's
+# missing capability rather than failing silently (NFR-004).
+#
+# Declared with an explicit version rather than `workspace = true`: cargo
+# ignores a member's `default-features = false` when inheriting a workspace
+# dependency, and the rasterizer must stay pure-Rust and free of native system
+# dependencies (D-007), so its text, system-font, SVGZ and raster-image
+# defaults stay off. The workspace `resvg` entry should carry
+# `default-features = false` so this can inherit again.
+resvg = { version = "0.48.1", optional = true, default-features = false }
+
+[features]
+default = ["rasterizer"]
+# PNG export (FEAT-013); disabling it makes `export_png` report the missing
+# rasterizer.
+rasterizer = ["dep:resvg"]

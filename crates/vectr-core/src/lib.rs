@@ -1,0 +1,60 @@
+//! Vectr scene engine: parse, validate, resolve, style, compile, and export.
+//!
+//! The [`scene`] module owns the scene document model and its strict JSON
+//! reading and writing (C-001); [`primitives`] resolves the elemental shapes a
+//! scene draws (FEAT-002), [`composition`] composes them into concrete
+//! placements and geometry (FEAT-003), [`constraints`] resolves stated
+//! relationships into concrete placements (FEAT-004), [`style`] holds the
+//! palettes, stroke profiles, gradients and recipes applied to elements
+//! (FEAT-005, FEAT-027),
+//! [`compiler`] compiles a validated scene into one [`render`] model shared by
+//! every exporter (FEAT-011), [`render`] defines that model (C-003), [`fonts`]
+//! finalizes a text node's glyph geometry (FEAT-024), and [`export`] writes that
+//! model to an output format (FEAT-012).
+
+pub mod compiler;
+pub mod composition;
+pub mod constraints;
+
+/// The export layer: a compiled model rendered to an output format.
+///
+/// Declared inline so the SVG subtree is addressed by its own path
+/// (`export/svg/`); later exporters add sibling modules here.
+pub mod export {
+    pub mod png;
+    pub mod svg;
+}
+
+pub mod fonts;
+pub mod primitives;
+pub mod render;
+pub mod scene;
+pub mod style;
+
+pub use compiler::{compile, compile_with_style, FontAsset, StyleContext, DEFAULT_FONT_ID};
+pub use composition::{flatten_shape, is_composition, projection_for, resolve_transform, Affine};
+pub use constraints::{resolve as resolve_constraints, Attachment, Frame, Placement, Resolution};
+pub use export::png::{export_png, export_png_reporting, PngExport, RasterOptions};
+pub use export::svg::{export_svg, export_svg_reporting, SvgExport, SvgOptions};
+pub use fonts::{
+    outline_text, FontLibrary, OutlinedText, FALLBACK_FONT_ID, FONT_MISSING, MISSING_GLYPH,
+};
+pub use primitives::{Ellipse, Line, Polygon, Rect, Shape};
+pub use render::{
+    GradientPaint, NodePaint, NodeStroke, Paint, RenderCanvas, RenderMeta, RenderModel,
+    ResolvedFont, ResolvedNode, ResolvedStop, TextRun,
+};
+pub use scene::{
+    parse, validate, Canvas, Constraint, ConstraintKind, Diagnostic, DiagnosticCode, Diagnostics,
+    Element, ElementKind, Geometry, Location, PaintKind, ProjectionAxis, Scene, Severity,
+    TextAlign, Transform, MAX_SCENE_BYTES,
+};
+pub use style::{
+    parse_gradient, parse_palette, parse_stroke_profile, parse_style_recipe, resolve_fill,
+    resolve_gradient, resolve_stroke, resolve_stroke_paint, validate_gradient,
+    validate_gradient_usage, validate_palette, validate_palette_usage, validate_stroke_profile,
+    validate_style_recipe, Gradient, GradientStop, GradientType, Palette, PaletteToken, RecipeName,
+    RecipeParameters, ResolvedStroke, Shading, Spread, StrokeCap, StrokeJoin, StrokeProfile,
+    StyleRecipe, FREEFORM_CURVE, GRID_SNAPPED, GRID_TOO_FINE, ISOMETRIC_OFF_AXIS, LINE_ART_EMPTY,
+    MIN_GRID_SIZE, MIN_STROKE_WEIGHT, STROKE_WEIGHT_CLAMPED,
+};
