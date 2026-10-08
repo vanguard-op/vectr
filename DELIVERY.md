@@ -68,6 +68,11 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | Phase 2 — Style Core | 2026-10-08 | FEAT-027, FEAT-007, FEAT-008, FEAT-009, FEAT-010 shipped; the element paint model unified with linear/radial gradients; recipe selection wired through the CLI; C-001–C-003 re-implemented at revision 5. |
 | Phase 3 — Any Model Can Author | 2026-10-08 | FEAT-017, FEAT-018, FEAT-019, FEAT-020 shipped; validated alpha colour model (FEAT-005) and the shading-request warning (FEAT-007); scope extended to very complex illustrations (FEAT-003, FEAT-011) with complex-scene coverage; multi-scene projects with identifier addressing and a default scene (FEAT-016); CLI and MCP share one project loader and one authoring guide; C-001–C-005 implemented. |
 
+### Active phase: Phase 3 — Any Model Can Author
+| Task | Feature | Owner | Status | Contract |
+|---|---|---|---|---|
+| T-057 | FEAT-019 | ai-engineer | In Progress | C-005 |
+
 ## Decisions log
 | # | Decision | Rationale | By |
 |---|---|---|---|
