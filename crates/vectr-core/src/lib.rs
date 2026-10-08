@@ -55,5 +55,6 @@ pub use style::{
     validate_gradient_usage, validate_palette, validate_palette_usage, validate_stroke_profile,
     validate_style_recipe, Gradient, GradientStop, GradientType, Palette, PaletteToken, RecipeName,
     RecipeParameters, ResolvedStroke, Shading, Spread, StrokeCap, StrokeJoin, StrokeProfile,
-    StyleRecipe, LINE_ART_EMPTY, MIN_STROKE_WEIGHT, STROKE_WEIGHT_CLAMPED,
+    StyleRecipe, FREEFORM_CURVE, GRID_SNAPPED, GRID_TOO_FINE, LINE_ART_EMPTY, MIN_GRID_SIZE,
+    MIN_STROKE_WEIGHT, STROKE_WEIGHT_CLAMPED,
 };

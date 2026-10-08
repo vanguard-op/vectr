@@ -49,6 +49,12 @@
 //! unset, while a profile that states a width is honored as an explicit varying
 //! weight — takes each stroke's paint from the palette, clamps a weight below
 //! the minimum renderable unit, and reports a scene that draws no strokes.
+//! The geometric recipe (FEAT-009) aligns elements to a grid: each element's
+//! resolved position snaps to the nearest grid intersection, a polygon's
+//! vertices snap with it so a set of polygons is constructed on shared grid
+//! points, and an element that sat off the grid is reported. A freeform curve
+//! is kept as an explicit exception and reported, and a grid finer than the
+//! renderable resolution is reported as a performance concern.
 //!
 //! # Fonts
 //!
@@ -69,7 +75,7 @@ use crate::composition::{
 use crate::constraints::{self, Point, Resolution};
 use crate::fonts::FALLBACK_FONT_ID;
 use crate::primitives::{
-    self, parse as parse_path, Line, Path as PathGeometry, Segment, Shape, SubPath,
+    self, parse as parse_path, Line, Path as PathGeometry, Polygon, Segment, Shape, SubPath,
 };
 use crate::render::{
     NodeGroup, NodePaint, NodeStroke, RenderCanvas, RenderMeta, RenderModel, ResolvedFont,
@@ -246,12 +252,14 @@ pub fn compile_with_style<'s>(
         limit_hit: false,
         parent: Vec::new(),
         children: Vec::new(),
+        snapped: HashMap::new(),
     };
 
     compiler.prepare();
     if compiler.diagnostics.has_errors() {
         return Err(compiler.diagnostics);
     }
+    compiler.plan_geometric_snap();
     compiler.run();
     compiler.carry_fallback();
 
@@ -268,6 +276,11 @@ pub fn compile_with_style<'s>(
         compiler
             .diagnostics
             .extend(style::check_recipe_expressible(recipe));
+        // A grid finer than the renderable resolution is a performance concern,
+        // reported rather than silently snapped (FEAT-009).
+        compiler
+            .diagnostics
+            .extend(style::check_recipe_grid(recipe));
         // A line-art scene with no stroke has no line work in it; the emptiness
         // is reported rather than passed off as a successful render (FEAT-008).
         let has_strokes = compiler
@@ -316,6 +329,9 @@ struct Compiler<'a, 's> {
     limit_hit: bool,
     parent: Vec<Option<usize>>,
     children: Vec<Vec<usize>>,
+    /// The geometric recipe's planned grid positions, one per element, keyed by
+    /// element id; empty when no grid applies (FEAT-009).
+    snapped: HashMap<String, Point>,
 }
 
 impl Compiler<'_, '_> {
@@ -790,7 +806,12 @@ impl Compiler<'_, '_> {
                 [element.transform.translate_x, element.transform.translate_y],
             )
         };
-        let translation = self.resolution.translation(&id).unwrap_or(declared);
+        let translation = self
+            .snapped
+            .get(&id)
+            .copied()
+            .or_else(|| self.resolution.translation(&id))
+            .unwrap_or(declared);
         transform.translate_x = translation[0];
         transform.translate_y = translation[1];
         match Affine::from_scene(&transform) {
@@ -806,6 +827,104 @@ impl Compiler<'_, '_> {
                 None
             }
         }
+    }
+
+    /// Plans the geometric recipe's grid alignment for every element (FEAT-009).
+    ///
+    /// The recipe aligns elements to its grid: each element's resolved position
+    /// snaps to the nearest grid intersection, and an element that sat off the
+    /// grid is reported. The plan is computed once, before emission, so a
+    /// composition operand that is lowered several times snaps identically and
+    /// is reported once.
+    fn plan_geometric_snap(&mut self) {
+        let Some(recipe) = self.style.recipe else {
+            return;
+        };
+        if !recipe.snaps_to_grid() {
+            return;
+        }
+
+        let plan: Vec<(String, [f64; 2], bool)> = self
+            .scene
+            .elements
+            .iter()
+            .map(|element| {
+                let declared = [element.transform.translate_x, element.transform.translate_y];
+                let current = self.resolution.translation(&element.id).unwrap_or(declared);
+                let (x, moved_x) = recipe.snap_coordinate(current[0]);
+                let (y, moved_y) = recipe.snap_coordinate(current[1]);
+                (element.id.clone(), [x, y], moved_x || moved_y)
+            })
+            .collect();
+
+        for (id, translation, moved) in plan {
+            if moved {
+                self.diagnostics.push(
+                    Diagnostic::warning(
+                        style::GRID_SNAPPED,
+                        format!(
+                            "element `{id}` sits off the geometric grid; it was snapped to the nearest grid intersection"
+                        ),
+                    )
+                    .with_location(Location::element_at(id.clone(), "/transform")),
+                );
+            }
+            self.snapped.insert(id, translation);
+        }
+    }
+
+    /// Snaps constructed geometry to the scene's grid (FEAT-009).
+    ///
+    /// Under the geometric recipe a polygon's vertices snap to grid
+    /// intersections, so a set of polygons is constructed on shared grid points
+    /// and their edges line up. Every other shape and every other recipe is
+    /// left untouched.
+    fn snap_geometry(&self, geometry: Shape) -> Shape {
+        let Some(recipe) = self.style.recipe else {
+            return geometry;
+        };
+        if !recipe.snaps_to_grid() {
+            return geometry;
+        }
+        match geometry {
+            Shape::Polygon(polygon) => Shape::Polygon(Polygon {
+                points: polygon
+                    .points
+                    .iter()
+                    .map(|point| {
+                        [
+                            recipe.snap_coordinate(point[0]).0,
+                            recipe.snap_coordinate(point[1]).0,
+                        ]
+                    })
+                    .collect(),
+            }),
+            other => other,
+        }
+    }
+
+    /// Reports a freeform curve kept in a geometric scene (FEAT-009).
+    ///
+    /// The geometric recipe constructs from straight edges and circles, so a
+    /// path that declares a curve is avoided by the look; because the curve is
+    /// written explicitly it is kept as an exception and reported, rather than
+    /// silently drawn or silently replaced.
+    fn check_freeform(&mut self, element_id: &str, geometry: &Shape) {
+        let Some(recipe) = self.style.recipe else {
+            return;
+        };
+        if !recipe.is_geometric() || !has_freeform_curve(geometry) {
+            return;
+        }
+        self.diagnostics.push(
+            Diagnostic::warning(
+                style::FREEFORM_CURVE,
+                format!(
+                    "element `{element_id}` draws a freeform curve, which the geometric recipe avoids; it is kept as an explicit exception"
+                ),
+            )
+            .with_location(Location::element(element_id)),
+        );
     }
 
     /// Parses an `alongPath` element's guide, or reports why it cannot.
@@ -863,6 +982,8 @@ impl Compiler<'_, '_> {
             )
         };
         let id = self.unique_id(&base_id, copy);
+        let geometry = self.snap_geometry(geometry);
+        self.check_freeform(&base_id, &geometry);
         let paint = self.paint_for(index);
         let order = self.order;
         self.order += 1;
@@ -1306,13 +1427,31 @@ fn kind_name(kind: ElementKind) -> &'static str {
     kind.as_str()
 }
 
+/// Whether a shape draws a segment that is not a straight line.
+///
+/// A rectangle with rounded corners and an ellipse are constructed curves the
+/// geometric recipe keeps; only a path's Bézier or arc segments are the
+/// freeform curves it avoids (FEAT-009).
+fn has_freeform_curve(shape: &Shape) -> bool {
+    let Shape::Path(path) = shape else {
+        return false;
+    };
+    path.subpaths.iter().any(|subpath| {
+        subpath
+            .segments
+            .iter()
+            .any(|segment| !matches!(segment, Segment::Line { .. }))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::primitives::{Ellipse, Rect as PrimRect};
     use crate::style::{
-        parse_gradient, parse_palette, parse_stroke_profile, parse_style_recipe, LINE_ART_EMPTY,
-        MIN_STROKE_WEIGHT, STROKE_WEIGHT_CLAMPED, TEXTURE_UNSUPPORTED, UNDEFINED_TOKEN,
+        parse_gradient, parse_palette, parse_stroke_profile, parse_style_recipe, FREEFORM_CURVE,
+        GRID_SNAPPED, GRID_TOO_FINE, LINE_ART_EMPTY, MIN_GRID_SIZE, MIN_STROKE_WEIGHT,
+        STROKE_WEIGHT_CLAMPED, TEXTURE_UNSUPPORTED, UNDEFINED_TOKEN,
     };
     use serde_json::{json, Value};
 
@@ -2518,5 +2657,231 @@ mod tests {
             .find(|error| error.code == UNSUPPORTED)
             .expect("an unsupported-feature error");
         assert!(error.message.contains("t1"), "{}", error.message);
+    }
+
+    /// A geometric recipe constructing on the given grid.
+    fn geometric_recipe(grid: f64) -> crate::style::StyleRecipe {
+        parse_style_recipe(&format!(
+            r#"{{"id":"recipe-g","projectId":"p","name":"geometric","parameters":{{"gridSize":{grid}}}}}"#
+        ))
+        .expect("a geometric recipe")
+    }
+
+    #[test]
+    fn a_geometric_recipe_snaps_off_grid_elements_and_warns() {
+        let mut element = rect("e1", 0, 10.0, 10.0);
+        element["transform"]["translateX"] = json!(13.0);
+        element["transform"]["translateY"] = json!(27.0);
+        let scene = scene_of(json!([element]), None);
+        let recipe = geometric_recipe(10.0);
+        let style = StyleContext {
+            palette: None,
+            strokes: &[],
+            gradients: &[],
+            fonts: &[],
+            recipe: Some(&recipe),
+        };
+
+        let model = compile_with_style(&scene, &style).expect("compiles");
+        assert_eq!(model.meta.recipe.as_deref(), Some("geometric"));
+        assert_eq!(
+            model
+                .node("e1")
+                .expect("the node")
+                .transform
+                .apply([0.0, 0.0]),
+            [10.0, 30.0],
+            "an off-grid element snaps to the nearest grid intersection"
+        );
+        let warning = model
+            .diagnostics
+            .warnings()
+            .find(|warning| warning.code == GRID_SNAPPED)
+            .expect("an off-grid element is reported");
+        assert!(warning.message.contains("e1"), "{}", warning.message);
+    }
+
+    #[test]
+    fn an_element_already_on_the_grid_is_left_alone() {
+        let mut element = rect("e1", 0, 10.0, 10.0);
+        element["transform"]["translateX"] = json!(20.0);
+        element["transform"]["translateY"] = json!(30.0);
+        let scene = scene_of(json!([element]), None);
+        let recipe = geometric_recipe(10.0);
+        let style = StyleContext {
+            palette: None,
+            strokes: &[],
+            gradients: &[],
+            fonts: &[],
+            recipe: Some(&recipe),
+        };
+
+        let model = compile_with_style(&scene, &style).expect("compiles");
+        assert_eq!(
+            model
+                .node("e1")
+                .expect("the node")
+                .transform
+                .apply([0.0, 0.0]),
+            [20.0, 30.0]
+        );
+        assert!(
+            !model
+                .diagnostics
+                .warnings()
+                .any(|warning| warning.code == GRID_SNAPPED),
+            "an element on the grid is not reported"
+        );
+    }
+
+    #[test]
+    fn a_geometric_recipe_constructs_polygons_on_the_grid() {
+        let first = base(
+            "p1",
+            0,
+            "polygon",
+            json!({ "points": [[3.0, 4.0], [23.0, 4.0], [23.0, 24.0]] }),
+        );
+        let second = base(
+            "p2",
+            1,
+            "polygon",
+            json!({ "points": [[1.0, 1.0], [21.0, 1.0], [21.0, 21.0]] }),
+        );
+        let scene = scene_of(json!([first, second]), None);
+        let recipe = geometric_recipe(10.0);
+        let style = StyleContext {
+            palette: None,
+            strokes: &[],
+            gradients: &[],
+            fonts: &[],
+            recipe: Some(&recipe),
+        };
+
+        let model = compile_with_style(&scene, &style).expect("compiles");
+        let expected = vec![[0.0, 0.0], [20.0, 0.0], [20.0, 20.0]];
+        for id in ["p1", "p2"] {
+            let Some(Shape::Polygon(polygon)) = &model.node(id).expect("the node").geometry else {
+                panic!("a polygon node");
+            };
+            assert_eq!(
+                polygon.points, expected,
+                "polygon `{id}` is constructed on the grid"
+            );
+        }
+    }
+
+    #[test]
+    fn a_grid_finer_than_the_renderable_resolution_is_reported() {
+        let scene = scene_of(json!([rect("e1", 0, 10.0, 10.0)]), None);
+        let recipe = geometric_recipe(MIN_GRID_SIZE / 10.0);
+        let style = StyleContext {
+            palette: None,
+            strokes: &[],
+            gradients: &[],
+            fonts: &[],
+            recipe: Some(&recipe),
+        };
+
+        let model = compile_with_style(&scene, &style).expect("compiles");
+        assert!(
+            model
+                .diagnostics
+                .warnings()
+                .any(|warning| warning.code == GRID_TOO_FINE),
+            "a sub-resolution grid is a performance concern: {:?}",
+            model.diagnostics
+        );
+    }
+
+    #[test]
+    fn a_freeform_curve_in_a_geometric_scene_is_kept_and_reported() {
+        let curved = base(
+            "c1",
+            0,
+            "path",
+            json!({ "pathData": "M0 0 C0 10 10 10 10 0" }),
+        );
+        let straight = base("s1", 1, "path", json!({ "pathData": "M0 0 L10 0 L10 10" }));
+        let scene = scene_of(json!([curved, straight]), None);
+        let recipe = geometric_recipe(10.0);
+        let style = StyleContext {
+            palette: None,
+            strokes: &[],
+            gradients: &[],
+            fonts: &[],
+            recipe: Some(&recipe),
+        };
+
+        let model = compile_with_style(&scene, &style).expect("compiles");
+        assert!(
+            matches!(
+                model.node("c1").expect("the curve").geometry,
+                Some(Shape::Path(_))
+            ),
+            "the explicitly requested curve is kept"
+        );
+        let warning = model
+            .diagnostics
+            .warnings()
+            .find(|warning| warning.code == FREEFORM_CURVE)
+            .expect("a freeform curve is reported");
+        assert!(warning.message.contains("c1"), "{}", warning.message);
+        assert!(
+            !model
+                .diagnostics
+                .warnings()
+                .any(|warning| warning.code == FREEFORM_CURVE && warning.message.contains("s1")),
+            "a straight path is not a freeform curve"
+        );
+    }
+
+    #[test]
+    fn another_recipe_leaves_positions_untouched() {
+        let mut element = rect("e1", 0, 10.0, 10.0);
+        element["transform"]["translateX"] = json!(13.0);
+        let scene = scene_of(json!([element]), None);
+        let recipe = flat_recipe("none");
+        let style = StyleContext {
+            palette: None,
+            strokes: &[],
+            gradients: &[],
+            fonts: &[],
+            recipe: Some(&recipe),
+        };
+
+        let model = compile_with_style(&scene, &style).expect("compiles");
+        assert_eq!(
+            model
+                .node("e1")
+                .expect("the node")
+                .transform
+                .apply([0.0, 0.0])[0],
+            13.0
+        );
+        assert!(!model
+            .diagnostics
+            .warnings()
+            .any(|warning| warning.code == GRID_SNAPPED));
+    }
+
+    #[test]
+    fn geometric_compilation_is_deterministic() {
+        let mut element = rect("e1", 0, 10.0, 10.0);
+        element["transform"]["translateX"] = json!(13.0);
+        let scene = scene_of(json!([element]), None);
+        let recipe = geometric_recipe(10.0);
+        let style = StyleContext {
+            palette: None,
+            strokes: &[],
+            gradients: &[],
+            fonts: &[],
+            recipe: Some(&recipe),
+        };
+        assert_eq!(
+            compile_with_style(&scene, &style).expect("compiles"),
+            compile_with_style(&scene, &style).expect("compiles"),
+            "repeated runs must be identical (NFR-010)"
+        );
     }
 }

@@ -24,14 +24,16 @@ pub use gradient::{
 };
 pub use palette::{Palette, PaletteToken};
 pub use recipe::{RecipeName, RecipeParameters, Shading, StyleRecipe, TEXTURE_UNSUPPORTED};
+pub use recipe::{FREEFORM_CURVE, GRID_SNAPPED, GRID_TOO_FINE, MIN_GRID_SIZE};
 pub use recipe::{LINE_ART_EMPTY, MIN_STROKE_WEIGHT, STROKE_WEIGHT_CLAMPED};
 pub use stroke::{ResolvedStroke, StrokeCap, StrokeJoin, StrokeProfile};
 
 pub use palette::validate_usage as validate_palette_usage;
 pub use palette::{parse as parse_palette, validate as validate_palette};
 pub use recipe::{
-    check_expressible as check_recipe_expressible, check_line_art as check_recipe_line_art,
-    parse as parse_style_recipe, validate as validate_style_recipe,
+    check_expressible as check_recipe_expressible, check_grid as check_recipe_grid,
+    check_line_art as check_recipe_line_art, parse as parse_style_recipe,
+    validate as validate_style_recipe,
 };
 pub use stroke::{parse as parse_stroke_profile, validate as validate_stroke_profile};
 

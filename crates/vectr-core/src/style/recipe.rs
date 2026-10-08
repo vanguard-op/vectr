@@ -108,6 +108,29 @@ pub const STROKE_WEIGHT_CLAMPED: DiagnosticCode = DiagnosticCode::new("W_STROKE_
 /// A line-art scene draws no strokes, so its line-art output is empty (FEAT-008).
 pub const LINE_ART_EMPTY: DiagnosticCode = DiagnosticCode::new("W_LINE_ART_EMPTY");
 
+/// An off-grid element was snapped onto the geometric recipe's grid (FEAT-009).
+pub const GRID_SNAPPED: DiagnosticCode = DiagnosticCode::new("W_GRID_SNAPPED");
+
+/// The geometric recipe's grid is finer than the renderable resolution
+/// (FEAT-009).
+pub const GRID_TOO_FINE: DiagnosticCode = DiagnosticCode::new("W_GRID_TOO_FINE");
+
+/// A freeform curve was kept in a geometric scene as an explicit exception
+/// (FEAT-009).
+pub const FREEFORM_CURVE: DiagnosticCode = DiagnosticCode::new("W_FREEFORM_CURVE");
+
+/// The smallest grid the geometric recipe renders on: snapping below this
+/// resolves to positions the output cannot show, so a finer grid is reported as
+/// a performance concern (FEAT-009).
+///
+/// The docs name no figure for the renderable resolution; this is the
+/// product's, in scene units, matching the minimum renderable stroke weight.
+pub const MIN_GRID_SIZE: f64 = 0.05;
+
+/// A coordinate this close to a grid intersection, as a fraction of the grid,
+/// already counts as on it (FEAT-009).
+const GRID_TOLERANCE_FRACTION: f64 = 1e-6;
+
 impl StyleRecipe {
     /// The recipe name as it appears in the scene language.
     pub fn name_str(&self) -> &'static str {
@@ -122,6 +145,54 @@ impl StyleRecipe {
     /// Whether this is the line-art recipe.
     pub fn is_line_art(&self) -> bool {
         self.name == RecipeName::LineArt
+    }
+
+    /// Whether this is the geometric recipe.
+    pub fn is_geometric(&self) -> bool {
+        self.name == RecipeName::Geometric
+    }
+
+    /// The recipe's grid spacing, when it declares one (FEAT-009).
+    pub fn grid_size(&self) -> Option<f64> {
+        self.parameters.grid_size
+    }
+
+    /// Whether the geometric recipe aligns its elements to the grid.
+    ///
+    /// Aligning to a grid is the geometric look's construction rule (FEAT-009),
+    /// so it is on whenever the recipe names a usable grid, and off when `snap`
+    /// is explicitly false or the grid is absent or unusable. No other recipe
+    /// snaps; the flat, line-art and isometric looks leave positions untouched.
+    pub fn snaps_to_grid(&self) -> bool {
+        self.is_geometric()
+            && self.parameters.snap.unwrap_or(true)
+            && self
+                .grid_size()
+                .is_some_and(|size| size.is_finite() && size > 0.0)
+    }
+
+    /// Snaps a coordinate to the nearest grid intersection.
+    ///
+    /// Returns the grid intersection and whether the original coordinate sat
+    /// off the grid beyond the grid tolerance. A coordinate already on the grid
+    /// comes back at the intersection unchanged, and a recipe that does not
+    /// construct on a grid — any other look, or a geometric recipe without a
+    /// usable grid — returns the coordinate untouched, so a scene compiled
+    /// without a grid is byte-identical to one compiled with no recipe at all
+    /// (NFR-010).
+    pub fn snap_coordinate(&self, value: f64) -> (f64, bool) {
+        if !self.is_geometric() {
+            return (value, false);
+        }
+        let Some(size) = self.grid_size() else {
+            return (value, false);
+        };
+        if !size.is_finite() || size <= 0.0 || !value.is_finite() {
+            return (value, false);
+        }
+        let target = (value / size).round() * size;
+        let tolerance = size * GRID_TOLERANCE_FRACTION;
+        (target, (value - target).abs() > tolerance)
     }
 
     /// The recipe's default stroke weight, when it declares one (FEAT-008).
@@ -232,6 +303,34 @@ pub fn check_line_art(recipe: &StyleRecipe, has_strokes: bool) -> Diagnostics {
                 recipe.id
             ),
         ));
+    }
+    diagnostics
+}
+
+/// Reports a geometric recipe whose grid is finer than the renderable
+/// resolution (FEAT-009).
+///
+/// A grid below [`MIN_GRID_SIZE`] snaps elements to positions the output cannot
+/// resolve. The grid is still applied, and the fine grid is reported as a
+/// performance concern rather than silently accepted.
+pub fn check_grid(recipe: &StyleRecipe) -> Diagnostics {
+    let mut diagnostics = Diagnostics::new();
+    if !recipe.is_geometric() {
+        return diagnostics;
+    }
+    if let Some(size) = recipe.grid_size() {
+        if size.is_finite() && size > 0.0 && size < MIN_GRID_SIZE {
+            diagnostics.push(
+                Diagnostic::warning(
+                    GRID_TOO_FINE,
+                    format!(
+                        "geometric recipe `{}` uses a grid of {size}, below the renderable resolution {MIN_GRID_SIZE}; snapping to it costs precision the output cannot show",
+                        recipe.id
+                    ),
+                )
+                .at_path("/parameters/gridSize"),
+            );
+        }
     }
     diagnostics
 }
@@ -395,5 +494,80 @@ mod tests {
         // Another recipe is not a line-art scene and is not checked.
         let flat = parse(r#"{"id":"r","projectId":"p","name":"flat","parameters":{}}"#).unwrap();
         assert!(check_line_art(&flat, false).warnings().next().is_none());
+    }
+
+    fn geometric(grid: f64, snap: Option<bool>) -> StyleRecipe {
+        let snap = match snap {
+            Some(value) => format!(r#","snap":{value}"#),
+            None => String::new(),
+        };
+        parse(&format!(
+            r#"{{"id":"r","projectId":"p","name":"geometric","parameters":{{"gridSize":{grid}{snap}}}}}"#
+        ))
+        .expect("a geometric recipe")
+    }
+
+    #[test]
+    fn a_geometric_recipe_snaps_a_coordinate_to_its_grid() {
+        let recipe = geometric(10.0, None);
+        assert!(recipe.is_geometric());
+
+        // An off-grid coordinate snaps to the nearest intersection and is
+        // reported; a coordinate already on the grid does not move or report.
+        assert_eq!(recipe.snap_coordinate(13.0), (10.0, true));
+        assert_eq!(recipe.snap_coordinate(-4.0), (0.0, true));
+        assert_eq!(recipe.snap_coordinate(20.0), (20.0, false));
+        // A coordinate within tolerance counts as already on the grid.
+        let (snapped, moved) = recipe.snap_coordinate(10.0 + 1e-9);
+        assert_eq!(snapped, 10.0);
+        assert!(!moved, "a hair off the grid is not an off-grid element");
+    }
+
+    #[test]
+    fn the_geometric_recipe_snaps_unless_explicitly_disabled() {
+        // A grid is the recipe's construction rule, so snapping is on by
+        // default and can be switched off.
+        assert!(geometric(10.0, None).snaps_to_grid());
+        assert!(geometric(10.0, Some(true)).snaps_to_grid());
+        assert!(!geometric(10.0, Some(false)).snaps_to_grid());
+
+        // Without a usable grid there is nothing to snap to.
+        let no_grid =
+            parse(r#"{"id":"r","projectId":"p","name":"geometric","parameters":{}}"#).unwrap();
+        assert!(!no_grid.snaps_to_grid());
+        assert_eq!(no_grid.snap_coordinate(13.0), (13.0, false));
+    }
+
+    #[test]
+    fn another_recipe_never_snaps() {
+        let flat =
+            parse(r#"{"id":"r","projectId":"p","name":"flat","parameters":{"gridSize":10}}"#)
+                .unwrap();
+        assert!(!flat.is_geometric());
+        assert!(!flat.snaps_to_grid());
+        assert_eq!(flat.snap_coordinate(13.0), (13.0, false));
+    }
+
+    #[test]
+    fn a_grid_finer_than_the_renderable_resolution_is_reported() {
+        let diagnostics = check_grid(&geometric(MIN_GRID_SIZE / 10.0, None));
+        let warning = diagnostics.warnings().next().expect("a warning");
+        assert_eq!(warning.code, GRID_TOO_FINE);
+        assert!(warning.message.contains("grid"), "{}", warning.message);
+        assert!(
+            !diagnostics.has_errors(),
+            "a fine grid is a performance concern, not fatal"
+        );
+
+        // A grid at or above the renderable resolution is fine, and no other
+        // recipe is checked.
+        assert!(check_grid(&geometric(MIN_GRID_SIZE, None))
+            .warnings()
+            .next()
+            .is_none());
+        let flat =
+            parse(r#"{"id":"r","projectId":"p","name":"flat","parameters":{"gridSize":0.0001}}"#)
+                .unwrap();
+        assert!(check_grid(&flat).warnings().next().is_none());
     }
 }
