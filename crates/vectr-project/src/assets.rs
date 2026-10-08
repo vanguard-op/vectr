@@ -1,26 +1,31 @@
-//! Project asset loading for the commands (D-009, FEAT-016, FEAT-024).
+//! Project asset loading for the front ends (D-009, FEAT-016, FEAT-024).
 //!
 //! A project is a directory holding `vectr.project.json` and the entity folders
-//! the scene model refers to. Before compiling, a command loads the assets a
+//! the scene model refers to. Before compiling, a front end loads the assets a
 //! scene names: the palette the scene selects, the style recipe it renders in,
-//! the stroke profiles its elements reference, and the fonts its text elements
-//! name. The two open-licensed fonts Vectr ships are supplied for any scene with
-//! text, so a text element that names no font renders with the default and a
-//! glyph the chosen font lacks is covered by the fallback (FEAT-024, D-017,
-//! D-018).
+//! the stroke profiles and gradients its elements reference, and the fonts its
+//! text elements name. The two open-licensed fonts Vectr ships are supplied for
+//! any scene with text, so a text element that names no font renders with the
+//! default and a glyph the chosen font lacks is covered by the fallback
+//! (FEAT-024, D-017, D-018).
 //!
 //! References resolve by identifier, not by file name: palettes live under
 //! `palettes/`, style recipes under `recipes/`, stroke profiles under `strokes/`,
-//! and a user-supplied font is an `Asset` document under `assets/` whose `path`
-//! points at the font file. A document that cannot be read is a located
-//! diagnostic and no compilation happens; nothing is substituted silently
-//! (NFR-011, FEAT-005).
+//! gradients under `gradients/`, and a user-supplied font is an `Asset` document
+//! under `assets/` whose `path` points at the font file. A document that cannot
+//! be read is a located diagnostic and no compilation happens; nothing is
+//! substituted silently (NFR-011, FEAT-005).
 //!
 //! A scene renders in the recipe it names, or, when it names none, the project's
 //! `defaultRecipeId` (docs/Vectr/schema.md, "ProjectConfig"). The recipe is
 //! resolved the same way a palette is: by identifier from its folder, an
 //! unresolvable id a located error rather than a scene that silently renders
 //! flat (FEAT-007–FEAT-010).
+//!
+//! Because both an identifier in a scene and a path in an asset document are
+//! untrusted input, the loader refuses an identifier that is not a plain file
+//! stem and an asset file that resolves outside the project root, so a scene
+//! cannot name its way out of its project (NFR-021, NFR-024).
 //!
 //! The loader is deterministic (NFR-010): directory entries are read in sorted
 //! order and the bundled fonts are carried in a fixed order, so the same project
@@ -56,8 +61,8 @@ const RECIPE_DIR: &str = "recipes";
 /// The folder holding asset documents, including the fonts a scene may name.
 const ASSET_DIR: &str = "assets";
 
-/// A project style asset (a palette or stroke profile) could not be read or
-/// parsed, so the project an input refers to is broken.
+/// A project style asset (a palette, recipe, gradient or stroke profile) could
+/// not be read or parsed, so the project an input refers to is broken.
 pub const STYLE_ASSET: DiagnosticCode = DiagnosticCode::new("E_PROJECT_ASSET");
 
 /// The bundled default font's family name.
@@ -84,17 +89,21 @@ pub struct ProjectAssets {
 }
 
 impl ProjectAssets {
-    /// Loads the assets the project at `scene_path` provides for `scene`.
+    /// Loads the assets the project rooted at `root` provides for `scene`.
     ///
-    /// A palette, style-recipe, stroke-profile, or asset document that cannot be
-    /// read is reported rather than skipped, so a broken project fails loudly
-    /// instead of compiling against stale or partial assets (NFR-011).
-    pub fn load(scene_path: &Path, scene: &Scene) -> Result<Self, Diagnostics> {
-        let root = project_root(scene_path);
+    /// A caller that resolves the root itself — the MCP server, whose root also
+    /// anchors its filesystem scope — passes it in. A caller that only has a
+    /// scene file uses [`ProjectAssets::load_for_scene`].
+    ///
+    /// A palette, style-recipe, stroke-profile, gradient, or asset document
+    /// that cannot be read is reported rather than skipped, so a broken project
+    /// fails loudly instead of compiling against stale or partial assets
+    /// (NFR-011).
+    pub fn load(root: &Path, scene: &Scene) -> Result<Self, Diagnostics> {
         let mut diagnostics = Diagnostics::new();
 
         let palette = match scene.palette_id.as_deref() {
-            Some(id) => match load_palette(&root, id) {
+            Some(id) => match load_palette(root, id) {
                 Ok(palette) => Some(palette),
                 Err(findings) => {
                     diagnostics.extend(findings);
@@ -108,7 +117,7 @@ impl ProjectAssets {
         // project's default; a project without a configuration names neither and
         // the scene compiles with no recipe (docs/Vectr/schema.md,
         // "ProjectConfig").
-        let default_recipe = match load_default_recipe_id(&root) {
+        let default_recipe = match load_default_recipe_id(root) {
             Ok(id) => id,
             Err(findings) => {
                 diagnostics.extend(findings);
@@ -117,7 +126,7 @@ impl ProjectAssets {
         };
         let recipe_id = scene.recipe_id.clone().or(default_recipe);
         let recipe = match recipe_id.as_deref() {
-            Some(id) => match load_recipe(&root, id) {
+            Some(id) => match load_recipe(root, id) {
                 Ok(recipe) => Some(recipe),
                 Err(findings) => {
                     diagnostics.extend(findings);
@@ -127,7 +136,7 @@ impl ProjectAssets {
             None => None,
         };
 
-        let strokes = match load_strokes(&root) {
+        let strokes = match load_strokes(root) {
             Ok(strokes) => strokes,
             Err(findings) => {
                 diagnostics.extend(findings);
@@ -135,7 +144,7 @@ impl ProjectAssets {
             }
         };
 
-        let gradients = match load_gradients(&root) {
+        let gradients = match load_gradients(root) {
             Ok(gradients) => gradients,
             Err(findings) => {
                 diagnostics.extend(findings);
@@ -148,7 +157,7 @@ impl ProjectAssets {
         let mut fonts = Vec::new();
         if has_text(scene) {
             fonts.extend(bundled_fonts());
-            match load_font_assets(&root) {
+            match load_font_assets(root) {
                 Ok(user) => fonts.extend(user),
                 Err(findings) => diagnostics.extend(findings),
             }
@@ -164,6 +173,14 @@ impl ProjectAssets {
             gradients,
             fonts,
         })
+    }
+
+    /// Loads the assets for a scene file, resolving its project root first.
+    ///
+    /// The root is the nearest ancestor holding the project configuration, or
+    /// the scene's own directory when there is none ([`project_root`]).
+    pub fn load_for_scene(scene_path: &Path, scene: &Scene) -> Result<Self, Diagnostics> {
+        Self::load(&project_root(scene_path), scene)
     }
 
     /// The style context the compiler resolves the scene against (D-013).
@@ -187,12 +204,13 @@ impl ProjectAssets {
         &self.gradients
     }
 
-    /// Checks a scene's stroke and font references against the loaded assets.
+    /// Checks a scene's stroke, gradient and font references against the loaded
+    /// assets.
     ///
-    /// A referenced stroke profile or font that no asset provides is an error
-    /// naming the element, so an unresolvable reference fails before anything is
-    /// compiled and never degrades to a missing stroke or a dropped run
-    /// (FEAT-005, FEAT-024).
+    /// A referenced stroke profile, gradient or font that no asset provides is
+    /// an error naming the element, so an unresolvable reference fails before
+    /// anything is compiled and never degrades to a missing stroke or a dropped
+    /// run (FEAT-005, FEAT-024).
     pub fn check_references(&self, scene: &Scene) -> Diagnostics {
         let mut diagnostics = Diagnostics::new();
         for element in &scene.elements {
@@ -270,6 +288,23 @@ impl ProjectAssets {
     }
 }
 
+/// Finds the project root for a scene: the nearest ancestor holding the project
+/// configuration, or the scene's own directory when there is none.
+pub fn project_root(scene_path: &Path) -> PathBuf {
+    let start = match scene_path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
+        _ => PathBuf::from("."),
+    };
+    let mut current: Option<&Path> = Some(start.as_path());
+    while let Some(dir) = current {
+        if dir.join(PROJECT_FILE).is_file() {
+            return dir.to_path_buf();
+        }
+        current = dir.parent();
+    }
+    start
+}
+
 /// Whether a scene draws any text, and so needs a font at all.
 fn has_text(scene: &Scene) -> bool {
     scene
@@ -294,25 +329,29 @@ fn bundled_fonts() -> Vec<FontAsset> {
     ]
 }
 
-/// Finds the project root for a scene: the nearest ancestor holding the project
-/// configuration, or the scene's own directory when there is none.
-fn project_root(scene_path: &Path) -> PathBuf {
-    let start = match scene_path.parent() {
-        Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
-        _ => PathBuf::from("."),
-    };
-    let mut current: Option<&Path> = Some(start.as_path());
-    while let Some(dir) = current {
-        if dir.join(PROJECT_FILE).is_file() {
-            return dir.to_path_buf();
-        }
-        current = dir.parent();
+/// Refuses an identifier that is not a plain file stem, so a scene cannot name
+/// its way out of the asset directory (NFR-021, NFR-024).
+fn safe_id(id: &str) -> Result<(), Diagnostics> {
+    let plain = !id.is_empty()
+        && id != "."
+        && id != ".."
+        && !id.contains('/')
+        && !id.contains('\\')
+        && Path::new(id)
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_)));
+    if plain {
+        Ok(())
+    } else {
+        Err(style_error(format!(
+            "`{id}` is not a valid asset identifier"
+        )))
     }
-    start
 }
 
 /// Loads the palette the scene selected by id.
 fn load_palette(root: &Path, id: &str) -> Result<Palette, Diagnostics> {
+    safe_id(id)?;
     let dir = root.join(PALETTE_DIR);
     let direct = dir.join(format!("{id}.json"));
     if direct.is_file() {
@@ -388,6 +427,7 @@ fn load_default_recipe_id(root: &Path) -> Result<Option<String>, Diagnostics> {
 
 /// Loads the style recipe the scene renders in, by id (FEAT-007–FEAT-010).
 fn load_recipe(root: &Path, id: &str) -> Result<StyleRecipe, Diagnostics> {
+    safe_id(id)?;
     let dir = root.join(RECIPE_DIR);
     let direct = dir.join(format!("{id}.json"));
     if direct.is_file() {
@@ -469,9 +509,12 @@ fn load_gradients(root: &Path) -> Result<Vec<Gradient>, Diagnostics> {
 ///
 /// Each `Asset` document of kind `font` names its font file in `path`, resolved
 /// relative to the project root or, failing that, to the document itself. The
-/// font file is read as data and never executed (NFR-022).
+/// font file is read as data and never executed (NFR-022), and must resolve
+/// inside the project root so an asset document cannot point elsewhere
+/// (NFR-024).
 fn load_font_assets(root: &Path) -> Result<Vec<FontAsset>, Diagnostics> {
     let dir = root.join(ASSET_DIR);
+    let canonical_root = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     let mut fonts = Vec::new();
     let mut diagnostics = Diagnostics::new();
     for path in json_files(&dir) {
@@ -509,15 +552,20 @@ fn load_font_assets(root: &Path) -> Result<Vec<FontAsset>, Diagnostics> {
             diagnostics.push(font_error(format!("font asset `{id}` declares no path")));
             continue;
         };
-        let file = match asset_file(root, &path, relative) {
-            Some(file) => file,
-            None => {
-                diagnostics.push(font_error(format!(
-                    "font `{id}` names `{relative}`, which is not a file"
-                )));
-                continue;
-            }
+        let Some(file) = asset_file(root, &path, relative) else {
+            diagnostics.push(font_error(format!(
+                "font `{id}` names `{relative}`, which is not a file"
+            )));
+            continue;
         };
+        // The resolved file must stay inside the project root (NFR-024).
+        let canonical = fs::canonicalize(&file).unwrap_or_else(|_| file.clone());
+        if !canonical.starts_with(&canonical_root) {
+            diagnostics.push(font_error(format!(
+                "font `{id}` names `{relative}`, which is outside the project"
+            )));
+            continue;
+        }
         match fs::read(&file) {
             Ok(data) => {
                 let name = value
@@ -607,7 +655,8 @@ fn font_error(message: impl Into<String>) -> Diagnostic {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::TempDir;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use vectr_core::{compile_with_style, parse as parse_scene};
 
     const TEXT_SCENE: &str = r##"{
@@ -642,6 +691,33 @@ mod tests {
       ]
     }"##;
 
+    /// A unique directory that removes itself when the test ends.
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(label: &str) -> Self {
+            static COUNTER: AtomicUsize = AtomicUsize::new(0);
+            let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "vectr-project-{}-{label}-{unique}",
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&path);
+            fs::create_dir_all(&path).expect("creates the temporary directory");
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
     fn write(dir: &Path, name: &str, text: &str) -> PathBuf {
         let path = dir.join(name);
         if let Some(parent) = path.parent() {
@@ -662,7 +738,7 @@ mod tests {
         let scene_path = write(dir.path(), "scene.json", TEXT_SCENE);
         let scene = parse_scene(TEXT_SCENE).expect("a valid scene");
 
-        let assets = ProjectAssets::load(&scene_path, &scene).expect("loads");
+        let assets = ProjectAssets::load_for_scene(&scene_path, &scene).expect("loads");
         let model = compile_with_style(&scene, &assets.style_context()).expect("compiles");
         let ids: Vec<&str> = model.fonts.iter().map(|font| font.id.as_str()).collect();
         assert_eq!(ids, vec![DEFAULT_FONT_ID, FALLBACK_FONT_ID]);
@@ -676,7 +752,7 @@ mod tests {
         let scene_path = write(dir.path(), "scene.json", RECT_SCENE);
         let scene = parse_scene(RECT_SCENE).expect("a valid scene");
 
-        let assets = ProjectAssets::load(&scene_path, &scene).expect("loads");
+        let assets = ProjectAssets::load_for_scene(&scene_path, &scene).expect("loads");
         let model = compile_with_style(&scene, &assets.style_context()).expect("compiles");
         assert!(model.fonts.is_empty(), "{:?}", model.fonts);
     }
@@ -697,7 +773,7 @@ mod tests {
         let scene_path = write(dir.path(), "scenes/scene.json", &scene_text);
         let scene = parse_scene(&scene_text).expect("a valid scene");
 
-        let assets = ProjectAssets::load(&scene_path, &scene).expect("loads");
+        let assets = ProjectAssets::load_for_scene(&scene_path, &scene).expect("loads");
         assert_eq!(
             assets.palette().map(|palette| palette.id.as_str()),
             Some("brand")
@@ -715,10 +791,33 @@ mod tests {
         let scene_path = write(dir.path(), "scenes/scene.json", &scene_text);
         let scene = parse_scene(&scene_text).expect("a valid scene");
 
-        let diagnostics = ProjectAssets::load(&scene_path, &scene).expect_err("refused");
+        let diagnostics = ProjectAssets::load_for_scene(&scene_path, &scene).expect_err("refused");
         let error = diagnostics.errors().next().expect("an error");
         assert_eq!(error.code, STYLE_ASSET);
         assert!(error.message.contains("brand"), "{}", error.message);
+    }
+
+    #[test]
+    fn a_palette_id_that_escapes_the_root_is_refused() {
+        let dir = TempDir::new("assets-escape-id");
+        write(dir.path(), "vectr.project.json", "{}");
+        write(
+            dir.path(),
+            "palettes/../secret.json",
+            r##"{"id":"../secret","projectId":"p","name":"S","tokens":[]}"##,
+        );
+        let scene_text = RECT_SCENE.replace(
+            r##""elements": ["##,
+            r##""paletteId": "../secret", "elements": ["##,
+        );
+        let scene_path = write(dir.path(), "scenes/scene.json", &scene_text);
+        let scene = parse_scene(&scene_text).expect("a valid scene");
+
+        let diagnostics = ProjectAssets::load_for_scene(&scene_path, &scene).expect_err("refused");
+        assert_eq!(
+            diagnostics.errors().next().map(|error| error.code.clone()),
+            Some(STYLE_ASSET)
+        );
     }
 
     #[test]
@@ -732,7 +831,7 @@ mod tests {
         let scene_path = write(dir.path(), "scenes/scene.json", &scene_text);
         let scene = parse_scene(&scene_text).expect("a valid scene");
 
-        let assets = ProjectAssets::load(&scene_path, &scene).expect("loads");
+        let assets = ProjectAssets::load_for_scene(&scene_path, &scene).expect("loads");
         let diagnostics = assets.check_references(&scene);
         let error = diagnostics.errors().next().expect("an error");
         assert_eq!(error.code, UNDEFINED_STROKE);
@@ -770,7 +869,7 @@ mod tests {
         let scene_path = write(dir.path(), "scenes/scene.json", &scene_text);
         let scene = parse_scene(&scene_text).expect("a valid scene");
 
-        let assets = ProjectAssets::load(&scene_path, &scene).expect("loads");
+        let assets = ProjectAssets::load_for_scene(&scene_path, &scene).expect("loads");
         assert!(assets.check_references(&scene).is_empty());
         let model = compile_with_style(&scene, &assets.style_context()).expect("compiles");
         let stroke = model.nodes[0]
@@ -806,7 +905,7 @@ mod tests {
         let scene_path = write(dir.path(), "scenes/scene.json", &scene_text);
         let scene = parse_scene(&scene_text).expect("a valid scene");
 
-        let assets = ProjectAssets::load(&scene_path, &scene).expect("loads");
+        let assets = ProjectAssets::load_for_scene(&scene_path, &scene).expect("loads");
         assert!(assets.check_references(&scene).is_empty());
         let model = compile_with_style(&scene, &assets.style_context()).expect("compiles");
         let brand = model
@@ -828,7 +927,7 @@ mod tests {
         let scene_path = write(dir.path(), "scenes/scene.json", &scene_text);
         let scene = parse_scene(&scene_text).expect("a valid scene");
 
-        let assets = ProjectAssets::load(&scene_path, &scene).expect("loads");
+        let assets = ProjectAssets::load_for_scene(&scene_path, &scene).expect("loads");
         let diagnostics = assets.check_references(&scene);
         let error = diagnostics.errors().next().expect("an error");
         assert_eq!(error.code, FONT);
@@ -851,9 +950,35 @@ mod tests {
         let scene_path = write(dir.path(), "scenes/scene.json", &scene_text);
         let scene = parse_scene(&scene_text).expect("a valid scene");
 
-        let diagnostics = ProjectAssets::load(&scene_path, &scene).expect_err("refused");
+        let diagnostics = ProjectAssets::load_for_scene(&scene_path, &scene).expect_err("refused");
         let error = diagnostics.errors().next().expect("an error");
         assert_eq!(error.code, FONT);
+    }
+
+    #[test]
+    fn a_font_file_outside_the_project_root_is_refused() {
+        let dir = TempDir::new("assets-font-escape");
+        let outside = dir.path().join("outside");
+        fs::create_dir_all(&outside).expect("creates the outside directory");
+        fs::write(outside.join("Brand.ttf"), bundled("Inter.ttf")).expect("writes the font file");
+        let project = dir.path().join("project");
+        write(&project, "vectr.project.json", "{}");
+        write(
+            &project,
+            "assets/brand.json",
+            r#"{"id":"brand","sceneId":"s","kind":"font","path":"../outside/Brand.ttf","license":"OFL"}"#,
+        );
+        let scene_text = TEXT_SCENE.replace(
+            r##""kind": "text","##,
+            r##""kind": "text", "fontId": "brand","##,
+        );
+        let scene_path = write(&project, "scenes/scene.json", &scene_text);
+        let scene = parse_scene(&scene_text).expect("a valid scene");
+
+        let diagnostics = ProjectAssets::load_for_scene(&scene_path, &scene).expect_err("refused");
+        let error = diagnostics.errors().next().expect("an error");
+        assert_eq!(error.code, FONT);
+        assert!(error.message.contains("outside"), "{}", error.message);
     }
 
     #[test]
@@ -882,8 +1007,8 @@ mod tests {
         let scene_path = write(dir.path(), "scene.json", RECT_SCENE);
         let scene = parse_scene(RECT_SCENE).expect("a valid scene");
 
-        let first = ProjectAssets::load(&scene_path, &scene).expect("loads");
-        let second = ProjectAssets::load(&scene_path, &scene).expect("loads");
+        let first = ProjectAssets::load_for_scene(&scene_path, &scene).expect("loads");
+        let second = ProjectAssets::load_for_scene(&scene_path, &scene).expect("loads");
         let first_ids: Vec<&str> = first.strokes.iter().map(|p| p.id.as_str()).collect();
         let second_ids: Vec<&str> = second.strokes.iter().map(|p| p.id.as_str()).collect();
         assert_eq!(first_ids, second_ids);
@@ -928,7 +1053,7 @@ mod tests {
         let scene_path = write(dir.path(), "scenes/scene.json", &scene_text);
         let scene = parse_scene(&scene_text).expect("a valid scene");
 
-        let assets = ProjectAssets::load(&scene_path, &scene).expect("loads");
+        let assets = ProjectAssets::load_for_scene(&scene_path, &scene).expect("loads");
         let model = compile_with_style(&scene, &assets.style_context()).expect("compiles");
         assert_eq!(model.meta.recipe.as_deref(), Some("line-art"));
         let stroke = model.nodes[0]
@@ -951,7 +1076,7 @@ mod tests {
         let scene_path = write(dir.path(), "scenes/scene.json", RECT_SCENE);
         let scene = parse_scene(RECT_SCENE).expect("a valid scene");
 
-        let assets = ProjectAssets::load(&scene_path, &scene).expect("loads");
+        let assets = ProjectAssets::load_for_scene(&scene_path, &scene).expect("loads");
         let model = compile_with_style(&scene, &assets.style_context()).expect("compiles");
         assert_eq!(model.meta.recipe.as_deref(), Some("line-art"));
     }
@@ -970,7 +1095,7 @@ mod tests {
         let scene_path = write(dir.path(), "scenes/scene.json", &scene_text);
         let scene = parse_scene(&scene_text).expect("a valid scene");
 
-        let assets = ProjectAssets::load(&scene_path, &scene).expect("loads");
+        let assets = ProjectAssets::load_for_scene(&scene_path, &scene).expect("loads");
         let model = compile_with_style(&scene, &assets.style_context()).expect("compiles");
         assert_eq!(model.meta.recipe.as_deref(), Some("line-art"));
     }
@@ -981,7 +1106,7 @@ mod tests {
         let scene_path = write(dir.path(), "scene.json", RECT_SCENE);
         let scene = parse_scene(RECT_SCENE).expect("a valid scene");
 
-        let assets = ProjectAssets::load(&scene_path, &scene).expect("loads");
+        let assets = ProjectAssets::load_for_scene(&scene_path, &scene).expect("loads");
         assert!(assets.style_context().recipe.is_none());
     }
 
@@ -993,7 +1118,7 @@ mod tests {
         let scene_path = write(dir.path(), "scenes/scene.json", &scene_text);
         let scene = parse_scene(&scene_text).expect("a valid scene");
 
-        let diagnostics = ProjectAssets::load(&scene_path, &scene).expect_err("refused");
+        let diagnostics = ProjectAssets::load_for_scene(&scene_path, &scene).expect_err("refused");
         let error = diagnostics.errors().next().expect("an error");
         assert_eq!(error.code, STYLE_ASSET);
         assert!(error.message.contains("absent"), "{}", error.message);
@@ -1012,7 +1137,7 @@ mod tests {
         let scene_path = write(dir.path(), "scenes/scene.json", &scene_text);
         let scene = parse_scene(&scene_text).expect("a valid scene");
 
-        let diagnostics = ProjectAssets::load(&scene_path, &scene).expect_err("refused");
+        let diagnostics = ProjectAssets::load_for_scene(&scene_path, &scene).expect_err("refused");
         assert!(
             diagnostics
                 .errors()
@@ -1028,7 +1153,7 @@ mod tests {
         let scene_path = write(dir.path(), "scene.json", RECT_SCENE);
         let scene = parse_scene(RECT_SCENE).expect("a valid scene");
 
-        let diagnostics = ProjectAssets::load(&scene_path, &scene).expect_err("refused");
+        let diagnostics = ProjectAssets::load_for_scene(&scene_path, &scene).expect_err("refused");
         let error = diagnostics.errors().next().expect("an error");
         assert_eq!(error.code, STYLE_ASSET);
     }

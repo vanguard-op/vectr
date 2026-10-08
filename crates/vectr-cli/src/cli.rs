@@ -34,7 +34,7 @@ use vectr_core::{
 
 use crate::init;
 use crate::output::write_atomic;
-use crate::project::ProjectAssets;
+use vectr_project::ProjectAssets;
 
 /// The command succeeded.
 pub const EXIT_SUCCESS: i32 = 0;
@@ -484,7 +484,7 @@ fn validate_scene(scene: &Path, json: bool) -> Report {
         Err(diagnostics) => return report_findings(EXIT_INVALID_SCENE, diagnostics, json),
     };
 
-    let assets = match ProjectAssets::load(scene, &parsed) {
+    let assets = match ProjectAssets::load_for_scene(scene, &parsed) {
         Ok(assets) => assets,
         Err(diagnostics) => {
             return report_findings(asset_exit_code(&diagnostics), diagnostics, json)
@@ -521,7 +521,7 @@ fn compile_scene(scene: &Path, out: Option<&Path>, check: bool) -> Report {
             return Report::failure(EXIT_INVALID_SCENE, diagnostics_text(&diagnostics))
         }
     };
-    let assets = match ProjectAssets::load(scene, &parsed) {
+    let assets = match ProjectAssets::load_for_scene(scene, &parsed) {
         Ok(assets) => assets,
         Err(diagnostics) => {
             return Report::failure(
@@ -607,7 +607,7 @@ fn export_scene(
             return Report::failure(EXIT_INVALID_SCENE, diagnostics_text(&diagnostics))
         }
     };
-    let assets = match ProjectAssets::load(scene, &parsed) {
+    let assets = match ProjectAssets::load_for_scene(scene, &parsed) {
         Ok(assets) => assets,
         Err(diagnostics) => {
             return Report::failure(

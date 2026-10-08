@@ -1,0 +1,22 @@
+[package]
+name = "vectr-project"
+description = "Vectr project loading: the style assets a scene's project provides and the embedded authoring guide."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+# The engine the loader resolves against: the document parsers, the style
+# context a compile consumes, and the diagnostic model (C-002). The explicit
+# version keeps the path dependency from registering as a `*` wildcard in the
+# dependency graph (NFR-020); it must track vectr-core's package version.
+vectr-core = { version = "0.1.0", path = "../vectr-core" }
+
+# The project configuration's `defaultRecipeId` is read as a JSON value before
+# the rest of the loader resolves the recipe it names (D-009).
+serde_json = { workspace = true }
