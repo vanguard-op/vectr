@@ -6,10 +6,12 @@
 //! missing required field, or an invalid value is a located error rather than
 //! something silently dropped (FEAT-001).
 
+mod color;
 mod diagnostic;
 mod model;
 mod version;
 
+pub use color::{is_color, validate_color, INVALID_COLOR};
 pub use diagnostic::{Diagnostic, DiagnosticCode, Diagnostics, Location, Severity};
 pub use model::{
     Axis, BooleanOperation, Canvas, Constraint, ConstraintKind, Element, ElementKind, Geometry,
@@ -90,6 +92,12 @@ pub fn validate(scene: &Scene) -> Diagnostics {
         scene.canvas.height,
         "/canvas/height",
         "height",
+    );
+    validate_color(
+        &mut diagnostics,
+        &scene.canvas.background,
+        "canvas background",
+        "/canvas/background",
     );
 
     validate_elements(&mut diagnostics, scene);
@@ -890,6 +898,65 @@ mod tests {
     fn valid_scene_produces_no_findings() {
         let scene = parse(&full_scene()).unwrap();
         assert!(validate(&scene).is_empty());
+    }
+
+    #[test]
+    fn a_canvas_background_that_is_not_a_colour_is_reported_with_its_location() {
+        let source = full_scene().replace(
+            r##""background": "#ffffff""##,
+            r##""background": "not-a-colour""##,
+        );
+        let diagnostics = parse_error(&source);
+        let error = diagnostics
+            .errors()
+            .find(|diagnostic| diagnostic.code == INVALID_COLOR)
+            .expect("an invalid-colour error");
+        assert!(
+            error.message.contains("canvas background"),
+            "{}",
+            error.message
+        );
+        assert!(error.message.contains("not-a-colour"), "{}", error.message);
+        assert_eq!(
+            error
+                .location
+                .as_ref()
+                .and_then(|location| location.json_path.as_deref()),
+            Some("/canvas/background")
+        );
+    }
+
+    #[test]
+    fn every_svg_colour_format_is_accepted_for_the_canvas() {
+        for background in [
+            "#fff",
+            "#ffff",
+            "#ffffff",
+            "#ffffffff",
+            "rgb(1, 2, 3)",
+            "rgba(1, 2, 3, 0.5)",
+            "hsl(120, 50%, 50%)",
+            "hsla(120, 50%, 50%, 0.25)",
+            "red",
+            "transparent",
+        ] {
+            let source = full_scene().replace(
+                r##""background": "#ffffff""##,
+                &format!("\"background\": \"{background}\""),
+            );
+            let scene = parse(&source).unwrap_or_else(|diagnostics| {
+                panic!("expected {background:?} to be a colour: {diagnostics}")
+            });
+            assert_eq!(scene.canvas.background, background);
+        }
+    }
+
+    #[test]
+    fn the_canvas_background_is_checked_by_validate_alone() {
+        let mut scene = parse(&full_scene()).unwrap();
+        scene.canvas.background = "#12345".to_string();
+        let diagnostics = validate(&scene);
+        assert!(diagnostics.errors().any(|d| d.code == INVALID_COLOR));
     }
 
     fn text_scene(geometry: &str, extra: &str) -> String {

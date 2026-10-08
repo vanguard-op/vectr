@@ -14,7 +14,8 @@ use serde::{Deserialize, Serialize};
 
 use super::{parse_document, to_json, Gradient, REDEFINED_TOKEN, UNDEFINED_TOKEN, UNUSED_TOKEN};
 use crate::scene::{
-    Diagnostic, DiagnosticCode, Diagnostics, Element, Location, Paint, PaintKind, Scene,
+    validate_color, Diagnostic, DiagnosticCode, Diagnostics, Element, Location, Paint, PaintKind,
+    Scene,
 };
 
 /// A named set of color tokens that scenes reference by token name.
@@ -100,7 +101,8 @@ pub fn parse(source: &str) -> Result<Palette, Diagnostics> {
     parse_document(source, "palette")
 }
 
-/// Checks a palette on its own: every redefinition is a warning.
+/// Checks a palette on its own: every token value is a colour, and every
+/// redefinition is a warning.
 pub fn validate(palette: &Palette) -> Diagnostics {
     let mut diagnostics = Diagnostics::new();
     for (index, token) in palette.redefinitions() {
@@ -113,6 +115,14 @@ pub fn validate(palette: &Palette) -> Diagnostics {
                 ),
             )
             .at_path(format!("/tokens/{index}")),
+        );
+    }
+    for (index, token) in palette.tokens.iter().enumerate() {
+        validate_color(
+            &mut diagnostics,
+            &token.value,
+            &format!("palette token `{}` value", token.name),
+            format!("/tokens/{index}/value"),
         );
     }
     diagnostics
@@ -263,6 +273,45 @@ mod tests {
         let warning = diagnostics.warnings().next().expect("a warning");
         assert_eq!(warning.code, REDEFINED_TOKEN);
         assert!(warning.message.contains("accent"));
+    }
+
+    #[test]
+    fn a_token_value_that_is_not_a_colour_is_an_error_naming_the_token() {
+        let source = palette().replace(r##""#ff6600""##, r##""not-a-colour""##);
+        let palette = parse(&source).expect("parses");
+        let diagnostics = validate(&palette);
+        let error = diagnostics
+            .errors()
+            .find(|diagnostic| diagnostic.code == crate::scene::INVALID_COLOR)
+            .expect("an invalid-colour error");
+        assert!(error.message.contains("accent"), "{}", error.message);
+        assert!(error.message.contains("not-a-colour"), "{}", error.message);
+        assert_eq!(
+            error
+                .location
+                .as_ref()
+                .and_then(|location| location.json_path.as_deref()),
+            Some("/tokens/0/value")
+        );
+    }
+
+    #[test]
+    fn a_colour_token_that_carries_alpha_is_accepted() {
+        for value in [
+            "#ff660080",
+            "rgba(255, 102, 0, 0.5)",
+            "hsla(24, 100%, 50%, 0.25)",
+        ] {
+            let source = palette().replace(r##""#ff6600""##, &format!("\"{value}\""));
+            let palette = parse(&source).expect("parses");
+            let diagnostics = validate(&palette);
+            assert!(
+                !diagnostics
+                    .errors()
+                    .any(|diagnostic| diagnostic.code == crate::scene::INVALID_COLOR),
+                "expected {value:?} to be accepted: {diagnostics:?}"
+            );
+        }
     }
 
     #[test]

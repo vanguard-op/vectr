@@ -24,6 +24,7 @@ use std::path::{Path, PathBuf};
 use vectr_core::compiler::FONT;
 use vectr_core::export::png as png_export;
 use vectr_core::export::svg as svg_export;
+use vectr_core::scene::INVALID_COLOR;
 use vectr_core::{
     compile_with_style, export_png_reporting, export_svg_reporting, parse as parse_scene_source,
     validate as validate_scene_model, validate_gradient_usage, validate_palette_usage, Diagnostic,
@@ -527,6 +528,19 @@ fn export_scene(
             EXIT_USAGE,
             "error: `--density` applies only to PNG output\n".to_string(),
         );
+    }
+
+    // An export background override is a colour value like any other; a value
+    // the target cannot render is refused before the scene is even read, so no
+    // partial output can be produced (FEAT-005, FEAT-018).
+    if let Some(background) = background {
+        if !vectr_core::scene::is_color(background) {
+            let diagnostics = Diagnostics::from(Diagnostic::error(
+                INVALID_COLOR,
+                format!("`--background` is not a colour SVG supports: `{background}`"),
+            ));
+            return Report::failure(EXIT_USAGE, diagnostics_text(&diagnostics));
+        }
     }
 
     let source = match read_scene(scene) {
@@ -1183,6 +1197,49 @@ mod tests {
         assert_eq!(report.code, EXIT_USAGE);
     }
 
+    #[test]
+    fn an_export_background_that_is_not_a_colour_is_refused_before_any_output() {
+        let dir = TempDir::new("export-background");
+        let scene = write_scene(&dir, "scene.json", VALID_SCENE);
+        let out = dir.path().join("out.svg");
+        let report = run(Command::Export {
+            scene,
+            format: Format::Svg,
+            out: Some(out.clone()),
+            width: None,
+            height: None,
+            density: None,
+            background: Some("not-a-colour".to_string()),
+        });
+        assert_eq!(report.code, EXIT_USAGE);
+        assert!(
+            report.stderr.contains("E_INVALID_COLOR"),
+            "{}",
+            report.stderr
+        );
+        assert!(report.stderr.contains("not-a-colour"), "{}", report.stderr);
+        assert!(!out.exists(), "no output is written for an invalid colour");
+    }
+
+    #[test]
+    fn a_named_export_background_colour_is_honoured() {
+        let dir = TempDir::new("export-background-named");
+        let scene = write_scene(&dir, "scene.json", VALID_SCENE);
+        let out = dir.path().join("out.svg");
+        let report = run(Command::Export {
+            scene,
+            format: Format::Svg,
+            out: Some(out.clone()),
+            width: None,
+            height: None,
+            density: None,
+            background: Some("red".to_string()),
+        });
+        assert_eq!(report.code, EXIT_SUCCESS, "{}", report.stderr);
+        let svg = fs::read_to_string(&out).expect("reads the svg");
+        assert!(svg.contains("fill=\"red\""), "{svg}");
+    }
+
     const PROJECT_TEXT_SCENE: &str = r##"{
       "id": "s",
       "projectId": "project",
@@ -1311,6 +1368,28 @@ mod tests {
         let report = run(Command::Validate { scene, json: false });
         assert_eq!(report.code, EXIT_INVALID_SCENE);
         assert!(report.stderr.contains("accent"), "{}", report.stderr);
+    }
+
+    #[test]
+    fn validate_reports_a_palette_token_that_is_not_a_colour() {
+        let dir = TempDir::new("project-invalid-colour");
+        write_at(&dir, "vectr.project.json", "{}");
+        write_at(
+            &dir,
+            "palettes/brand.json",
+            r##"{"id":"brand","projectId":"project","name":"Brand","tokens":[{"name":"accent","value":"not-a-colour"}]}"##,
+        );
+        let scene = write_at(&dir, "scenes/brand.json", PALETTE_SCENE);
+
+        let report = run(Command::Validate { scene, json: false });
+        assert_eq!(report.code, EXIT_USAGE);
+        assert!(
+            report.stderr.contains("E_INVALID_COLOR"),
+            "{}",
+            report.stderr
+        );
+        assert!(report.stderr.contains("accent"), "{}", report.stderr);
+        assert!(report.stderr.contains("not-a-colour"), "{}", report.stderr);
     }
 
     #[test]
