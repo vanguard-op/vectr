@@ -86,6 +86,7 @@ fn stroked_and_filled_shapes_match_the_render_model() {
         strokes: std::slice::from_ref(&outline),
         gradients: &[],
         fonts: &[],
+        recipe: None,
     };
     let model = compile_with(&document, &style).expect("compiles");
 
@@ -117,6 +118,7 @@ fn text_is_emitted_as_outlined_paths_with_its_name_and_accessible_text() {
         strokes: &[],
         gradients: &[],
         fonts: &fonts,
+        recipe: None,
     };
     let model = compile_with(&document, &style).expect("compiles");
 
@@ -214,6 +216,7 @@ fn emitted_svg_is_inert_with_no_script_or_event_handler() {
         strokes: &[],
         gradients: &[],
         fonts: &[],
+        recipe: None,
     };
     let model = compile_with(&document, &style).expect("compiles");
 

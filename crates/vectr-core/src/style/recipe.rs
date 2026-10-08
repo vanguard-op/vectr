@@ -90,7 +90,20 @@ pub enum Shading {
     Raster,
 }
 
+/// The flat recipe renders even fills and no texture (FEAT-007).
+pub const TEXTURE_UNSUPPORTED: DiagnosticCode = DiagnosticCode::new("W_TEXTURE_UNSUPPORTED");
+
 impl StyleRecipe {
+    /// The recipe name as it appears in the scene language.
+    pub fn name_str(&self) -> &'static str {
+        self.name.as_str()
+    }
+
+    /// Whether this is the flat recipe.
+    pub fn is_flat(&self) -> bool {
+        self.name == RecipeName::Flat
+    }
+
     /// Serializes the recipe to compact JSON.
     pub fn to_json_string(&self) -> Result<String, Diagnostics> {
         to_json(self)
@@ -128,6 +141,29 @@ pub fn validate(recipe: &StyleRecipe) -> Diagnostics {
         "/parameters/strokeWeight",
         "strokeWeight",
     );
+    diagnostics
+}
+
+/// Reports where a recipe asks for a look the language cannot express.
+///
+/// The flat recipe draws even, solid fills and no texture (FEAT-007): a flat
+/// recipe that declares raster shading is asking for a texture the language has
+/// no way to draw, so the request is reported and the output stays flat rather
+/// than silently textured.
+pub fn check_expressible(recipe: &StyleRecipe) -> Diagnostics {
+    let mut diagnostics = Diagnostics::new();
+    if recipe.is_flat() && recipe.parameters.shading == Some(Shading::Raster) {
+        diagnostics.push(
+            Diagnostic::warning(
+                TEXTURE_UNSUPPORTED,
+                format!(
+                    "recipe `{}` declares raster shading, which the flat recipe cannot express; the output stays flat and no texture is drawn",
+                    recipe.id
+                ),
+            )
+            .at_path("/parameters/shading"),
+        );
+    }
     diagnostics
 }
 
@@ -190,5 +226,38 @@ mod tests {
             diagnostics.errors().next().map(|error| error.code.clone()),
             Some(DiagnosticCode::SCHEMA)
         );
+    }
+
+    #[test]
+    fn a_flat_recipe_reports_texture_it_cannot_express() {
+        let mut recipe =
+            parse(r#"{"id":"r","projectId":"p","name":"flat","parameters":{"shading":"raster"}}"#)
+                .unwrap();
+        assert!(recipe.is_flat(), "the recipe names the flat look");
+        assert_eq!(recipe.name_str(), "flat");
+
+        let diagnostics = check_expressible(&recipe);
+        let warning = diagnostics.warnings().next().expect("a warning");
+        assert_eq!(warning.code, TEXTURE_UNSUPPORTED);
+        assert!(warning.message.contains("flat"), "{}", warning.message);
+        assert!(!diagnostics.has_errors(), "texture is reported, not fatal");
+
+        // A flat recipe without raster shading asks for nothing it cannot draw.
+        recipe.parameters.shading = Some(Shading::SingleLayer);
+        assert!(!check_expressible(&recipe).has_errors());
+        assert!(check_expressible(&recipe).warnings().next().is_none());
+    }
+
+    #[test]
+    fn a_non_flat_recipe_is_not_checked_as_flat() {
+        // Raster shading is only unexpressible for the flat look; the check is
+        // the flat recipe's, and other recipes settle their own look.
+        let recipe = parse(
+            r#"{"id":"r","projectId":"p","name":"geometric","parameters":{"shading":"raster"}}"#,
+        )
+        .unwrap();
+        assert!(!recipe.is_flat());
+        assert!(!check_expressible(&recipe).has_errors());
+        assert!(check_expressible(&recipe).warnings().next().is_none());
     }
 }

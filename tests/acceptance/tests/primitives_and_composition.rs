@@ -34,6 +34,7 @@ fn a_rectangle_renders_at_its_position_and_size_with_fill_and_stroke() {
         strokes: std::slice::from_ref(&outline),
         gradients: &[],
         fonts: &[],
+        recipe: None,
     };
     let model = compile_with(&document, &style).expect("compiles");
 
@@ -84,6 +85,7 @@ fn a_path_with_fill_and_stroke_renders_both_and_honours_cap_and_join() {
         strokes: std::slice::from_ref(&outline),
         gradients: &[],
         fonts: &[],
+        recipe: None,
     };
     let model = compile_with(&document, &style).expect("compiles");
 
@@ -140,6 +142,7 @@ fn a_text_element_renders_at_its_anchor_with_alignment_spacing_and_fill() {
         strokes: &[],
         gradients: &[],
         fonts: &[],
+        recipe: None,
     };
     let model = compile_with(&document, &style).expect("compiles");
 
@@ -410,6 +413,7 @@ fn a_composition_lowers_to_concrete_geometry_with_no_unresolved_reference() {
         strokes: &[],
         gradients: &[],
         fonts: &[],
+        recipe: None,
     };
 
     let model = compile_with(&document, &style).expect("compiles");

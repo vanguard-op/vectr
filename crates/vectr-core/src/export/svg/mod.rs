@@ -268,6 +268,7 @@ mod tests {
             strokes: std::slice::from_ref(&profile),
             gradients: &[],
             fonts: &[],
+            recipe: None,
         };
 
         let compiled = compile_with_style(&scene, &style).expect("compiles");
@@ -714,6 +715,7 @@ mod tests {
         document.meta = RenderMeta {
             title: Some("Logo".to_string()),
             description: Some("A mark".to_string()),
+            recipe: None,
         };
         let svg = export(&document);
         assert!(svg.contains("<title>Logo</title>"), "{svg}");
@@ -762,6 +764,7 @@ mod tests {
                 strokes: &[],
                 gradients: &[],
                 fonts: &fonts,
+                recipe: None,
             },
         )
         .expect("compiles");

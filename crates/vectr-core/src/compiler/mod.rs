@@ -37,6 +37,14 @@
 //! not resolve. No unresolved colour or gradient reference survives compilation
 //! (C-003, FEAT-005, FEAT-027).
 //!
+//! # Recipes
+//!
+//! A scene may render in a style recipe; when the context supplies one,
+//! [`compile_with_style`] applies it and names it in the model's `meta.recipe`.
+//! The flat recipe (FEAT-007) draws even, solid palette fills and no texture,
+//! honoring an element's explicit gradient; a recipe that asks for a look the
+//! language cannot express is reported rather than silently approximated.
+//!
 //! # Fonts
 //!
 //! A text element's font reference resolves against the caller's font assets and
@@ -66,7 +74,7 @@ use crate::scene::{
     validate, BooleanOperation, Diagnostic, DiagnosticCode, Diagnostics, ElementKind, Location,
     Scene, TextAlign,
 };
-use crate::style::{self, Gradient, Palette, StrokeProfile, UNDEFINED_STROKE};
+use crate::style::{self, Gradient, Palette, StrokeProfile, StyleRecipe, UNDEFINED_STROKE};
 
 /// Two elements reference each other, directly or through a chain.
 pub const CYCLE: DiagnosticCode = DiagnosticCode::new("E_CYCLE");
@@ -124,6 +132,11 @@ pub struct StyleContext<'a> {
     /// [`DEFAULT_FONT_ID`], since a text element that names no font resolves to
     /// it (FEAT-024).
     pub fonts: &'a [FontAsset],
+    /// The style recipe the scene renders in, when one is supplied (C-002).
+    ///
+    /// A flat recipe resolves to even, solid palette fills with no texture,
+    /// honoring an element's explicit gradient as its one exception (FEAT-007).
+    pub recipe: Option<&'a StyleRecipe>,
 }
 
 /// A font asset a caller supplies so the compiler can resolve a text element's
@@ -242,6 +255,14 @@ pub fn compile_with_style<'s>(
         compiler
             .diagnostics
             .extend(style::validate_gradient_usage(scene, style.gradients));
+    }
+
+    // A recipe that asks for a look the language cannot express is reported,
+    // never silently approximated (FEAT-007, NFR-011).
+    if let Some(recipe) = style.recipe {
+        compiler
+            .diagnostics
+            .extend(style::check_recipe_expressible(recipe));
     }
 
     let model = compiler.into_model();
@@ -1187,6 +1208,10 @@ impl Compiler<'_, '_> {
             meta: RenderMeta {
                 title: self.scene.title.clone(),
                 description: self.scene.description.clone(),
+                recipe: self
+                    .style
+                    .recipe
+                    .map(|recipe| recipe.name_str().to_string()),
             },
             diagnostics: self.diagnostics,
             fonts: self.fonts,
@@ -1242,7 +1267,10 @@ fn kind_name(kind: ElementKind) -> &'static str {
 mod tests {
     use super::*;
     use crate::primitives::{Ellipse, Rect as PrimRect};
-    use crate::style::{parse_palette, parse_stroke_profile, UNDEFINED_TOKEN};
+    use crate::style::{
+        parse_gradient, parse_palette, parse_stroke_profile, parse_style_recipe,
+        TEXTURE_UNSUPPORTED, UNDEFINED_TOKEN,
+    };
     use serde_json::{json, Value};
 
     fn base(id: &str, order: u64, kind: &str, geometry: Value) -> Value {
@@ -1688,6 +1716,7 @@ mod tests {
             strokes: std::slice::from_ref(&profile),
             gradients: &[],
             fonts: &[],
+            recipe: None,
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -1697,6 +1726,136 @@ mod tests {
         assert_eq!(color(&stroke.paint), Some("#ff0000"));
         assert_eq!(stroke.width, 3.0);
         assert_eq!(stroke.cap, crate::style::StrokeCap::Butt);
+    }
+
+    /// A flat recipe document naming the flat look with the given shading.
+    fn flat_recipe(shading: &str) -> crate::style::StyleRecipe {
+        parse_style_recipe(&format!(
+            r#"{{"id":"recipe-1","projectId":"p","name":"flat","parameters":{{"shading":"{shading}"}}}}"#
+        ))
+        .expect("a flat recipe")
+    }
+
+    /// A palette carrying a solid colour, an ink, and a transparent fill.
+    fn flat_palette() -> crate::style::Palette {
+        parse_palette(
+            r##"{"id":"pal","projectId":"p","name":"P","tokens":[{"name":"accent","value":"#ff0000"},{"name":"ink","value":"#111111"},{"name":"clear","value":"transparent"}]}"##,
+        )
+        .expect("a palette")
+    }
+
+    #[test]
+    fn a_flat_recipe_is_named_in_the_model_and_keeps_fills_solid() {
+        let mut solid = rect("solid", 0, 10.0, 10.0);
+        solid["fill"] = token_paint("accent");
+        let mut blended = rect("blended", 1, 10.0, 10.0);
+        blended["fill"] = json!({ "kind": "gradient", "ref": "fade" });
+        let scene = scene_of(json!([solid, blended]), None);
+
+        let palette = flat_palette();
+        let gradients = [parse_gradient(
+            r##"{"id":"fade","projectId":"p","name":"F","type":"linear","stops":[{"offset":0,"token":"accent"},{"offset":1,"token":"ink"}]}"##,
+        )
+        .expect("a gradient")];
+        let recipe = flat_recipe("none");
+        let style = StyleContext {
+            palette: Some(&palette),
+            strokes: &[],
+            gradients: &gradients,
+            fonts: &[],
+            recipe: Some(&recipe),
+        };
+
+        let model = compile_with_style(&scene, &style).expect("compiles");
+        assert_eq!(model.meta.recipe.as_deref(), Some("flat"));
+        assert_eq!(
+            model
+                .node("solid")
+                .unwrap()
+                .paint
+                .fill
+                .as_ref()
+                .and_then(color),
+            Some("#ff0000"),
+            "a flat fill is the solid palette colour it names"
+        );
+        let crate::render::Paint::Gradient(fill) = model
+            .node("blended")
+            .unwrap()
+            .paint
+            .fill
+            .as_ref()
+            .expect("a fill")
+        else {
+            panic!("a requested gradient is honored under the flat recipe");
+        };
+        assert_eq!(fill.stops[0].color, "#ff0000");
+        assert_eq!(fill.stops[1].color, "#111111");
+
+        // The applied recipe is named in the model and survives its camelCase
+        // JSON round trip (C-003, D-014).
+        let text = model.to_json_string().expect("serializable");
+        assert!(text.contains("\"recipe\":\"flat\""), "{text}");
+        let reparsed = crate::render::parse(&text).expect("deserializable");
+        assert_eq!(reparsed.meta.recipe.as_deref(), Some("flat"));
+    }
+
+    #[test]
+    fn a_transparent_fill_resolves_to_transparency() {
+        let mut element = rect("e1", 0, 10.0, 10.0);
+        element["fill"] = token_paint("clear");
+        let scene = scene_of(json!([element]), None);
+        let palette = flat_palette();
+        let style = StyleContext {
+            palette: Some(&palette),
+            strokes: &[],
+            gradients: &[],
+            fonts: &[],
+            recipe: None,
+        };
+
+        let model = compile_with_style(&scene, &style).expect("compiles");
+        assert_eq!(
+            model.nodes[0].paint.fill.as_ref().and_then(color),
+            Some("transparent")
+        );
+    }
+
+    #[test]
+    fn a_flat_recipe_that_asks_for_texture_warns_and_draws_none() {
+        let mut element = rect("e1", 0, 10.0, 10.0);
+        element["fill"] = token_paint("accent");
+        let scene = scene_of(json!([element]), None);
+        let palette = flat_palette();
+        let recipe = flat_recipe("raster");
+        let style = StyleContext {
+            palette: Some(&palette),
+            strokes: &[],
+            gradients: &[],
+            fonts: &[],
+            recipe: Some(&recipe),
+        };
+
+        let model = compile_with_style(&scene, &style).expect("the scene still compiles");
+        assert!(
+            model
+                .diagnostics
+                .warnings()
+                .any(|warning| warning.code == TEXTURE_UNSUPPORTED),
+            "texture is reported, not silently drawn: {:?}",
+            model.diagnostics
+        );
+        assert_eq!(
+            model.nodes[0].paint.fill.as_ref().and_then(color),
+            Some("#ff0000"),
+            "the fill stays a solid palette colour"
+        );
+    }
+
+    #[test]
+    fn compiling_without_a_recipe_names_none_in_the_model() {
+        let model = compiled(json!([rect("e1", 0, 10.0, 10.0)]));
+        assert_eq!(model.meta.recipe, None);
     }
 
     #[test]
@@ -1726,6 +1885,7 @@ mod tests {
                 strokes: std::slice::from_ref(&profile),
                 gradients: &[],
                 fonts: &[],
+                recipe: None,
             },
         )
         .expect("compiles");
@@ -1736,6 +1896,7 @@ mod tests {
                 strokes: std::slice::from_ref(&profile),
                 gradients: &[],
                 fonts: &[],
+                recipe: None,
             },
         )
         .expect("compiles");
@@ -1784,6 +1945,7 @@ mod tests {
             strokes: std::slice::from_ref(&profile),
             gradients: &[],
             fonts: &[],
+            recipe: None,
         };
 
         let diagnostics =
@@ -1918,6 +2080,7 @@ mod tests {
             strokes: &[],
             gradients: &[],
             fonts: &fonts,
+            recipe: None,
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -1940,6 +2103,7 @@ mod tests {
             strokes: &[],
             gradients: &[],
             fonts: &fonts,
+            recipe: None,
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -1960,6 +2124,7 @@ mod tests {
             strokes: &[],
             gradients: &[],
             fonts: &fonts,
+            recipe: None,
         };
 
         let diagnostics =
@@ -1999,6 +2164,7 @@ mod tests {
             strokes: &[],
             gradients: &[],
             fonts: &fonts,
+            recipe: None,
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -2027,6 +2193,7 @@ mod tests {
             strokes: &[],
             gradients: &[],
             fonts: &fonts,
+            recipe: None,
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -2054,6 +2221,7 @@ mod tests {
             strokes: &[],
             gradients: &[],
             fonts: &fonts,
+            recipe: None,
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");

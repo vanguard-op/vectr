@@ -58,6 +58,7 @@ fn a_linear_gradient_fill_exports_stops_that_resolve_to_palette_tokens() {
         strokes: &[],
         gradients: &gradients,
         fonts: &[],
+        recipe: None,
     };
     let model = compile_with(&document, &style).expect("compiles");
 
@@ -95,6 +96,7 @@ fn a_radial_gradient_stroke_is_painted_with_a_radial_gradient() {
         strokes: std::slice::from_ref(&outline),
         gradients: &gradients,
         fonts: &[],
+        recipe: None,
     };
     let model = compile_with(&document, &style).expect("compiles");
 
@@ -127,6 +129,7 @@ fn a_gradient_stop_naming_a_missing_token_is_an_error_naming_the_token() {
         strokes: &[],
         gradients: &gradients,
         fonts: &[],
+        recipe: None,
     };
 
     let diagnostics = compile_with(&document, &style).expect_err("refused");
@@ -164,6 +167,7 @@ fn changing_a_token_restyles_every_element_using_the_gradient_in_one_recompile()
             strokes: &[],
             gradients: &gradients,
             fonts: &[],
+            recipe: None,
         };
         compile_with(&document, &style).expect("compiles")
     };
@@ -214,6 +218,7 @@ fn an_unused_gradient_is_a_warning_not_an_error() {
         strokes: &[],
         gradients: &gradients,
         fonts: &[],
+        recipe: None,
     };
 
     let model = compile_with(&document, &style).expect("compiles");

@@ -137,6 +137,7 @@ impl ProjectAssets {
             strokes: &self.strokes,
             gradients: &self.gradients,
             fonts: &self.fonts,
+            recipe: None,
         }
     }
 

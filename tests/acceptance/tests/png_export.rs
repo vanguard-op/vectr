@@ -150,6 +150,7 @@ fn a_text_element_rasterizes_its_glyphs() {
         strokes: &[],
         gradients: &[],
         fonts: &fonts,
+        recipe: None,
     };
     let model = compile_with(&document, &style).expect("compiles");
 

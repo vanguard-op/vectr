@@ -23,12 +23,15 @@ pub use gradient::{
     GRADIENT, UNDEFINED_GRADIENT, UNUSED_GRADIENT,
 };
 pub use palette::{Palette, PaletteToken};
-pub use recipe::{RecipeName, RecipeParameters, Shading, StyleRecipe};
+pub use recipe::{RecipeName, RecipeParameters, Shading, StyleRecipe, TEXTURE_UNSUPPORTED};
 pub use stroke::{ResolvedStroke, StrokeCap, StrokeJoin, StrokeProfile};
 
 pub use palette::validate_usage as validate_palette_usage;
 pub use palette::{parse as parse_palette, validate as validate_palette};
-pub use recipe::{parse as parse_style_recipe, validate as validate_style_recipe};
+pub use recipe::{
+    check_expressible as check_recipe_expressible, parse as parse_style_recipe,
+    validate as validate_style_recipe,
+};
 pub use stroke::{parse as parse_stroke_profile, validate as validate_stroke_profile};
 
 use crate::render::Paint;

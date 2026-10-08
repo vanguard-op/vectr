@@ -125,6 +125,10 @@ pub struct RenderMeta {
     /// Accessible description, when the scene declares one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// The style recipe the scene was compiled with, when one was supplied
+    /// (C-003, FEAT-007).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipe: Option<String>,
 }
 
 /// One ancestor group in a node's chain (C-003).
