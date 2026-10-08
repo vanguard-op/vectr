@@ -12,7 +12,7 @@ use std::path::Path;
 
 use serde_json::json;
 use vectr_core::scene::CURRENT_FORMAT_VERSION;
-use vectr_core::{Canvas, Scene};
+use vectr_core::{parse_style_recipe, validate_style_recipe, Canvas, Scene};
 
 use crate::cli::{diagnostics_text, Report, EXIT_OUTPUT, EXIT_SUCCESS};
 use crate::output::write_atomic;
@@ -25,6 +25,23 @@ const STARTER_SCENE_FILE: &str = "example.json";
 
 /// The starter scene's stable identifier.
 const STARTER_SCENE_ID: &str = "example";
+
+/// The default recipe a new project renders in (FEAT-007, D-009).
+const DEFAULT_RECIPE_ID: &str = "flat";
+
+/// The default recipe's file name within `recipes/`.
+const DEFAULT_RECIPE_FILE: &str = "flat.json";
+
+/// The flat recipe document a new project ships, ready to compile against.
+///
+/// Kept as source text so the scaffold writes exactly what a project document
+/// holds; a test parses and validates it so the starter project always compiles.
+const DEFAULT_RECIPE_JSON: &str = r#"{
+  "id": "flat",
+  "projectId": "project",
+  "name": "flat",
+  "parameters": {}
+}"#;
 
 /// The entity directories a project holds, alongside `dist/` for output and
 /// `assets/` for the fonts and images a scene may reference.
@@ -53,6 +70,7 @@ pub fn scaffold(dir: &Path) -> Report {
         "id": PROJECT_ID,
         "name": project_name(dir),
         "formatVersion": CURRENT_FORMAT_VERSION,
+        "defaultRecipeId": DEFAULT_RECIPE_ID,
         "output": {
             "format": "svg",
             "width": 512,
@@ -65,6 +83,12 @@ pub fn scaffold(dir: &Path) -> Report {
         Ok(text) => text,
         Err(error) => return write_failure(&config_path, &error.to_string()),
     };
+
+    // The default recipe is validated before anything is written, so a scaffold
+    // never ships a project whose starter recipe cannot compile (NFR-011).
+    if let Err(diagnostics) = validate_default_recipe() {
+        return Report::failure(EXIT_OUTPUT, diagnostics_text(&diagnostics));
+    }
 
     let scene_text = match starter_scene().to_json_pretty() {
         Ok(text) => text,
@@ -92,10 +116,28 @@ pub fn scaffold(dir: &Path) -> Report {
         }
     }
 
+    let recipe_path = dir.join("recipes").join(DEFAULT_RECIPE_FILE);
+    if !recipe_path.exists() {
+        if let Err(error) = write_atomic(&recipe_path, DEFAULT_RECIPE_JSON.as_bytes()) {
+            return write_failure(&recipe_path, &error.to_string());
+        }
+    }
+
     Report {
         code: EXIT_SUCCESS,
         stdout: format!("initialized project at {}\n", dir.display()),
         stderr: String::new(),
+    }
+}
+
+/// Checks the bundled default recipe parses and validates (FEAT-007).
+fn validate_default_recipe() -> Result<(), vectr_core::Diagnostics> {
+    let recipe = parse_style_recipe(DEFAULT_RECIPE_JSON)?;
+    let findings = validate_style_recipe(&recipe);
+    if findings.has_errors() {
+        Err(findings)
+    } else {
+        Ok(())
     }
 }
 
@@ -163,12 +205,22 @@ mod tests {
         assert_eq!(value["id"], "project");
         assert_eq!(value["name"], "habit-tracker");
         assert_eq!(value["formatVersion"], CURRENT_FORMAT_VERSION);
+        assert_eq!(value["defaultRecipeId"], "flat");
         assert_eq!(value["output"]["format"], "svg");
 
         let scene_text =
             fs::read_to_string(target.join("scenes").join("example.json")).expect("scene");
         let scene = parse(&scene_text).expect("the starter scene is valid");
         assert_eq!(scene.project_id, PROJECT_ID);
+
+        // The starter project ships a flat recipe and names it as the default,
+        // so a scaffolded scene compiles in the flat look without the author
+        // adding anything (FEAT-007, D-009).
+        let recipe_text =
+            fs::read_to_string(target.join("recipes").join(DEFAULT_RECIPE_FILE)).expect("recipe");
+        let recipe = vectr_core::parse_style_recipe(&recipe_text).expect("a valid recipe");
+        assert!(recipe.is_flat());
+        assert!(vectr_core::validate_style_recipe(&recipe).is_empty());
 
         for sub in PROJECT_DIRS {
             assert!(target.join(sub).is_dir(), "{sub} is created");

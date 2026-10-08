@@ -1323,4 +1323,50 @@ mod tests {
         assert_eq!(report.code, EXIT_USAGE);
         assert!(report.stderr.contains("brand"), "{}", report.stderr);
     }
+
+    #[test]
+    fn a_project_recipe_reaches_the_compiled_model() {
+        let dir = TempDir::new("project-recipe");
+        write_at(&dir, "vectr.project.json", "{}");
+        write_at(
+            &dir,
+            "recipes/line.json",
+            r#"{"id":"line","projectId":"project","name":"line-art","parameters":{"strokeWeight":2}}"#,
+        );
+        let scene_text = VALID_SCENE.replace(
+            r##""formatVersion": "0.2","##,
+            r##""formatVersion": "0.2", "recipeId": "line","##,
+        );
+        let scene = write_at(&dir, "scenes/logo.json", &scene_text);
+        let out = dir.path().join("model.json");
+
+        let report = run(Command::Compile {
+            scene,
+            out: Some(out.clone()),
+            check: false,
+        });
+        assert_eq!(report.code, EXIT_SUCCESS, "{}", report.stderr);
+        let text = fs::read_to_string(&out).expect("reads the model");
+        let model = vectr_core::render::parse(&text).expect("a render model");
+        assert_eq!(model.meta.recipe.as_deref(), Some("line-art"));
+    }
+
+    #[test]
+    fn a_missing_recipe_is_missing_input() {
+        let dir = TempDir::new("project-missing-recipe");
+        write_at(&dir, "vectr.project.json", "{}");
+        let scene_text = VALID_SCENE.replace(
+            r##""formatVersion": "0.2","##,
+            r##""formatVersion": "0.2", "recipeId": "absent","##,
+        );
+        let scene = write_at(&dir, "scenes/logo.json", &scene_text);
+
+        let report = run(Command::Compile {
+            scene,
+            out: None,
+            check: true,
+        });
+        assert_eq!(report.code, EXIT_USAGE);
+        assert!(report.stderr.contains("absent"), "{}", report.stderr);
+    }
 }

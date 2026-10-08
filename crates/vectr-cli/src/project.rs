@@ -2,17 +2,25 @@
 //!
 //! A project is a directory holding `vectr.project.json` and the entity folders
 //! the scene model refers to. Before compiling, a command loads the assets a
-//! scene names: the palette the scene selects, the stroke profiles its elements
-//! reference, and the fonts its text elements name. The two open-licensed fonts
-//! Vectr ships are supplied for any scene with text, so a text element that
-//! names no font renders with the default and a glyph the chosen font lacks is
-//! covered by the fallback (FEAT-024, D-017, D-018).
+//! scene names: the palette the scene selects, the style recipe it renders in,
+//! the stroke profiles its elements reference, and the fonts its text elements
+//! name. The two open-licensed fonts Vectr ships are supplied for any scene with
+//! text, so a text element that names no font renders with the default and a
+//! glyph the chosen font lacks is covered by the fallback (FEAT-024, D-017,
+//! D-018).
 //!
 //! References resolve by identifier, not by file name: palettes live under
-//! `palettes/`, stroke profiles under `strokes/`, and a user-supplied font is an
-//! `Asset` document under `assets/` whose `path` points at the font file. A
-//! document that cannot be read is a located diagnostic and no compilation
-//! happens; nothing is substituted silently (NFR-011, FEAT-005).
+//! `palettes/`, style recipes under `recipes/`, stroke profiles under `strokes/`,
+//! and a user-supplied font is an `Asset` document under `assets/` whose `path`
+//! points at the font file. A document that cannot be read is a located
+//! diagnostic and no compilation happens; nothing is substituted silently
+//! (NFR-011, FEAT-005).
+//!
+//! A scene renders in the recipe it names, or, when it names none, the project's
+//! `defaultRecipeId` (docs/Vectr/schema.md, "ProjectConfig"). The recipe is
+//! resolved the same way a palette is: by identifier from its folder, an
+//! unresolvable id a located error rather than a scene that silently renders
+//! flat (FEAT-007–FEAT-010).
 //!
 //! The loader is deterministic (NFR-010): directory entries are read in sorted
 //! order and the bundled fonts are carried in a fixed order, so the same project
@@ -24,10 +32,10 @@ use std::path::{Path, PathBuf};
 use vectr_core::compiler::FONT;
 use vectr_core::style::{UNDEFINED_GRADIENT, UNDEFINED_STROKE};
 use vectr_core::{
-    parse_gradient, parse_palette, parse_stroke_profile, validate_gradient, validate_palette,
-    validate_stroke_profile, Diagnostic, DiagnosticCode, Diagnostics, ElementKind, FontAsset,
-    Gradient, Location, PaintKind, Palette, Scene, StrokeProfile, StyleContext, DEFAULT_FONT_ID,
-    FALLBACK_FONT_ID,
+    parse_gradient, parse_palette, parse_stroke_profile, parse_style_recipe, validate_gradient,
+    validate_palette, validate_stroke_profile, validate_style_recipe, Diagnostic, DiagnosticCode,
+    Diagnostics, ElementKind, FontAsset, Gradient, Location, PaintKind, Palette, Scene,
+    StrokeProfile, StyleContext, StyleRecipe, DEFAULT_FONT_ID, FALLBACK_FONT_ID,
 };
 
 /// The project configuration that marks a directory as a project root.
@@ -41,6 +49,9 @@ const STROKE_DIR: &str = "strokes";
 
 /// The folder holding gradient documents.
 const GRADIENT_DIR: &str = "gradients";
+
+/// The folder holding style-recipe documents (FEAT-007–FEAT-010).
+const RECIPE_DIR: &str = "recipes";
 
 /// The folder holding asset documents, including the fonts a scene may name.
 const ASSET_DIR: &str = "assets";
@@ -66,6 +77,7 @@ const FALLBACK_FONT_BYTES: &[u8] = include_bytes!("../../../assets/fonts/NotoSan
 #[derive(Debug)]
 pub struct ProjectAssets {
     palette: Option<Palette>,
+    recipe: Option<StyleRecipe>,
     strokes: Vec<StrokeProfile>,
     gradients: Vec<Gradient>,
     fonts: Vec<FontAsset>,
@@ -74,9 +86,9 @@ pub struct ProjectAssets {
 impl ProjectAssets {
     /// Loads the assets the project at `scene_path` provides for `scene`.
     ///
-    /// A palette, stroke-profile, or asset document that cannot be read is
-    /// reported rather than skipped, so a broken project fails loudly instead of
-    /// compiling against stale or partial assets (NFR-011).
+    /// A palette, style-recipe, stroke-profile, or asset document that cannot be
+    /// read is reported rather than skipped, so a broken project fails loudly
+    /// instead of compiling against stale or partial assets (NFR-011).
     pub fn load(scene_path: &Path, scene: &Scene) -> Result<Self, Diagnostics> {
         let root = project_root(scene_path);
         let mut diagnostics = Diagnostics::new();
@@ -84,6 +96,29 @@ impl ProjectAssets {
         let palette = match scene.palette_id.as_deref() {
             Some(id) => match load_palette(&root, id) {
                 Ok(palette) => Some(palette),
+                Err(findings) => {
+                    diagnostics.extend(findings);
+                    None
+                }
+            },
+            None => None,
+        };
+
+        // A scene renders in the recipe it names, or, when it names none, the
+        // project's default; a project without a configuration names neither and
+        // the scene compiles with no recipe (docs/Vectr/schema.md,
+        // "ProjectConfig").
+        let default_recipe = match load_default_recipe_id(&root) {
+            Ok(id) => id,
+            Err(findings) => {
+                diagnostics.extend(findings);
+                None
+            }
+        };
+        let recipe_id = scene.recipe_id.clone().or(default_recipe);
+        let recipe = match recipe_id.as_deref() {
+            Some(id) => match load_recipe(&root, id) {
+                Ok(recipe) => Some(recipe),
                 Err(findings) => {
                     diagnostics.extend(findings);
                     None
@@ -124,6 +159,7 @@ impl ProjectAssets {
         }
         Ok(Self {
             palette,
+            recipe,
             strokes,
             gradients,
             fonts,
@@ -137,7 +173,7 @@ impl ProjectAssets {
             strokes: &self.strokes,
             gradients: &self.gradients,
             fonts: &self.fonts,
-            recipe: None,
+            recipe: self.recipe.as_ref(),
         }
     }
 
@@ -299,6 +335,91 @@ fn load_palette(root: &Path, id: &str) -> Result<Palette, Diagnostics> {
     }
     Err(style_error(format!(
         "palette `{id}` was not found under `{}`",
+        dir.display()
+    )))
+}
+
+/// Reads the project's default style-recipe id, when its configuration names one
+/// (docs/Vectr/schema.md, "ProjectConfig").
+///
+/// A project configuration that cannot be read or parsed is reported rather than
+/// ignored, so a mistyped `defaultRecipeId` cannot silently leave the project
+/// rendering without the recipe it meant to apply (NFR-011).
+fn load_default_recipe_id(root: &Path) -> Result<Option<String>, Diagnostics> {
+    let path = root.join(PROJECT_FILE);
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let source = fs::read_to_string(&path).map_err(|error| {
+        style_error(format!(
+            "cannot read project configuration `{}`: {error}",
+            path.display()
+        ))
+    })?;
+    let value: serde_json::Value = serde_json::from_str(&source).map_err(|error| {
+        // serde_json appends " at line N column M" to its message; the location
+        // is dropped so the finding reads as a project diagnostic, like the
+        // style documents' parse findings (NFR-011).
+        let raw = error.to_string();
+        let message = raw.split(" at line ").next().unwrap_or(&raw);
+        style_error(format!(
+            "project configuration `{}` is not valid JSON: {message}",
+            path.display()
+        ))
+    })?;
+    let Some(field) = value.get("defaultRecipeId") else {
+        return Ok(None);
+    };
+    if field.is_null() {
+        return Ok(None);
+    }
+    match field.as_str() {
+        Some(id) if !id.is_empty() => Ok(Some(id.to_string())),
+        Some(_) => Err(style_error(format!(
+            "project configuration `{}` has an empty `defaultRecipeId`",
+            path.display()
+        ))),
+        None => Err(style_error(format!(
+            "project configuration `{}` has a non-string `defaultRecipeId`",
+            path.display()
+        ))),
+    }
+}
+
+/// Loads the style recipe the scene renders in, by id (FEAT-007–FEAT-010).
+fn load_recipe(root: &Path, id: &str) -> Result<StyleRecipe, Diagnostics> {
+    let dir = root.join(RECIPE_DIR);
+    let direct = dir.join(format!("{id}.json"));
+    if direct.is_file() {
+        let recipe = read_document(
+            &direct,
+            "style recipe",
+            parse_style_recipe,
+            validate_style_recipe,
+        )?;
+        if recipe.id != id {
+            return Err(style_error(format!(
+                "style recipe `{}` declares id `{}`, not `{id}`",
+                direct.display(),
+                recipe.id
+            )));
+        }
+        return Ok(recipe);
+    }
+    for path in json_files(&dir) {
+        if let Ok(recipe) = read_document(
+            &path,
+            "style recipe",
+            parse_style_recipe,
+            validate_style_recipe,
+        ) {
+            if recipe.id == id {
+                return Ok(recipe);
+            }
+        }
+    }
+    Err(style_error(format!(
+        "style recipe `{id}` was not found under `{}`",
         dir.display()
     )))
 }
@@ -767,5 +888,148 @@ mod tests {
         let second_ids: Vec<&str> = second.strokes.iter().map(|p| p.id.as_str()).collect();
         assert_eq!(first_ids, second_ids);
         assert_eq!(first_ids, vec!["a", "b"]);
+    }
+
+    const LINE_RECIPE: &str =
+        r#"{"id":"line","projectId":"p","name":"line-art","parameters":{"strokeWeight":2.5}}"#;
+
+    const FLAT_RECIPE: &str = r#"{"id":"flat","projectId":"p","name":"flat","parameters":{}}"#;
+
+    const HAIRLINE: &str = r#"{"id":"hairline","projectId":"p","name":"Hairline","width":0,"cap":"butt","join":"miter"}"#;
+
+    const INK_PALETTE: &str = r##"{"id":"brand","projectId":"p","name":"Brand","tokens":[{"name":"accent","value":"#ff0000"}]}"##;
+
+    /// A rect with a stroke whose profile leaves the weight unset, so a line-art
+    /// recipe's `strokeWeight` is the one that reaches the render model.
+    fn scene_naming(recipe: &str) -> String {
+        RECT_SCENE
+            .replace(
+                r##""kind": "rect","##,
+                r##""kind": "rect", "stroke": {"profileId": "hairline", "paint": {"kind": "token", "ref": "accent"}},"##,
+            )
+            .replace(
+                r##""formatVersion": "0.2","##,
+                &format!(r##""formatVersion": "0.2", "recipeId": "{recipe}","##),
+            )
+    }
+
+    #[test]
+    fn a_scene_naming_a_recipe_loads_and_applies_it() {
+        let dir = TempDir::new("recipe-scene");
+        write(dir.path(), "vectr.project.json", "{}");
+        write(dir.path(), "recipes/line.json", LINE_RECIPE);
+        write(dir.path(), "strokes/hairline.json", HAIRLINE);
+        write(dir.path(), "palettes/brand.json", INK_PALETTE);
+        let scene_text = scene_naming("line");
+        let scene_text = scene_text.replace(
+            r##""elements": ["##,
+            r##""paletteId": "brand", "elements": ["##,
+        );
+        let scene_path = write(dir.path(), "scenes/scene.json", &scene_text);
+        let scene = parse_scene(&scene_text).expect("a valid scene");
+
+        let assets = ProjectAssets::load(&scene_path, &scene).expect("loads");
+        let model = compile_with_style(&scene, &assets.style_context()).expect("compiles");
+        assert_eq!(model.meta.recipe.as_deref(), Some("line-art"));
+        let stroke = model.nodes[0]
+            .paint
+            .stroke
+            .as_ref()
+            .expect("the recipe's weight reaches the stroke");
+        assert_eq!(stroke.width, 2.5);
+    }
+
+    #[test]
+    fn the_project_default_recipe_applies_when_the_scene_names_none() {
+        let dir = TempDir::new("recipe-default");
+        write(
+            dir.path(),
+            "vectr.project.json",
+            r#"{"defaultRecipeId":"line"}"#,
+        );
+        write(dir.path(), "recipes/line.json", LINE_RECIPE);
+        let scene_path = write(dir.path(), "scenes/scene.json", RECT_SCENE);
+        let scene = parse_scene(RECT_SCENE).expect("a valid scene");
+
+        let assets = ProjectAssets::load(&scene_path, &scene).expect("loads");
+        let model = compile_with_style(&scene, &assets.style_context()).expect("compiles");
+        assert_eq!(model.meta.recipe.as_deref(), Some("line-art"));
+    }
+
+    #[test]
+    fn a_scene_recipe_overrides_the_project_default() {
+        let dir = TempDir::new("recipe-override");
+        write(
+            dir.path(),
+            "vectr.project.json",
+            r#"{"defaultRecipeId":"flat"}"#,
+        );
+        write(dir.path(), "recipes/flat.json", FLAT_RECIPE);
+        write(dir.path(), "recipes/line.json", LINE_RECIPE);
+        let scene_text = scene_naming("line");
+        let scene_path = write(dir.path(), "scenes/scene.json", &scene_text);
+        let scene = parse_scene(&scene_text).expect("a valid scene");
+
+        let assets = ProjectAssets::load(&scene_path, &scene).expect("loads");
+        let model = compile_with_style(&scene, &assets.style_context()).expect("compiles");
+        assert_eq!(model.meta.recipe.as_deref(), Some("line-art"));
+    }
+
+    #[test]
+    fn a_scene_without_a_recipe_loads_no_recipe() {
+        let dir = TempDir::new("recipe-none");
+        let scene_path = write(dir.path(), "scene.json", RECT_SCENE);
+        let scene = parse_scene(RECT_SCENE).expect("a valid scene");
+
+        let assets = ProjectAssets::load(&scene_path, &scene).expect("loads");
+        assert!(assets.style_context().recipe.is_none());
+    }
+
+    #[test]
+    fn a_missing_recipe_is_a_project_asset_error() {
+        let dir = TempDir::new("recipe-missing");
+        write(dir.path(), "vectr.project.json", "{}");
+        let scene_text = scene_naming("absent");
+        let scene_path = write(dir.path(), "scenes/scene.json", &scene_text);
+        let scene = parse_scene(&scene_text).expect("a valid scene");
+
+        let diagnostics = ProjectAssets::load(&scene_path, &scene).expect_err("refused");
+        let error = diagnostics.errors().next().expect("an error");
+        assert_eq!(error.code, STYLE_ASSET);
+        assert!(error.message.contains("absent"), "{}", error.message);
+    }
+
+    #[test]
+    fn an_invalid_recipe_document_is_refused() {
+        let dir = TempDir::new("recipe-invalid");
+        write(dir.path(), "vectr.project.json", "{}");
+        write(
+            dir.path(),
+            "recipes/bad.json",
+            r#"{"id":"bad","projectId":"p","name":"geometric","parameters":{"gridSize":-1}}"#,
+        );
+        let scene_text = scene_naming("bad");
+        let scene_path = write(dir.path(), "scenes/scene.json", &scene_text);
+        let scene = parse_scene(&scene_text).expect("a valid scene");
+
+        let diagnostics = ProjectAssets::load(&scene_path, &scene).expect_err("refused");
+        assert!(
+            diagnostics
+                .errors()
+                .any(|error| error.code == DiagnosticCode::SCHEMA),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn a_malformed_project_configuration_is_reported() {
+        let dir = TempDir::new("recipe-bad-config");
+        write(dir.path(), "vectr.project.json", "{ not json");
+        let scene_path = write(dir.path(), "scene.json", RECT_SCENE);
+        let scene = parse_scene(RECT_SCENE).expect("a valid scene");
+
+        let diagnostics = ProjectAssets::load(&scene_path, &scene).expect_err("refused");
+        let error = diagnostics.errors().next().expect("an error");
+        assert_eq!(error.code, STYLE_ASSET);
     }
 }
