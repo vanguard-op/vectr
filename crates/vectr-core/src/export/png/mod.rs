@@ -99,19 +99,17 @@ pub fn export_png_reporting(
     options: &RasterOptions,
 ) -> Result<PngExport, Diagnostics> {
     let pixels = resolve_pixels(model, options)?;
-    let background = options
-        .background
-        .as_deref()
-        .unwrap_or(model.canvas.background.as_str());
 
     // Emit at the exact pixel size so the raster matches the vector rendering at
-    // that size; the view box stays in canvas coordinates.
+    // that size; the view box stays in canvas coordinates. The background
+    // override passes through unchanged so the SVG writer resolves and validates
+    // one background — the override when present, otherwise the canvas's own.
     let svg = export_svg_reporting(
         model,
         &SvgOptions {
             width: Some(f64::from(pixels.width)),
             height: Some(f64::from(pixels.height)),
-            background: Some(background.to_string()),
+            background: options.background.clone(),
         },
     )?;
 
@@ -466,6 +464,22 @@ mod tests {
         assert_eq!(
             export.diagnostics.warnings().next().map(|w| w.code.clone()),
             Some(crate::export::svg::UNSUPPORTED)
+        );
+    }
+
+    #[test]
+    fn an_invalid_export_background_is_refused_before_rasterizing() {
+        let diagnostics = export_png(
+            &model(Vec::new()),
+            &RasterOptions {
+                background: Some("not-a-colour".to_string()),
+                ..RasterOptions::default()
+            },
+        )
+        .expect_err("refused");
+        assert_eq!(
+            diagnostics.errors().next().map(|e| e.code.clone()),
+            Some(crate::scene::INVALID_COLOR)
         );
     }
 

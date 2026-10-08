@@ -595,7 +595,7 @@ fn join_name(join: StrokeJoin) -> &'static str {
     }
 }
 
-fn is_transparent(background: &str) -> bool {
+pub(super) fn is_transparent(background: &str) -> bool {
     background.is_empty()
         || background.eq_ignore_ascii_case("transparent")
         || background.eq_ignore_ascii_case("none")
