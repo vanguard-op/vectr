@@ -223,7 +223,8 @@ mod tests {
     use super::*;
     use crate::composition::Affine;
     use crate::primitives::{Rect, Shape};
-    use crate::render::{Paint, RenderCanvas, RenderMeta, ResolvedNode};
+    use crate::render::{Paint, RenderCanvas, RenderMeta, ResolvedFont, ResolvedNode, TextRun};
+    use crate::scene::TextAlign;
 
     fn rect(x: f64, y: f64, width: f64, height: f64) -> Shape {
         Shape::Rect(Rect {
@@ -395,6 +396,58 @@ mod tests {
             export_png(&document, &options).expect("exports"),
             export_png(&document, &options).expect("exports")
         );
+    }
+
+    #[cfg(feature = "rasterizer")]
+    #[test]
+    fn a_text_element_rasterizes_its_glyphs() {
+        let path = format!(
+            "{}/../../assets/fonts/Inter.ttf",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let data = std::fs::read(&path).expect("the bundled font");
+        let text = ResolvedNode {
+            id: "t1".to_string(),
+            name: None,
+            order: 0,
+            kind: "text".to_string(),
+            groups: Vec::new(),
+            geometry: None,
+            text: Some(TextRun {
+                value: "I".to_string(),
+                font_id: "body".to_string(),
+                font_size: 40.0,
+                align: TextAlign::Start,
+                line_height: 40.0,
+                letter_spacing: 0.0,
+                width: None,
+            }),
+            transform: Affine::translate(5.0, 45.0),
+            paint: Paint {
+                fill: Some("#000000".to_string()),
+                stroke: None,
+            },
+            opacity: 1.0,
+            visible: true,
+        };
+        let mut document = model(vec![text]);
+        document.canvas.width = 50.0;
+        document.canvas.height = 50.0;
+        document.fonts = vec![ResolvedFont {
+            id: "body".to_string(),
+            name: "Inter".to_string(),
+            data,
+        }];
+
+        let bytes = export_png(&document, &RasterOptions::default()).expect("exports");
+        let image = decode(&bytes);
+        let inked = (0..image.height()).any(|y| {
+            (0..image.width()).any(|x| {
+                let pixel = image.pixel(x, y).expect("in bounds").demultiply();
+                pixel.red() < 64 && pixel.green() < 64 && pixel.blue() < 64 && pixel.alpha() > 0
+            })
+        });
+        assert!(inked, "the glyph should rasterize to visible pixels");
     }
 
     #[cfg(feature = "rasterizer")]

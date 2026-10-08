@@ -135,7 +135,10 @@ mod tests {
     use crate::primitives::{
         Ellipse, Line, Path as PathGeometry, Polygon, Rect, Segment, Shape, SubPath,
     };
-    use crate::render::{NodeStroke, Paint, RenderCanvas, RenderMeta, ResolvedNode};
+    use crate::render::{
+        NodeStroke, Paint, RenderCanvas, RenderMeta, ResolvedFont, ResolvedNode, TextRun,
+    };
+    use crate::scene::TextAlign;
     use crate::style::{StrokeCap, StrokeJoin};
 
     fn rect(x: f64, y: f64, width: f64, height: f64) -> Shape {
@@ -181,6 +184,39 @@ mod tests {
 
     fn export(model: &RenderModel) -> String {
         export_svg(model, &SvgOptions::default()).expect("exports")
+    }
+
+    /// A text node carrying a string and resolved layout, as the compiler emits.
+    fn text_node(id: &str, name: Option<&str>, value: &str, font_id: &str) -> ResolvedNode {
+        ResolvedNode {
+            id: id.to_string(),
+            name: name.map(str::to_string),
+            order: 0,
+            kind: "text".to_string(),
+            groups: Vec::new(),
+            geometry: None,
+            text: Some(TextRun {
+                value: value.to_string(),
+                font_id: font_id.to_string(),
+                font_size: 48.0,
+                align: TextAlign::Start,
+                line_height: 48.0,
+                letter_spacing: 0.0,
+                width: None,
+            }),
+            transform: Affine::IDENTITY,
+            paint: Paint {
+                fill: Some("#000000".to_string()),
+                stroke: None,
+            },
+            opacity: 1.0,
+            visible: true,
+        }
+    }
+
+    fn font_bytes(file: &str) -> Vec<u8> {
+        let path = format!("{}/../../assets/fonts/{file}", env!("CARGO_MANIFEST_DIR"));
+        std::fs::read(&path).unwrap_or_else(|error| panic!("could not read {path}: {error}"))
     }
 
     #[test]
@@ -682,5 +718,95 @@ mod tests {
         ]));
         assert!(svg.contains("id=\"vectr-1-bad\""), "{svg}");
         assert!(svg.contains("id=\"vectr-1-bad-2\""), "{svg}");
+    }
+
+    #[test]
+    fn a_text_element_exports_as_outlined_glyphs_with_its_name_and_text() {
+        use crate::compiler::{compile_with_style, FontAsset, StyleContext, DEFAULT_FONT_ID};
+        use crate::scene::parse as parse_scene;
+        use serde_json::json;
+
+        let scene = parse_scene(
+            &json!({
+                "id": "s", "projectId": "p", "name": "S", "formatVersion": "0.1",
+                "canvas": { "width": 200.0, "height": 100.0, "background": "#ffffff" },
+                "elements": [{
+                    "id": "t1", "sceneId": "s", "order": 0, "kind": "text", "name": "Wordmark",
+                    "geometry": { "x": 10.0, "y": 60.0, "text": "Hi", "fontSize": 48.0 },
+                    "transform": { "translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0 },
+                    "fillToken": "ink", "opacity": 1.0, "visible": true
+                }]
+            })
+            .to_string(),
+        )
+        .expect("a valid scene");
+        let fonts = [FontAsset::new(
+            DEFAULT_FONT_ID,
+            "Inter",
+            font_bytes("Inter.ttf"),
+        )];
+        let compiled = compile_with_style(
+            &scene,
+            &StyleContext {
+                palette: None,
+                strokes: &[],
+                fonts: &fonts,
+            },
+        )
+        .expect("compiles");
+
+        let export = export_svg_reporting(&compiled, &SvgOptions::default()).expect("exports");
+        assert!(export.diagnostics.is_empty(), "{:?}", export.diagnostics);
+        assert!(export.svg.contains("<path"), "{}", export.svg);
+        assert!(!export.svg.contains("<text"), "{}", export.svg);
+        assert!(
+            export.svg.contains("id=\"t1\" data-name=\"Wordmark\""),
+            "{}",
+            export.svg
+        );
+        assert!(
+            export.svg.contains("<title>Wordmark</title>"),
+            "{}",
+            export.svg
+        );
+        assert!(export.svg.contains("<desc>Hi</desc>"), "{}", export.svg);
+    }
+
+    #[test]
+    fn a_text_node_whose_font_is_missing_is_omitted_with_a_warning() {
+        let document = model(vec![text_node("t1", None, "Hi", "ghost")]);
+        let export = export_svg_reporting(&document, &SvgOptions::default()).expect("exports");
+        assert!(!export.svg.contains("t1"), "{}", export.svg);
+        assert_eq!(
+            export.diagnostics.warnings().next().map(|w| w.code.clone()),
+            Some(crate::fonts::FONT_MISSING)
+        );
+    }
+
+    #[test]
+    fn a_glyph_the_chosen_font_lacks_is_outlined_from_the_fallback() {
+        let mut document = model(vec![text_node("t1", None, "\u{149}", "body")]);
+        document.fonts = vec![
+            ResolvedFont {
+                id: "body".to_string(),
+                name: "Inter".to_string(),
+                data: font_bytes("Inter.ttf"),
+            },
+            ResolvedFont {
+                id: crate::fonts::FALLBACK_FONT_ID.to_string(),
+                name: "Noto Sans".to_string(),
+                data: font_bytes("NotoSans.ttf"),
+            },
+        ];
+        let export = export_svg_reporting(&document, &SvgOptions::default()).expect("exports");
+        assert!(export.svg.contains("<path"), "{}", export.svg);
+        assert!(
+            !export
+                .diagnostics
+                .warnings()
+                .any(|warning| warning.code == crate::fonts::MISSING_GLYPH),
+            "{:?}",
+            export.diagnostics
+        );
     }
 }

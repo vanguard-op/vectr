@@ -13,6 +13,7 @@ use std::collections::HashSet;
 use std::fmt::Write as _;
 
 use crate::composition::Affine;
+use crate::fonts::FontLibrary;
 use crate::primitives::{Path as PathGeometry, Rect, Segment, Shape};
 use crate::render::{NodeGroup, RenderModel, ResolvedNode};
 use crate::scene::{Diagnostic, Diagnostics, Location};
@@ -67,7 +68,8 @@ pub(crate) fn document(
     }
 
     let mut ids = IdAllocator::default();
-    emit_nodes(&mut out, &model.nodes, &mut ids, diagnostics);
+    let fonts = FontLibrary::new(&model.fonts);
+    emit_nodes(&mut out, &model.nodes, &fonts, &mut ids, diagnostics);
 
     out.push_str("</svg>\n");
     out
@@ -86,9 +88,15 @@ pub(crate) fn document(
 /// state of its own — its transform and opacity are already resolved into its
 /// nodes — so it is collapsed, as FEAT-012 permits; a named group nested inside
 /// one still lands at the correct level.
+///
+/// A text node carries its string and resolved layout, not geometry (C-003), so
+/// its glyphs are outlined here against the model's fonts and emitted as a
+/// path; a run that draws nothing, or whose font is missing, opens no group and
+/// is reported on `diagnostics` (FEAT-024).
 fn emit_nodes(
     out: &mut String,
     nodes: &[ResolvedNode],
+    fonts: &FontLibrary<'_>,
     ids: &mut IdAllocator,
     diagnostics: &mut Diagnostics,
 ) {
@@ -98,8 +106,7 @@ fn emit_nodes(
             omit(diagnostics, node, reason);
             continue;
         }
-        // A node that draws nothing (an empty path) opens no group either.
-        let Some(shape) = shape_element(node) else {
+        let Some(shape) = shape_for(node, fonts, diagnostics) else {
             continue;
         };
 
@@ -142,12 +149,32 @@ fn emit_nodes(
 fn unsupported(node: &ResolvedNode) -> Option<&'static str> {
     if node.kind == "raster" {
         Some("is a raster layer, which SVG export omits")
-    } else if node.text.is_some() {
-        Some("is a text node, which SVG export does not yet outline")
     } else if !is_finite(node) {
         Some("has non-finite geometry or transform, so SVG export omits it")
     } else {
         None
+    }
+}
+
+/// The SVG shape for a node: a text node's outlined glyphs, or a shape's native
+/// element. `None` when the node draws nothing, in which case its warnings have
+/// already been recorded.
+fn shape_for(
+    node: &ResolvedNode,
+    fonts: &FontLibrary<'_>,
+    diagnostics: &mut Diagnostics,
+) -> Option<String> {
+    match &node.text {
+        Some(run) => {
+            let outlined = fonts.outline(run, &node.id);
+            diagnostics.extend(outlined.diagnostics);
+            if outlined.path.is_empty() {
+                None
+            } else {
+                Some(text_element(node, &outlined.path))
+            }
+        }
+        None => shape_element(node),
     }
 }
 
@@ -176,6 +203,11 @@ fn emit_node(
     let _ = writeln!(out, "{indent}{group}");
     if let Some(name) = &node.name {
         let _ = writeln!(out, "{indent}  <title>{}</title>", escape_text(name));
+    }
+    // A text node's string is otherwise lost once its glyphs become outlines, so
+    // carry it as the element's accessible description (FEAT-012).
+    if let Some(text) = &node.text {
+        let _ = writeln!(out, "{indent}  <desc>{}</desc>", escape_text(&text.value));
     }
     let _ = writeln!(out, "{indent}  {shape}");
     let _ = writeln!(out, "{indent}</g>");
@@ -236,6 +268,30 @@ fn shape_element(node: &ResolvedNode) -> Option<String> {
         }
     };
     Some(element)
+}
+
+/// The SVG path element for an outlined text node (FEAT-024).
+///
+/// The glyph contours are concrete geometry by the time they reach here, so a
+/// text node emits exactly like any other path: its paint, its resolved
+/// transform, and one `d` attribute carrying every contour.
+fn text_element(node: &ResolvedNode, path: &PathGeometry) -> String {
+    let data = path_data(path);
+    let mut attrs = paint_attributes(node);
+    if node.transform != Affine::IDENTITY {
+        let transform = node.transform;
+        let _ = write!(
+            attrs,
+            " transform=\"matrix({} {} {} {} {} {})\"",
+            number(transform.a),
+            number(transform.b),
+            number(transform.c),
+            number(transform.d),
+            number(transform.e),
+            number(transform.f),
+        );
+    }
+    format!("<path d=\"{data}\"{attrs}/>")
 }
 
 /// A rectangle, with a negative extent normalised to a positive one so the
