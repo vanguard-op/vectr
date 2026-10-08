@@ -260,6 +260,8 @@ pub fn compile_with_style<'s>(
         parent: Vec::new(),
         children: Vec::new(),
         snapped: HashMap::new(),
+        compositions: Vec::new(),
+        yield_cache: vec![None; scene.elements.len()],
     };
 
     compiler.prepare();
@@ -339,6 +341,15 @@ struct Compiler<'a, 's> {
     /// The geometric recipe's planned grid positions, one per element, keyed by
     /// element id; empty when no grid applies (FEAT-009).
     snapped: HashMap<String, Point>,
+    /// The composition elements enclosing the node currently being emitted,
+    /// outermost first. A node refused for overflowing the render-node limit is
+    /// reported against this chain so the limitation names a composition rather
+    /// than a bare limit (FEAT-003).
+    compositions: Vec<String>,
+    /// An upper bound on the render nodes each subtree emits, capped above the
+    /// node limit; memoised so a repeat's combined expansion is judged before
+    /// its copies are materialised (FEAT-003, NFR-021).
+    yield_cache: Vec<Option<u64>>,
 }
 
 impl Compiler<'_, '_> {
@@ -489,6 +500,9 @@ impl Compiler<'_, '_> {
                 }
                 let placements = repeat_placements(&self.scene.elements[index], &mut findings);
                 self.diagnostics.extend(findings);
+                if self.guard_expansion(index, placements.len()) {
+                    return;
+                }
                 let owner = self.scene.elements[index].id.clone();
                 for (copy_index, placement) in placements.iter().enumerate() {
                     if self.limit_hit {
@@ -521,6 +535,9 @@ impl Compiler<'_, '_> {
                     &mut findings,
                 );
                 self.diagnostics.extend(findings);
+                if self.guard_expansion(index, placements.len()) {
+                    return;
+                }
                 let owner = self.scene.elements[index].id.clone();
                 for (copy_index, placement) in placements.iter().enumerate() {
                     if self.limit_hit {
@@ -734,6 +751,11 @@ impl Compiler<'_, '_> {
         copy: Option<&CopyTag>,
         groups: &[NodeGroup],
     ) {
+        let composed = is_composition(self.scene.elements[index].kind);
+        if composed {
+            self.compositions
+                .push(self.scene.elements[index].id.clone());
+        }
         let mut children = self.children[index].clone();
         self.order_siblings(&mut children);
         for child in children {
@@ -741,6 +763,9 @@ impl Compiler<'_, '_> {
                 break;
             }
             self.emit(child, world, opacity, visible, copy, groups);
+        }
+        if composed {
+            self.compositions.pop();
         }
     }
 
@@ -1106,10 +1131,8 @@ impl Compiler<'_, '_> {
         }
         if self.nodes.len() >= MAX_RENDER_NODES {
             self.limit_hit = true;
-            self.diagnostics.push(Diagnostic::error(
-                DiagnosticCode::SIZE_LIMIT,
-                format!("compilation produced more than {MAX_RENDER_NODES} nodes"),
-            ));
+            let diagnostic = self.node_limit_diagnostic();
+            self.diagnostics.push(diagnostic);
             return;
         }
 
@@ -1163,10 +1186,8 @@ impl Compiler<'_, '_> {
         }
         if self.nodes.len() >= MAX_RENDER_NODES {
             self.limit_hit = true;
-            self.diagnostics.push(Diagnostic::error(
-                DiagnosticCode::SIZE_LIMIT,
-                format!("compilation produced more than {MAX_RENDER_NODES} nodes"),
-            ));
+            let diagnostic = self.node_limit_diagnostic();
+            self.diagnostics.push(diagnostic);
             return;
         }
 
@@ -1466,6 +1487,116 @@ impl Compiler<'_, '_> {
         false
     }
 
+    /// Refuses an expanding composition whose combined output would carry the
+    /// model past the render-node limit, naming it rather than reporting a bare
+    /// limit (FEAT-003, FEAT-011).
+    ///
+    /// The per-copy yield is an upper bound on the subtree's nodes, so an
+    /// untrusted nested repeat cannot demand unbounded memory even when each
+    /// individual count is under the limit (NFR-021); the check runs before any
+    /// copy is materialised. Returns true when the expansion was refused.
+    fn guard_expansion(&mut self, index: usize, copies: usize) -> bool {
+        let children = self.children[index].clone();
+        let per_copy = children.into_iter().fold(0u64, |sum, child| {
+            sum.saturating_add(self.subtree_nodes(child))
+        });
+        let total = (copies as u64).saturating_mul(per_copy);
+        if (self.nodes.len() as u64).saturating_add(total) <= MAX_RENDER_NODES as u64 {
+            return false;
+        }
+        self.limit_hit = true;
+        let diagnostic = self.expansion_limit(index);
+        self.diagnostics.push(diagnostic);
+        true
+    }
+
+    /// The diagnostic for a composition expansion that overflows the node limit,
+    /// naming the enclosing composition chain and the composition itself.
+    fn expansion_limit(&self, index: usize) -> Diagnostic {
+        let id = self.scene.elements[index].id.as_str();
+        let chain = self
+            .compositions
+            .iter()
+            .map(String::as_str)
+            .chain(std::iter::once(id))
+            .collect::<Vec<_>>()
+            .join("` -> `");
+        Diagnostic::error(
+            DiagnosticCode::SIZE_LIMIT,
+            format!(
+                "composition `{chain}` expands beyond the {MAX_RENDER_NODES}-node limit; it is refused rather than truncated"
+            ),
+        )
+        .with_location(Location::element(id.to_string()))
+    }
+
+    /// The diagnostic for a node push that overflows the node limit, naming the
+    /// enclosing composition when the expansion came from one.
+    fn node_limit_diagnostic(&self) -> Diagnostic {
+        match self.compositions.last() {
+            Some(owner) => Diagnostic::error(
+                DiagnosticCode::SIZE_LIMIT,
+                format!(
+                    "composition `{}` expands beyond the {MAX_RENDER_NODES}-node limit; it is refused rather than truncated",
+                    self.compositions.join("` -> `")
+                ),
+            )
+            .with_location(Location::element(owner.clone())),
+            None => Diagnostic::error(
+                DiagnosticCode::SIZE_LIMIT,
+                format!("compilation produced more than {MAX_RENDER_NODES} render nodes"),
+            ),
+        }
+    }
+
+    /// An upper bound on the render nodes a subtree emits, capped above the
+    /// node limit (FEAT-003, NFR-021).
+    ///
+    /// A primitive, a text run and a boolean each yield at most one node, an
+    /// offset yields at most one per child, a group and a projection pass their
+    /// children through, and a repeat or a placement along a path multiplies its
+    /// children by its copy count. Memoised, so judging every composition's
+    /// expansion is linear in the tree.
+    fn subtree_nodes(&mut self, index: usize) -> u64 {
+        let cap = MAX_RENDER_NODES as u64 + 1;
+        if let Some(cached) = self.yield_cache.get(index).copied().flatten() {
+            return cached;
+        }
+        let kind = self.scene.elements[index].kind;
+        let value = match kind {
+            ElementKind::Raster => 0,
+            ElementKind::Rect
+            | ElementKind::Ellipse
+            | ElementKind::Polygon
+            | ElementKind::Line
+            | ElementKind::Path
+            | ElementKind::Text
+            | ElementKind::Boolean => 1,
+            ElementKind::Offset => self.children[index].len() as u64,
+            ElementKind::Group | ElementKind::Projection => {
+                let children = self.children[index].clone();
+                children
+                    .into_iter()
+                    .fold(0u64, |sum, child| {
+                        sum.saturating_add(self.subtree_nodes(child))
+                    })
+                    .min(cap)
+            }
+            ElementKind::Repeat | ElementKind::AlongPath => {
+                let count = u64::from(self.scene.elements[index].geometry.count.unwrap_or(0));
+                let children = self.children[index].clone();
+                let per_copy = children.into_iter().fold(0u64, |sum, child| {
+                    sum.saturating_add(self.subtree_nodes(child))
+                });
+                count.saturating_mul(per_copy).min(cap)
+            }
+        };
+        if let Some(slot) = self.yield_cache.get_mut(index) {
+            *slot = Some(value);
+        }
+        value
+    }
+
     fn reject_composition(&mut self, index: usize, reason: &str) {
         let id = self.scene.elements[index].id.clone();
         self.diagnostics.push(
@@ -1565,6 +1696,20 @@ fn detect_cycle(parent: &[Option<usize>]) -> Option<Vec<usize>> {
 
 fn kind_name(kind: ElementKind) -> &'static str {
     kind.as_str()
+}
+
+/// Whether an element is a composition: one that acts on its children rather
+/// than contributing a node of its own (FEAT-003, FEAT-011).
+fn is_composition(kind: ElementKind) -> bool {
+    matches!(
+        kind,
+        ElementKind::Group
+            | ElementKind::Repeat
+            | ElementKind::AlongPath
+            | ElementKind::Boolean
+            | ElementKind::Offset
+            | ElementKind::Projection
+    )
 }
 
 /// Whether a shape draws a segment that is not a straight line.
@@ -1835,6 +1980,54 @@ mod tests {
         let diagnostics = compile(&scene).expect_err("an unbounded expansion is refused");
         let error = diagnostics.errors().next().expect("an error");
         assert_eq!(error.code, DiagnosticCode::SIZE_LIMIT);
+    }
+
+    #[test]
+    fn a_nested_composition_that_overflows_names_the_composition() {
+        // Each count is individually under the per-element budget, but the
+        // combined expansion is not: the refusal names the composition that
+        // overflows, rather than reporting a bare limit (FEAT-003 edge case).
+        let mut group = base("g1", 0, "group", json!({}));
+        group["name"] = json!("Grid");
+        let mut rows = base(
+            "rows",
+            0,
+            "repeat",
+            json!({ "count": 2_000, "spacing": 1.0 }),
+        );
+        rows["parentId"] = json!("g1");
+        let mut columns = base(
+            "columns",
+            1,
+            "repeat",
+            json!({ "count": 1_000, "spacing": 1.0 }),
+        );
+        columns["parentId"] = json!("rows");
+        let mut cell = rect("cell", 0, 1.0, 1.0);
+        cell["parentId"] = json!("columns");
+        let scene = scene_of(json!([group, rows, columns, cell]), None);
+
+        let diagnostics = compile(&scene).expect_err("the combined expansion is bounded");
+        let error = diagnostics.errors().next().expect("an error");
+        assert_eq!(error.code, DiagnosticCode::SIZE_LIMIT);
+        assert!(
+            error.message.contains("g1") && error.message.contains("rows"),
+            "the refusal names the composition and its enclosing chain: {}",
+            error.message
+        );
+        assert!(
+            !error.message.contains("columns"),
+            "the composition whose combined expansion overflows is named, not an inner repeat: {}",
+            error.message
+        );
+        assert_eq!(
+            error
+                .location
+                .as_ref()
+                .and_then(|location| location.element_id.as_deref()),
+            Some("rows"),
+            "the finding is located at the overflowing composition"
+        );
     }
 
     #[test]
