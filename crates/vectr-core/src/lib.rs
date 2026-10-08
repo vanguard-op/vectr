@@ -53,8 +53,8 @@ pub use style::{
     parse_gradient, parse_palette, parse_stroke_profile, parse_style_recipe, resolve_fill,
     resolve_gradient, resolve_stroke, resolve_stroke_paint, validate_gradient,
     validate_gradient_usage, validate_palette, validate_palette_usage, validate_stroke_profile,
-    validate_style_recipe, Gradient, GradientStop, GradientType, Palette, PaletteToken, RecipeName,
-    RecipeParameters, ResolvedStroke, Shading, Spread, StrokeCap, StrokeJoin, StrokeProfile,
-    StyleRecipe, FREEFORM_CURVE, GRID_SNAPPED, GRID_TOO_FINE, ISOMETRIC_OFF_AXIS, LINE_ART_EMPTY,
-    MIN_GRID_SIZE, MIN_STROKE_WEIGHT, STROKE_WEIGHT_CLAMPED,
+    validate_style_recipe, Gradient, GradientStop, GradientType, LightDirection, Palette,
+    PaletteToken, RecipeName, RecipeParameters, ResolvedStroke, Shading, Spread, StrokeCap,
+    StrokeJoin, StrokeProfile, StyleRecipe, FREEFORM_CURVE, GRID_SNAPPED, GRID_TOO_FINE,
+    ISOMETRIC_OFF_AXIS, LINE_ART_EMPTY, MIN_GRID_SIZE, MIN_STROKE_WEIGHT, STROKE_WEIGHT_CLAMPED,
 };

@@ -1591,7 +1591,8 @@ mod tests {
     use crate::style::{
         parse_gradient, parse_palette, parse_stroke_profile, parse_style_recipe, FREEFORM_CURVE,
         GRID_SNAPPED, GRID_TOO_FINE, ISOMETRIC_OFF_AXIS, LINE_ART_EMPTY, MIN_GRID_SIZE,
-        MIN_STROKE_WEIGHT, STROKE_WEIGHT_CLAMPED, TEXTURE_UNSUPPORTED, UNDEFINED_TOKEN,
+        MIN_STROKE_WEIGHT, SHADING_UNSUPPORTED, STROKE_WEIGHT_CLAMPED, TEXTURE_UNSUPPORTED,
+        UNDEFINED_TOKEN,
     };
     use serde_json::{json, Value};
 
@@ -2171,6 +2172,40 @@ mod tests {
             model.nodes[0].paint.fill.as_ref().and_then(color),
             Some("#ff0000"),
             "the fill stays a solid palette colour"
+        );
+    }
+
+    #[test]
+    fn a_flat_recipe_that_requests_single_layer_shading_warns_and_keeps_the_base_fill() {
+        let mut element = rect("e1", 0, 10.0, 10.0);
+        element["fill"] = token_paint("accent");
+        let scene = scene_of(json!([element]), None);
+        let palette = flat_palette();
+        let recipe = parse_style_recipe(
+            r#"{"id":"recipe-1","projectId":"p","name":"flat","parameters":{"shading":"single-layer","shadeToken":"ink"}}"#,
+        )
+        .expect("a flat recipe requesting single-layer shading");
+        let style = StyleContext {
+            palette: Some(&palette),
+            strokes: &[],
+            gradients: &[],
+            fonts: &[],
+            recipe: Some(&recipe),
+        };
+
+        let model = compile_with_style(&scene, &style).expect("the shading request is not fatal");
+        assert!(
+            model
+                .diagnostics
+                .warnings()
+                .any(|warning| warning.code == SHADING_UNSUPPORTED),
+            "the unapplied shading is reported, never silently ignored: {:?}",
+            model.diagnostics
+        );
+        assert_eq!(
+            model.nodes[0].paint.fill.as_ref().and_then(color),
+            Some("#ff0000"),
+            "the shape renders with its base fill"
         );
     }
 
