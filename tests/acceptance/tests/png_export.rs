@@ -9,7 +9,7 @@ mod common;
 use common::*;
 use serde_json::json;
 use vectr_core::export::png::{OPTIONS, SIZE_LIMIT};
-use vectr_core::render::{Paint, RenderCanvas, RenderMeta, RenderModel, ResolvedNode};
+use vectr_core::render::{NodePaint, Paint, RenderCanvas, RenderMeta, RenderModel, ResolvedNode};
 use vectr_core::{Affine, Diagnostics, FontAsset, RasterOptions, Rect, Shape, StyleContext};
 
 fn half_red() -> RenderModel {
@@ -29,8 +29,10 @@ fn half_red() -> RenderModel {
         })),
         text: None,
         transform: Affine::IDENTITY,
-        paint: Paint {
-            fill: Some("#ff0000".to_string()),
+        paint: NodePaint {
+            fill: Some(Paint::Color {
+                value: "#ff0000".to_string(),
+            }),
             stroke: None,
         },
         opacity: 1.0,
@@ -133,7 +135,7 @@ fn a_single_output_dimension_preserves_the_aspect_ratio() {
 #[test]
 fn a_text_element_rasterizes_its_glyphs() {
     let mut wordmark = text("wordmark", 0, 5.0, 45.0, "I", 40.0);
-    wordmark["fillToken"] = json!("ink");
+    wordmark["fill"] = token_paint("ink");
     let mut document = scene_with(vec![wordmark], None, Some("brand"));
     document["canvas"] = json!({ "width": 64.0, "height": 64.0, "background": "#ffffff" });
     let palette =
@@ -146,6 +148,7 @@ fn a_text_element_rasterizes_its_glyphs() {
     let style = StyleContext {
         palette: Some(&palette),
         strokes: &[],
+        gradients: &[],
         fonts: &fonts,
     };
     let model = compile_with(&document, &style).expect("compiles");

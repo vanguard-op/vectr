@@ -13,7 +13,7 @@ mod version;
 pub use diagnostic::{Diagnostic, DiagnosticCode, Diagnostics, Location, Severity};
 pub use model::{
     Axis, BooleanOperation, Canvas, Constraint, ConstraintKind, Element, ElementKind, Geometry,
-    ProjectionAxis, Scene, TextAlign, Transform,
+    Paint, PaintKind, ProjectionAxis, Scene, Stroke, TextAlign, Transform,
 };
 pub use version::{
     is_supported, is_supported_version, parse_version, supported_range, CURRENT_FORMAT_VERSION,
@@ -243,7 +243,6 @@ fn validate_elements(diagnostics: &mut Diagnostics, scene: &Scene) {
 
         validate_geometry(diagnostics, &element.geometry, &base);
         validate_transform(diagnostics, &element.transform, &base);
-        validate_stroke_pair(diagnostics, element, &base);
         validate_text(diagnostics, element, &base);
         validate_text_operand(diagnostics, scene, element, &base, &index_of);
     }
@@ -345,45 +344,6 @@ fn is_text_operand_kind(kind: ElementKind) -> bool {
             | ElementKind::Repeat
             | ElementKind::AlongPath
     )
-}
-
-/// A stroke needs both a profile and a colour token (C-001).
-///
-/// A profile without a colour token, or a colour token without a profile, is an
-/// error: the stroke is neither dropped nor given a fallback colour (FEAT-005).
-fn validate_stroke_pair(diagnostics: &mut Diagnostics, element: &Element, base: &str) {
-    match (
-        element.stroke_profile_id.is_some(),
-        element.stroke_token.is_some(),
-    ) {
-        (true, false) => diagnostics.push(
-            Diagnostic::error(
-                DiagnosticCode::SCHEMA,
-                format!(
-                    "element `{}` declares a stroke profile without a stroke colour token; a stroke needs both",
-                    element.id
-                ),
-            )
-            .with_location(Location::element_at(
-                element.id.clone(),
-                format!("{base}/strokeToken"),
-            )),
-        ),
-        (false, true) => diagnostics.push(
-            Diagnostic::error(
-                DiagnosticCode::SCHEMA,
-                format!(
-                    "element `{}` declares a stroke colour token without a stroke profile; the colour has no stroke to apply to",
-                    element.id
-                ),
-            )
-            .with_location(Location::element_at(
-                element.id.clone(),
-                format!("{base}/strokeProfileId"),
-            )),
-        ),
-        _ => {}
-    }
 }
 
 fn validate_geometry(diagnostics: &mut Diagnostics, geometry: &Geometry, base: &str) {
@@ -558,9 +518,8 @@ mod tests {
       "kind": "rect",
       "geometry": {{ "x": 0, "y": 0, "width": 120, "height": 120, "rx": 8, "ry": 8 }},
       "transform": {{ "translateX": 12, "translateY": 8, "rotate": 45, "scaleX": 1, "scaleY": 1, "skewX": 0, "skewY": 0 }},
-      "fillToken": "accent",
-      "strokeProfileId": "stroke-1",
-      "strokeToken": "accent",
+      "fill": {{ "kind": "token", "ref": "accent" }},
+      "stroke": {{ "profileId": "stroke-1", "paint": {{ "kind": "token", "ref": "accent" }} }},
       "opacity": 1,
       "visible": true
     }},
@@ -572,8 +531,8 @@ mod tests {
       "kind": "path",
       "geometry": {{ "pathData": "M0 0 L10 10" }},
       "transform": {{ "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 }},
-      "fillToken": null,
-      "strokeProfileId": null,
+      "fill": null,
+      "stroke": null,
       "opacity": 0.5,
       "visible": false
     }}
@@ -647,67 +606,52 @@ mod tests {
         let element = scene.element("e1").expect("element present");
         assert_eq!(element.parent_id, None);
         assert_eq!(element.name, None);
-        assert_eq!(element.fill_token, None);
-        assert_eq!(element.stroke_profile_id, None);
-        assert_eq!(element.stroke_token, None);
+        assert_eq!(element.fill, None);
+        assert_eq!(element.stroke, None);
 
         let text = scene.to_json_string().expect("serializable");
         assert!(
             !text.contains("parentId"),
             "an omitted optional field stays omitted"
         );
-        assert!(!text.contains("fillToken"));
-        assert!(!text.contains("strokeToken"));
+        assert!(!text.contains("\"fill\""));
+        assert!(!text.contains("\"stroke\""));
     }
 
     #[test]
-    fn a_stroke_token_round_trips_with_its_profile() {
+    fn a_stroke_round_trips_with_its_profile_and_paint() {
         let scene = parse(&full_scene()).expect("valid scene");
-        assert_eq!(
-            scene.element("mark").unwrap().stroke_token.as_deref(),
-            Some("accent")
-        );
+        let stroke = scene
+            .element("mark")
+            .unwrap()
+            .stroke
+            .as_ref()
+            .expect("a stroke");
+        assert_eq!(stroke.profile_id, "stroke-1");
+        assert_eq!(stroke.paint.kind, PaintKind::Token);
+        assert_eq!(stroke.paint.reference, "accent");
         let text = scene.to_json_string().expect("serializable");
-        assert!(text.contains(r#""strokeToken":"accent""#), "{text}");
+        assert!(
+            text.contains(
+                r#""stroke":{"profileId":"stroke-1","paint":{"kind":"token","ref":"accent"}}"#
+            ),
+            "{text}"
+        );
         assert_eq!(parse(&text).expect("round-trips"), scene);
     }
 
     #[test]
-    fn a_stroke_profile_without_a_colour_token_is_refused() {
-        let source = full_scene().replace(r#""strokeToken": "accent","#, "");
+    fn a_stroke_without_a_paint_is_refused() {
+        let source = full_scene().replace(r#", "paint": { "kind": "token", "ref": "accent" }"#, "");
         let diagnostics = parse_error(&source);
         let error = diagnostics.errors().next().expect("an error");
         assert_eq!(error.code, DiagnosticCode::SCHEMA);
-        assert_eq!(
-            error
-                .location
-                .as_ref()
-                .and_then(|location| location.json_path.as_deref()),
-            Some("/elements/0/strokeToken")
-        );
     }
 
     #[test]
-    fn a_stroke_colour_token_without_a_profile_is_refused() {
-        let source = full_scene().replace(r#""strokeProfileId": "stroke-1","#, "");
+    fn a_stroke_without_a_profile_is_refused() {
+        let source = full_scene().replace(r#""profileId": "stroke-1", "#, "");
         let diagnostics = parse_error(&source);
-        let error = diagnostics.errors().next().expect("an error");
-        assert_eq!(error.code, DiagnosticCode::SCHEMA);
-        assert_eq!(
-            error
-                .location
-                .as_ref()
-                .and_then(|location| location.json_path.as_deref()),
-            Some("/elements/0/strokeProfileId")
-        );
-    }
-
-    #[test]
-    fn a_stroke_colour_token_without_a_profile_is_found_by_validate_alone() {
-        let scene = parse(&full_scene()).unwrap();
-        let mut copy = scene.clone();
-        copy.elements[0].stroke_profile_id = None;
-        let diagnostics = validate(&copy);
         let error = diagnostics.errors().next().expect("an error");
         assert_eq!(error.code, DiagnosticCode::SCHEMA);
     }

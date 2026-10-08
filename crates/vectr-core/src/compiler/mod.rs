@@ -28,14 +28,14 @@
 //!
 //! # Paint
 //!
-//! [`compile`] runs without style assets, so it carries the scene's declared
-//! style references: a fill token name and — when a stroke profile is available
-//! — the profile's resolved settings with the declared stroke colour token.
-//! Callers that hold a project's palette and stroke profiles use
-//! [`compile_with_style`] to resolve fill and stroke colours to concrete values,
-//! and to report a token or profile that does not resolve. Every colour a stroke
-//! carries comes from a palette token the element names, so no unresolved colour
-//! reference survives compilation (C-003, D-015).
+//! An element's fill and stroke each carry a paint that names a palette token or
+//! a gradient (D-021). [`compile`] runs without style assets, so a token paint
+//! carries its declared name and a gradient paint is dropped with a warning;
+//! callers that hold a project's palette, gradients and stroke profiles use
+//! [`compile_with_style`] to resolve every paint to a concrete colour or a
+//! gradient whose stop colours are concrete, and to report a reference that does
+//! not resolve. No unresolved colour or gradient reference survives compilation
+//! (C-003, FEAT-005, FEAT-027).
 //!
 //! # Fonts
 //!
@@ -59,14 +59,14 @@ use crate::primitives::{
     self, parse as parse_path, Line, Path as PathGeometry, Segment, Shape, SubPath,
 };
 use crate::render::{
-    NodeGroup, NodeStroke, Paint, RenderCanvas, RenderMeta, RenderModel, ResolvedFont,
+    NodeGroup, NodePaint, NodeStroke, RenderCanvas, RenderMeta, RenderModel, ResolvedFont,
     ResolvedNode, TextRun,
 };
 use crate::scene::{
     validate, BooleanOperation, Diagnostic, DiagnosticCode, Diagnostics, ElementKind, Location,
     Scene, TextAlign,
 };
-use crate::style::{Palette, StrokeProfile, UNDEFINED_STROKE, UNDEFINED_TOKEN};
+use crate::style::{self, Gradient, Palette, StrokeProfile, UNDEFINED_STROKE};
 
 /// Two elements reference each other, directly or through a chain.
 pub const CYCLE: DiagnosticCode = DiagnosticCode::new("E_CYCLE");
@@ -117,6 +117,8 @@ pub struct StyleContext<'a> {
     pub palette: Option<&'a Palette>,
     /// The stroke profiles the scene's elements resolve against.
     pub strokes: &'a [StrokeProfile],
+    /// The gradients the scene's gradient paints resolve against (FEAT-027).
+    pub gradients: &'a [Gradient],
     /// The font assets the scene's text elements resolve against, each an id, a
     /// name and its bytes. The default open-licensed font is supplied under
     /// [`DEFAULT_FONT_ID`], since a text element that names no font resolves to
@@ -234,6 +236,13 @@ pub fn compile_with_style<'s>(
     }
     compiler.run();
     compiler.carry_fallback();
+
+    // A gradient no element references is a warning, not an error (FEAT-027).
+    if !style.gradients.is_empty() {
+        compiler
+            .diagnostics
+            .extend(style::validate_gradient_usage(scene, style.gradients));
+    }
 
     let model = compiler.into_model();
     if model.diagnostics.has_errors() {
@@ -810,24 +819,16 @@ impl Compiler<'_, '_> {
             return;
         }
 
-        let (base_id, name, kind, fill, stroke_profile, stroke_token) = {
+        let (base_id, name, kind) = {
             let element = &self.scene.elements[index];
             (
                 element.id.clone(),
                 element.name.clone(),
                 kind_name(element.kind).to_string(),
-                element.fill_token.clone(),
-                element.stroke_profile_id.clone(),
-                element.stroke_token.clone(),
             )
         };
         let id = self.unique_id(&base_id, copy);
-        let paint = self.paint_for(
-            &base_id,
-            fill.as_deref(),
-            stroke_profile.as_deref(),
-            stroke_token.as_deref(),
-        );
+        let paint = self.paint_for(index);
         let order = self.order;
         self.order += 1;
         self.nodes.push(ResolvedNode {
@@ -881,12 +882,7 @@ impl Compiler<'_, '_> {
             (element.id.clone(), element.name.clone())
         };
         let id = self.unique_id(&base_id, copy);
-        let paint = self.paint_for(
-            &base_id,
-            self.scene.elements[index].fill_token.as_deref(),
-            self.scene.elements[index].stroke_profile_id.as_deref(),
-            self.scene.elements[index].stroke_token.as_deref(),
-        );
+        let paint = self.paint_for(index);
         let order = self.order;
         self.order += 1;
         self.nodes.push(ResolvedNode {
@@ -1015,101 +1011,84 @@ impl Compiler<'_, '_> {
         self.push_text_node(index, world.then(anchor), opacity, visible, copy, groups);
     }
 
-    /// Resolves the paint an element declares.
+    /// Resolves the paint an element declares (C-002, FEAT-005, FEAT-027).
     ///
-    /// A fill and a stroke each take their colour from the palette token the
-    /// element names; a stroke also needs its profile for width, cap and join.
-    /// Without a palette the declared token name passes through, mirroring the
-    /// no-style path (C-002); with one, a token that does not resolve is an
-    /// error and no fallback colour is substituted (FEAT-005).
-    fn paint_for(
-        &mut self,
-        element_id: &str,
-        fill: Option<&str>,
-        stroke_profile: Option<&str>,
-        stroke_token: Option<&str>,
-    ) -> Paint {
-        let fill = self.resolve_colour(element_id, fill, "fillToken");
+    /// A fill and a stroke paint each resolve against the palette and gradients
+    /// the context carries; a stroke also needs its profile for width, cap and
+    /// join. Without style assets the declared token name passes through and a
+    /// gradient is dropped with a warning, mirroring the no-style path; with
+    /// assets, a reference that does not resolve is an error and no fallback is
+    /// substituted.
+    fn paint_for(&mut self, index: usize) -> NodePaint {
+        let palette = self.style.palette;
+        let gradients = self.style.gradients;
+        let fill = {
+            let element = &self.scene.elements[index];
+            style::resolve_fill(element, palette, gradients, &mut self.diagnostics)
+        };
+        let stroke = self.stroke_for(index);
+        NodePaint { fill, stroke }
+    }
 
-        let stroke = match stroke_profile {
-            None => None,
-            Some(profile_id) => {
-                let geometry = match self
-                    .style
-                    .strokes
-                    .iter()
-                    .find(|profile| profile.id == profile_id)
-                {
-                    Some(profile) => Some(profile.resolved()),
-                    None if self.style.strokes.is_empty() => {
-                        self.diagnostics.push(
-                            Diagnostic::warning(
-                                UNRESOLVED_STROKE,
-                                format!(
-                                    "stroke profile `{profile_id}` for element `{element_id}` was not resolved; compile with a style context to apply it"
-                                ),
-                            )
-                            .with_location(Location::element_at(element_id, "/strokeProfileId")),
-                        );
-                        None
-                    }
-                    None => {
-                        self.diagnostics.push(
-                            Diagnostic::error(
-                                UNDEFINED_STROKE,
-                                format!(
-                                    "element `{element_id}` references undefined stroke profile `{profile_id}`"
-                                ),
-                            )
-                            .with_location(Location::element_at(element_id, "/strokeProfileId")),
-                        );
-                        None
-                    }
-                };
-                geometry.and_then(|geometry| {
-                    let value = self.resolve_colour(element_id, stroke_token, "strokeToken")?;
-                    Some(NodeStroke {
-                        value,
-                        width: geometry.width,
-                        cap: geometry.cap,
-                        join: geometry.join,
-                    })
-                })
+    /// Resolves the stroke geometry and paint an element declares.
+    fn stroke_for(&mut self, index: usize) -> Option<NodeStroke> {
+        let (element_id, profile_id) = {
+            let element = &self.scene.elements[index];
+            (
+                element.id.clone(),
+                element
+                    .stroke
+                    .as_ref()
+                    .map(|stroke| stroke.profile_id.clone()),
+            )
+        };
+        let profile_id = profile_id?;
+
+        let geometry = match self
+            .style
+            .strokes
+            .iter()
+            .find(|profile| profile.id == profile_id)
+        {
+            Some(profile) => profile.resolved(),
+            None if self.style.strokes.is_empty() => {
+                self.diagnostics.push(
+                    Diagnostic::warning(
+                        UNRESOLVED_STROKE,
+                        format!(
+                            "stroke profile `{profile_id}` for element `{element_id}` was not resolved; compile with a style context to apply it"
+                        ),
+                    )
+                    .with_location(Location::element_at(&element_id, "/stroke/profileId")),
+                );
+                return None;
+            }
+            None => {
+                self.diagnostics.push(
+                    Diagnostic::error(
+                        UNDEFINED_STROKE,
+                        format!(
+                            "element `{element_id}` references undefined stroke profile `{profile_id}`"
+                        ),
+                    )
+                    .with_location(Location::element_at(&element_id, "/stroke/profileId")),
+                );
+                return None;
             }
         };
 
-        Paint { fill, stroke }
-    }
-
-    /// Resolves one colour reference against the palette.
-    ///
-    /// Without a palette the declared token name is carried through unchanged;
-    /// with one, an undefined token is a located error and resolves to nothing.
-    fn resolve_colour(
-        &mut self,
-        element_id: &str,
-        token: Option<&str>,
-        field: &str,
-    ) -> Option<String> {
-        let token = token?;
-        match self.style.palette {
-            Some(palette) => match palette.resolve(token) {
-                Some(value) => Some(value.to_string()),
-                None => {
-                    self.diagnostics.push(
-                        Diagnostic::error(
-                            UNDEFINED_TOKEN,
-                            format!(
-                                "element `{element_id}` references undefined palette token `{token}`"
-                            ),
-                        )
-                        .with_location(Location::element_at(element_id, format!("/{field}"))),
-                    );
-                    None
-                }
-            },
-            None => Some(token.to_string()),
-        }
+        let palette = self.style.palette;
+        let gradients = self.style.gradients;
+        let paint = {
+            let element = &self.scene.elements[index];
+            style::resolve_stroke_paint(element, palette, gradients, &mut self.diagnostics)
+        }?;
+        Some(NodeStroke {
+            paint,
+            width: geometry.width,
+            cap: geometry.cap,
+            join: geometry.join,
+        })
     }
 
     /// A node identifier unique across the model.
@@ -1263,7 +1242,7 @@ fn kind_name(kind: ElementKind) -> &'static str {
 mod tests {
     use super::*;
     use crate::primitives::{Ellipse, Rect as PrimRect};
-    use crate::style::{parse_palette, parse_stroke_profile};
+    use crate::style::{parse_palette, parse_stroke_profile, UNDEFINED_TOKEN};
     use serde_json::{json, Value};
 
     fn base(id: &str, order: u64, kind: &str, geometry: Value) -> Value {
@@ -1294,12 +1273,30 @@ mod tests {
         )
     }
 
+    /// A token paint reference as the scene language carries it.
+    fn token_paint(token: &str) -> Value {
+        json!({ "kind": "token", "ref": token })
+    }
+
+    /// A stroke pairing a profile with a token paint.
+    fn stroke_json(profile: &str, token: &str) -> Value {
+        json!({ "profileId": profile, "paint": token_paint(token) })
+    }
+
+    /// The colour a resolved paint carries, or `None` for a gradient.
+    fn color(paint: &crate::render::Paint) -> Option<&str> {
+        match paint {
+            crate::render::Paint::Color { value } => Some(value),
+            crate::render::Paint::Gradient(_) => None,
+        }
+    }
+
     fn scene_of(elements: Value, constraints: Option<Value>) -> Scene {
         let mut document = json!({
             "id": "s",
             "projectId": "p",
             "name": "S",
-            "formatVersion": "0.1",
+            "formatVersion": "0.2",
             "canvas": { "width": 400.0, "height": 400.0, "background": "#ffffff" },
             "elements": elements
         });
@@ -1674,9 +1671,8 @@ mod tests {
     #[test]
     fn style_resolves_against_a_supplied_context() {
         let mut element = rect("e1", 0, 10.0, 10.0);
-        element["fillToken"] = json!("accent");
-        element["strokeProfileId"] = json!("stroke-1");
-        element["strokeToken"] = json!("accent");
+        element["fill"] = token_paint("accent");
+        element["stroke"] = stroke_json("stroke-1", "accent");
         let scene = scene_of(json!([element]), None);
 
         let palette = parse_palette(
@@ -1690,14 +1686,15 @@ mod tests {
         let style = StyleContext {
             palette: Some(&palette),
             strokes: std::slice::from_ref(&profile),
+            gradients: &[],
             fonts: &[],
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
         let paint = &model.nodes[0].paint;
-        assert_eq!(paint.fill.as_deref(), Some("#ff0000"));
+        assert_eq!(paint.fill.as_ref().and_then(color), Some("#ff0000"));
         let stroke = paint.stroke.as_ref().expect("a resolved stroke");
-        assert_eq!(stroke.value, "#ff0000");
+        assert_eq!(color(&stroke.paint), Some("#ff0000"));
         assert_eq!(stroke.width, 3.0);
         assert_eq!(stroke.cap, crate::style::StrokeCap::Butt);
     }
@@ -1705,9 +1702,8 @@ mod tests {
     #[test]
     fn a_changed_token_restyles_both_fill_and_stroke_in_one_recompile() {
         let mut element = rect("e1", 0, 10.0, 10.0);
-        element["fillToken"] = json!("accent");
-        element["strokeProfileId"] = json!("stroke-1");
-        element["strokeToken"] = json!("accent");
+        element["fill"] = token_paint("accent");
+        element["stroke"] = stroke_json("stroke-1", "accent");
         let scene = scene_of(json!([element]), None);
         let profile = parse_stroke_profile(
             r#"{"id":"stroke-1","projectId":"p","name":"O","width":3,"cap":"butt","join":"miter"}"#,
@@ -1728,6 +1724,7 @@ mod tests {
             &StyleContext {
                 palette: Some(&before),
                 strokes: std::slice::from_ref(&profile),
+                gradients: &[],
                 fonts: &[],
             },
         )
@@ -1737,27 +1734,34 @@ mod tests {
             &StyleContext {
                 palette: Some(&after),
                 strokes: std::slice::from_ref(&profile),
+                gradients: &[],
                 fonts: &[],
             },
         )
         .expect("compiles");
 
-        assert_eq!(first.nodes[0].paint.fill.as_deref(), Some("#ff0000"));
+        assert_eq!(
+            first.nodes[0].paint.fill.as_ref().and_then(color),
+            Some("#ff0000")
+        );
         assert_eq!(
             first.nodes[0]
                 .paint
                 .stroke
                 .as_ref()
-                .map(|s| s.value.as_str()),
+                .and_then(|s| color(&s.paint)),
             Some("#ff0000")
         );
-        assert_eq!(second.nodes[0].paint.fill.as_deref(), Some("#0000ff"));
+        assert_eq!(
+            second.nodes[0].paint.fill.as_ref().and_then(color),
+            Some("#0000ff")
+        );
         assert_eq!(
             second.nodes[0]
                 .paint
                 .stroke
                 .as_ref()
-                .map(|s| s.value.as_str()),
+                .and_then(|s| color(&s.paint)),
             Some("#0000ff")
         );
     }
@@ -1765,8 +1769,7 @@ mod tests {
     #[test]
     fn an_undefined_stroke_token_is_an_error_naming_the_token() {
         let mut element = rect("e1", 0, 10.0, 10.0);
-        element["strokeProfileId"] = json!("stroke-1");
-        element["strokeToken"] = json!("missing");
+        element["stroke"] = stroke_json("stroke-1", "missing");
         let scene = scene_of(json!([element]), None);
         let palette = parse_palette(
             r##"{"id":"pal","projectId":"p","name":"P","tokens":[{"name":"accent","value":"#ff0000"}]}"##,
@@ -1779,6 +1782,7 @@ mod tests {
         let style = StyleContext {
             palette: Some(&palette),
             strokes: std::slice::from_ref(&profile),
+            gradients: &[],
             fonts: &[],
         };
 
@@ -1794,18 +1798,20 @@ mod tests {
                 .location
                 .as_ref()
                 .and_then(|location| location.json_path.as_deref()),
-            Some("/strokeToken")
+            Some("/stroke/paint")
         );
     }
 
     #[test]
     fn fill_and_stroke_references_pass_through_without_a_palette() {
         let mut element = rect("e1", 0, 10.0, 10.0);
-        element["fillToken"] = json!("accent");
-        element["strokeProfileId"] = json!("stroke-1");
-        element["strokeToken"] = json!("accent");
+        element["fill"] = token_paint("accent");
+        element["stroke"] = stroke_json("stroke-1", "accent");
         let model = compiled(json!([element]));
-        assert_eq!(model.nodes[0].paint.fill.as_deref(), Some("accent"));
+        assert_eq!(
+            model.nodes[0].paint.fill.as_ref().and_then(color),
+            Some("accent")
+        );
         assert!(model.nodes[0].paint.stroke.is_none());
         assert!(model
             .diagnostics
@@ -1888,14 +1894,17 @@ mod tests {
             "text": "Hi", "fontSize": 20.0, "align": "center",
             "lineHeight": 26.0, "letterSpacing": 2.0, "width": 80.0
         }));
-        element["fillToken"] = json!("ink");
+        element["fill"] = token_paint("ink");
         let model = compiled(json!([element]));
         let run = model.nodes[0].text.as_ref().expect("a text run");
         assert_eq!(run.align, TextAlign::Center);
         assert_eq!(run.line_height, 26.0);
         assert_eq!(run.letter_spacing, 2.0);
         assert_eq!(run.width, Some(80.0));
-        assert_eq!(model.nodes[0].paint.fill.as_deref(), Some("ink"));
+        assert_eq!(
+            model.nodes[0].paint.fill.as_ref().and_then(color),
+            Some("ink")
+        );
     }
 
     #[test]
@@ -1907,6 +1916,7 @@ mod tests {
         let style = StyleContext {
             palette: None,
             strokes: &[],
+            gradients: &[],
             fonts: &fonts,
         };
 
@@ -1928,6 +1938,7 @@ mod tests {
         let style = StyleContext {
             palette: None,
             strokes: &[],
+            gradients: &[],
             fonts: &fonts,
         };
 
@@ -1947,6 +1958,7 @@ mod tests {
         let style = StyleContext {
             palette: None,
             strokes: &[],
+            gradients: &[],
             fonts: &fonts,
         };
 
@@ -1985,6 +1997,7 @@ mod tests {
         let style = StyleContext {
             palette: None,
             strokes: &[],
+            gradients: &[],
             fonts: &fonts,
         };
 
@@ -2012,6 +2025,7 @@ mod tests {
         let style = StyleContext {
             palette: None,
             strokes: &[],
+            gradients: &[],
             fonts: &fonts,
         };
 
@@ -2038,6 +2052,7 @@ mod tests {
         let style = StyleContext {
             palette: None,
             strokes: &[],
+            gradients: &[],
             fonts: &fonts,
         };
 

@@ -2,7 +2,7 @@
   "id": "example",
   "projectId": "project",
   "name": "Example",
-  "formatVersion": "0.1",
+  "formatVersion": "0.2",
   "canvas": { "width": 512, "height": 512, "background": "#ffffff" },
   "paletteId": "brand",
   "title": "Example mark",
@@ -28,9 +28,8 @@
       "kind": "rect",
       "geometry": { "x": 64, "y": 64, "width": 384, "height": 384, "rx": 32, "ry": 32 },
       "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
-      "fillToken": "accent",
-      "strokeProfileId": "outline",
-      "strokeToken": "ink",
+      "fill": { "kind": "gradient", "ref": "brand-fade" },
+      "stroke": { "profileId": "outline", "paint": { "kind": "token", "ref": "ink" } },
       "opacity": 1,
       "visible": true
     },
@@ -43,7 +42,7 @@
       "kind": "ellipse",
       "geometry": { "x": 192, "y": 192, "width": 128, "height": 128 },
       "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
-      "fillToken": "paper",
+      "fill": { "kind": "token", "ref": "paper" },
       "opacity": 1,
       "visible": true
     },
@@ -63,7 +62,7 @@
         "letterSpacing": 0
       },
       "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
-      "fillToken": "ink",
+      "fill": { "kind": "token", "ref": "ink" },
       "opacity": 1,
       "visible": true
     }

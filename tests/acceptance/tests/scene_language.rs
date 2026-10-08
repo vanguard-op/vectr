@@ -55,7 +55,7 @@ fn a_scene_round_trips_without_loss() {
         {
             let mut card = rect("card", 0, 1.0, 2.0, 30.0, 40.0);
             card["parentId"] = json!("mark");
-            card["fillToken"] = json!("accent");
+            card["fill"] = token_paint("accent");
             card
         },
         text("wordmark", 1, 5.0, 6.0, "Hi", 24.0),
@@ -108,7 +108,7 @@ fn an_unsupported_format_version_is_refused_naming_the_version_and_the_range() {
     assert_eq!(error.code, DiagnosticCode::FORMAT_VERSION);
     assert!(error.message.contains("9.9"), "{}", error.message);
     assert!(
-        error.message.contains("0.1")
+        error.message.contains("0.2")
             || error
                 .message
                 .contains(&vectr_core::scene::supported_range()),

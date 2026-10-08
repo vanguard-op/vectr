@@ -13,7 +13,7 @@ const VALID_SCENE: &str = r##"{
   "id": "s",
   "projectId": "project",
   "name": "S",
-  "formatVersion": "0.1",
+  "formatVersion": "0.2",
   "canvas": { "width": 100, "height": 100, "background": "#ffffff" },
   "elements": [
     {
@@ -29,7 +29,7 @@ const INVALID_SCENE: &str = r##"{
   "id": "s",
   "projectId": "project",
   "name": "S",
-  "formatVersion": "0.1",
+  "formatVersion": "0.2",
   "canvas": { "width": 100, "height": 100, "background": "#ffffff" },
   "elements": [
     {
@@ -45,7 +45,7 @@ const CYCLIC_SCENE: &str = r##"{
   "id": "s",
   "projectId": "project",
   "name": "S",
-  "formatVersion": "0.1",
+  "formatVersion": "0.2",
   "canvas": { "width": 100, "height": 100, "background": "#ffffff" },
   "elements": [
     {
@@ -67,7 +67,7 @@ const TEXT_MISSING_FONT: &str = r##"{
   "id": "s",
   "projectId": "project",
   "name": "S",
-  "formatVersion": "0.1",
+  "formatVersion": "0.2",
   "canvas": { "width": 200, "height": 100, "background": "#ffffff" },
   "elements": [
     {

@@ -6,13 +6,13 @@
 //! "Global Flows → Format-Version Gate").
 
 /// The format version this build writes and reads by default.
-pub const CURRENT_FORMAT_VERSION: &str = "0.1";
+pub const CURRENT_FORMAT_VERSION: &str = "0.2";
 
 /// Lowest format version this build accepts, inclusive.
-pub const MIN_SUPPORTED_FORMAT_VERSION: &str = "0.1";
+pub const MIN_SUPPORTED_FORMAT_VERSION: &str = "0.2";
 
 /// Highest format version this build accepts, inclusive.
-pub const MAX_SUPPORTED_FORMAT_VERSION: &str = "0.1";
+pub const MAX_SUPPORTED_FORMAT_VERSION: &str = "0.2";
 
 /// Splits a `major.minor` version string into its numeric parts.
 ///
@@ -80,8 +80,8 @@ mod tests {
 
     #[test]
     fn versions_outside_the_range_are_unsupported() {
-        assert!(is_supported("0.1"));
-        assert!(!is_supported("0.2"));
+        assert!(is_supported("0.2"));
+        assert!(!is_supported("0.1"));
         assert!(!is_supported("1.0"));
         assert!(!is_supported("9.9"));
     }

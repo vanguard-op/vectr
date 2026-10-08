@@ -361,11 +361,11 @@ mod tests {
     #[test]
     fn a_diagnostic_round_trips_with_its_location() {
         let diagnostic = Diagnostic::warning(DiagnosticCode::new("W_X"), "careful")
-            .with_location(Location::element_at("e1", "/fillToken"));
+            .with_location(Location::element_at("e1", "/fill"));
         let text = serde_json::to_string(&diagnostic).unwrap();
         assert!(text.contains("\"severity\":\"warning\""), "{text}");
         assert!(text.contains("\"elementId\":\"e1\""), "{text}");
-        assert!(text.contains("\"jsonPath\":\"/fillToken\""), "{text}");
+        assert!(text.contains("\"jsonPath\":\"/fill\""), "{text}");
         let reparsed: Diagnostic = serde_json::from_str(&text).unwrap();
         assert_eq!(diagnostic, reparsed);
     }

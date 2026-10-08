@@ -1,0 +1,15 @@
+{
+  "id": "brand-fade",
+  "projectId": "project",
+  "name": "Brand fade",
+  "type": "linear",
+  "stops": [
+    { "offset": 0, "token": "accent" },
+    { "offset": 1, "token": "ink" }
+  ],
+  "x1": 0,
+  "y1": 0,
+  "x2": 0,
+  "y2": 1,
+  "spread": "pad"
+}

@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use crate::composition::Affine;
 use crate::primitives::Shape;
 use crate::scene::{Diagnostic, DiagnosticCode, Diagnostics, Location, TextAlign};
-use crate::style::{StrokeCap, StrokeJoin};
+use crate::style::{GradientType, Spread, StrokeCap, StrokeJoin};
 
 /// The compiled result of a scene, ready for any exporter (C-003).
 ///
@@ -174,32 +174,102 @@ pub struct ResolvedNode {
     /// The resolved world transform applied to the geometry or text.
     pub transform: Affine,
     /// The node's fill and stroke.
-    pub paint: Paint,
+    pub paint: NodePaint,
     /// The node's effective opacity, from 0 to 1, composed down the element tree.
     pub opacity: f64,
     /// Whether the node is visible, composed down the element tree.
     pub visible: bool,
 }
 
-/// The paint applied to a node.
+/// The paint applied to a node (C-003).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Paint {
-    /// The resolved fill color, or the scene's declared token name when the
-    /// model was compiled without a palette; absent for no fill.
+pub struct NodePaint {
+    /// The resolved fill, or absent for no fill.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fill: Option<String>,
+    pub fill: Option<Paint>,
     /// The resolved stroke, or absent for no stroke.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stroke: Option<NodeStroke>,
+}
+
+/// A fully resolved paint: a concrete colour, or a gradient whose stop colours
+/// and geometry are concrete (C-003).
+///
+/// No unresolved colour or gradient reference survives compilation: a palette
+/// token becomes a [`Paint::Color`], and a gradient becomes a
+/// [`Paint::Gradient`] carrying concrete stops.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum Paint {
+    /// A concrete colour.
+    Color {
+        /// The colour value, such as a hex colour.
+        value: String,
+    },
+    /// A gradient paint.
+    Gradient(GradientPaint),
+}
+
+/// A resolved gradient: concrete stop colours and concrete geometry, in object
+/// bounding-box units (C-003).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GradientPaint {
+    /// Whether the gradient is linear or radial.
+    #[serde(rename = "type")]
+    pub gradient_type: GradientType,
+    /// The concrete colour stops, in ascending offset order; two or more.
+    pub stops: Vec<ResolvedStop>,
+    /// How the gradient extends beyond its ends.
+    pub spread: Spread,
+    /// Start x of a linear gradient.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub x1: Option<f64>,
+    /// Start y of a linear gradient.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub y1: Option<f64>,
+    /// End x of a linear gradient.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub x2: Option<f64>,
+    /// End y of a linear gradient.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub y2: Option<f64>,
+    /// Center x of a radial gradient.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cx: Option<f64>,
+    /// Center y of a radial gradient.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cy: Option<f64>,
+    /// Radius of a radial gradient.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub r: Option<f64>,
+    /// Focal x of a radial gradient.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fx: Option<f64>,
+    /// Focal y of a radial gradient.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fy: Option<f64>,
+}
+
+/// One resolved gradient colour stop (C-003).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvedStop {
+    /// Position along the gradient vector, from 0 to 1.
+    pub offset: f64,
+    /// The concrete stop colour.
+    pub color: String,
+    /// Stop opacity, from 0 to 1.
+    pub opacity: f64,
 }
 
 /// A resolved stroke.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NodeStroke {
-    /// The stroke paint value.
-    pub value: String,
+    /// The stroke's resolved paint.
+    pub paint: Paint,
     /// Stroke width in scene units.
     pub width: f64,
     /// Stroke line cap.
@@ -350,14 +420,15 @@ mod tests {
       "id": "s",
       "projectId": "p",
       "name": "S",
-      "formatVersion": "0.1",
+      "formatVersion": "0.2",
       "canvas": { "width": 400, "height": 400, "background": "#ffffff" },
       "elements": [
         {
           "id": "e1", "sceneId": "s", "order": 0, "kind": "rect",
           "geometry": { "x": 0, "y": 0, "width": 30, "height": 40 },
           "transform": { "translateX": 5, "translateY": 6, "rotate": 0, "scaleX": 1, "scaleY": 1 },
-          "fillToken": "accent", "strokeProfileId": "stroke-1", "strokeToken": "accent",
+          "fill": { "kind": "token", "ref": "accent" },
+          "stroke": { "profileId": "stroke-1", "paint": { "kind": "token", "ref": "accent" } },
           "opacity": 1, "visible": true
         },
         {
@@ -396,7 +467,7 @@ mod tests {
           "id": "s",
           "projectId": "p",
           "name": "S",
-          "formatVersion": "0.1",
+          "formatVersion": "0.2",
           "canvas": { "width": 100, "height": 100, "background": "#ffffff" },
           "elements": [
             {
@@ -438,7 +509,8 @@ mod tests {
         assert_eq!(node["geometry"]["height"], 40.0);
         assert_eq!(node["transform"]["e"], 5.0);
         assert_eq!(node["transform"]["f"], 6.0);
-        assert_eq!(node["paint"]["fill"], "accent");
+        assert_eq!(node["paint"]["fill"]["kind"], "color");
+        assert_eq!(node["paint"]["fill"]["value"], "accent");
     }
 
     #[test]
@@ -516,7 +588,7 @@ mod tests {
                     width: None,
                 }),
                 transform: crate::composition::Affine::IDENTITY,
-                paint: Paint::default(),
+                paint: NodePaint::default(),
                 opacity: 1.0,
                 visible: true,
             }],

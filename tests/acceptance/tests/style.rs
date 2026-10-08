@@ -27,9 +27,9 @@ fn style_with(
 #[test]
 fn changing_a_palette_token_restyles_every_referencing_element() {
     let mut first = rect("first", 0, 0.0, 0.0, 10.0, 10.0);
-    first["fillToken"] = json!("accent");
+    first["fill"] = token_paint("accent");
     let mut second = rect("second", 1, 20.0, 0.0, 10.0, 10.0);
-    second["fillToken"] = json!("accent");
+    second["fill"] = token_paint("accent");
     let document = scene_with(vec![first, second], None, Some("brand"));
 
     let before =
@@ -40,11 +40,13 @@ fn changing_a_palette_token_restyles_every_referencing_element() {
     let before_style = StyleContext {
         palette: Some(&before),
         strokes: &[],
+        gradients: &[],
         fonts: &[],
     };
     let after_style = StyleContext {
         palette: Some(&after),
         strokes: &[],
+        gradients: &[],
         fonts: &[],
     };
 
@@ -52,10 +54,10 @@ fn changing_a_palette_token_restyles_every_referencing_element() {
     let after_model = compile_with(&document, &after_style).expect("compiles");
 
     for node in &before_model.nodes {
-        assert_eq!(node.paint.fill.as_deref(), Some("#111111"));
+        assert_eq!(fill_color(node), Some("#111111"));
     }
     for node in &after_model.nodes {
-        assert_eq!(node.paint.fill.as_deref(), Some("#222222"));
+        assert_eq!(fill_color(node), Some("#222222"));
     }
 }
 
@@ -68,20 +70,19 @@ fn a_stroke_profile_is_shared_by_every_referencing_primitive() {
     let style = StyleContext {
         palette: Some(&palette),
         strokes: &strokes,
+        gradients: &[],
         fonts: &[],
     };
 
     let mut first = rect("first", 0, 0.0, 0.0, 10.0, 10.0);
-    first["strokeProfileId"] = json!("outline");
-    first["strokeToken"] = json!("accent");
+    first["stroke"] = stroke("outline", "accent");
     let mut second = element(
         "second",
         1,
         "ellipse",
         json!({ "x": 0.0, "y": 0.0, "width": 10.0, "height": 10.0 }),
     );
-    second["strokeProfileId"] = json!("outline");
-    second["strokeToken"] = json!("accent");
+    second["stroke"] = stroke("outline", "accent");
     let document = scene_with(vec![first, second], None, Some("brand"));
 
     let model = compile_with(&document, &style).expect("compiles");
@@ -91,7 +92,8 @@ fn a_stroke_profile_is_shared_by_every_referencing_primitive() {
         assert_eq!(stroke.cap, StrokeCap::Round);
         assert_eq!(stroke.join, StrokeJoin::Bevel);
         assert_eq!(
-            stroke.value, "#0000ff",
+            color(&stroke.paint),
+            Some("#0000ff"),
             "colour comes from the token it names"
         );
     }
@@ -102,11 +104,12 @@ fn an_undefined_palette_token_is_an_error_naming_the_missing_token() {
     let palette =
         vectr_core::parse_palette(&palette("brand", &[("other", "#ffffff")])).expect("a palette");
     let mut card = rect("card", 0, 0.0, 0.0, 10.0, 10.0);
-    card["fillToken"] = json!("accent");
+    card["fill"] = token_paint("accent");
     let document = scene_with(vec![card], None, Some("brand"));
     let style = StyleContext {
         palette: Some(&palette),
         strokes: &[],
+        gradients: &[],
         fonts: &[],
     };
 
@@ -117,43 +120,25 @@ fn an_undefined_palette_token_is_an_error_naming_the_missing_token() {
 }
 
 #[test]
-fn a_stroke_profile_without_a_colour_token_is_refused() {
+fn a_stroke_without_a_paint_is_refused() {
     let mut card = rect("card", 0, 0.0, 0.0, 10.0, 10.0);
-    card["strokeProfileId"] = json!("outline");
+    card["stroke"] = json!({ "profileId": "outline" });
     let document = scene(vec![card]);
 
     let diagnostics = vectr_core::parse(&document.to_string()).expect_err("refused");
     let error = diagnostics.errors().next().expect("an error");
     assert_eq!(error.code, DiagnosticCode::SCHEMA);
-    assert!(
-        error
-            .location
-            .as_ref()
-            .and_then(|location| location.json_path.as_deref())
-            .is_some_and(|path| path.ends_with("/strokeToken")),
-        "{:?}",
-        error.location
-    );
 }
 
 #[test]
-fn a_stroke_colour_token_without_a_profile_is_refused() {
+fn a_stroke_paint_without_a_profile_is_refused() {
     let mut card = rect("card", 0, 0.0, 0.0, 10.0, 10.0);
-    card["strokeToken"] = json!("accent");
+    card["stroke"] = json!({ "paint": token_paint("accent") });
     let document = scene(vec![card]);
 
     let diagnostics = vectr_core::parse(&document.to_string()).expect_err("refused");
     let error = diagnostics.errors().next().expect("an error");
     assert_eq!(error.code, DiagnosticCode::SCHEMA);
-    assert!(
-        error
-            .location
-            .as_ref()
-            .and_then(|location| location.json_path.as_deref())
-            .is_some_and(|path| path.ends_with("/strokeProfileId")),
-        "{:?}",
-        error.location
-    );
 }
 
 #[test]
@@ -164,12 +149,12 @@ fn an_undefined_stroke_profile_is_an_error_naming_it() {
         vectr_core::parse_stroke_profile(&stroke_profile("outline", 4.0, "round", "bevel"))
             .expect("a profile");
     let mut card = rect("card", 0, 0.0, 0.0, 10.0, 10.0);
-    card["strokeProfileId"] = json!("ghost");
-    card["strokeToken"] = json!("accent");
+    card["stroke"] = stroke("ghost", "accent");
     let document = scene_with(vec![card], None, Some("brand"));
     let style = StyleContext {
         palette: Some(&palette),
         strokes: std::slice::from_ref(&outline),
+        gradients: &[],
         fonts: &[],
     };
 
@@ -196,16 +181,17 @@ fn a_token_redefined_mid_document_uses_the_later_value_and_warns() {
     );
 
     let mut card = rect("card", 0, 0.0, 0.0, 10.0, 10.0);
-    card["fillToken"] = json!("accent");
+    card["fill"] = token_paint("accent");
     let document = scene_with(vec![card], None, Some("brand"));
     let style = StyleContext {
         palette: Some(&palette),
         strokes: &[],
+        gradients: &[],
         fonts: &[],
     };
     let model = compile_with(&document, &style).expect("compiles");
     assert_eq!(
-        model.nodes[0].paint.fill.as_deref(),
+        fill_color(&model.nodes[0]),
         Some("#222222"),
         "the later definition wins"
     );
@@ -219,11 +205,11 @@ fn an_unused_token_is_a_warning_not_an_error() {
     ))
     .expect("a palette");
     let mut card = rect("card", 0, 0.0, 0.0, 10.0, 10.0);
-    card["fillToken"] = json!("accent");
+    card["fill"] = token_paint("accent");
     let document = scene_with(vec![card], None, Some("brand"));
     let scene = parse_scene(&document);
 
-    let findings = validate_palette_usage(&scene, &palette);
+    let findings = validate_palette_usage(&scene, &palette, &[]);
     assert!(
         !findings.has_errors(),
         "an unused token is not an error: {findings:?}"

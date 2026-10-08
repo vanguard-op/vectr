@@ -136,7 +136,7 @@ mod tests {
         Ellipse, Line, Path as PathGeometry, Polygon, Rect, Segment, Shape, SubPath,
     };
     use crate::render::{
-        NodeStroke, Paint, RenderCanvas, RenderMeta, ResolvedFont, ResolvedNode, TextRun,
+        NodePaint, NodeStroke, Paint, RenderCanvas, RenderMeta, ResolvedFont, ResolvedNode, TextRun,
     };
     use crate::scene::TextAlign;
     use crate::style::{StrokeCap, StrokeJoin};
@@ -162,7 +162,7 @@ mod tests {
             geometry: Some(geometry),
             text: None,
             transform: Affine::IDENTITY,
-            paint: Paint::default(),
+            paint: NodePaint::default(),
             opacity: 1.0,
             visible: true,
         }
@@ -205,8 +205,10 @@ mod tests {
                 width: None,
             }),
             transform: Affine::IDENTITY,
-            paint: Paint {
-                fill: Some("#000000".to_string()),
+            paint: NodePaint {
+                fill: Some(Paint::Color {
+                    value: "#000000".to_string(),
+                }),
                 stroke: None,
             },
             opacity: 1.0,
@@ -231,14 +233,15 @@ mod tests {
                 "id": "s",
                 "projectId": "p",
                 "name": "S",
-                "formatVersion": "0.1",
+                "formatVersion": "0.2",
                 "canvas": { "width": 200.0, "height": 200.0, "background": "#ffffff" },
                 "elements": [
                     {
                         "id": "e1", "sceneId": "s", "order": 0, "kind": "rect", "name": "Box",
                         "geometry": { "x": 0.0, "y": 0.0, "width": 30.0, "height": 40.0 },
                         "transform": { "translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0 },
-                        "fillToken": "accent", "strokeProfileId": "stroke-1", "strokeToken": "accent",
+                        "fill": { "kind": "token", "ref": "accent" },
+                        "stroke": { "profileId": "stroke-1", "paint": { "kind": "token", "ref": "accent" } },
                         "opacity": 1.0, "visible": true
                     },
                     {
@@ -263,6 +266,7 @@ mod tests {
         let style = StyleContext {
             palette: Some(&palette),
             strokes: std::slice::from_ref(&profile),
+            gradients: &[],
             fonts: &[],
         };
 
@@ -289,10 +293,14 @@ mod tests {
     #[test]
     fn a_filled_and_stroked_rect_matches_the_render_model() {
         let mut shape = node("e1", Some("Box"), rect(1.0, 2.0, 30.0, 40.0));
-        shape.paint = Paint {
-            fill: Some("#ff0000".to_string()),
+        shape.paint = NodePaint {
+            fill: Some(Paint::Color {
+                value: "#ff0000".to_string(),
+            }),
             stroke: Some(NodeStroke {
-                value: "#0000ff".to_string(),
+                paint: Paint::Color {
+                    value: "#0000ff".to_string(),
+                },
                 width: 2.5,
                 cap: StrokeCap::Round,
                 join: StrokeJoin::Bevel,
@@ -470,7 +478,7 @@ mod tests {
 
     /// A named group inside a named group, holding one named shape.
     const NESTED_GROUPS: &str = r##"{
-      "id": "s", "projectId": "p", "name": "S", "formatVersion": "0.1",
+      "id": "s", "projectId": "p", "name": "S", "formatVersion": "0.2",
       "canvas": { "width": 100, "height": 100, "background": "#ffffff" },
       "elements": [
         {
@@ -521,7 +529,7 @@ mod tests {
     #[test]
     fn an_unnamed_group_is_collapsed_but_keeps_its_named_child_in_place() {
         const SCENE: &str = r##"{
-          "id": "s", "projectId": "p", "name": "S", "formatVersion": "0.1",
+          "id": "s", "projectId": "p", "name": "S", "formatVersion": "0.2",
           "canvas": { "width": 100, "height": 100, "background": "#ffffff" },
           "elements": [
             {
@@ -555,7 +563,7 @@ mod tests {
     #[test]
     fn a_named_group_spans_all_of_its_children() {
         const SCENE: &str = r##"{
-          "id": "s", "projectId": "p", "name": "S", "formatVersion": "0.1",
+          "id": "s", "projectId": "p", "name": "S", "formatVersion": "0.2",
           "canvas": { "width": 100, "height": 100, "background": "#ffffff" },
           "elements": [
             {
@@ -598,7 +606,9 @@ mod tests {
             Some("<script>alert(1)</script>"),
             rect(0.0, 0.0, 1.0, 1.0),
         );
-        shape.paint.fill = Some("\"><script>".to_string());
+        shape.paint.fill = Some(Paint::Color {
+            value: "\"><script>".to_string(),
+        });
         let svg = export(&model(vec![shape]));
         assert!(!svg.contains("<script>"), "{svg}");
         assert!(svg.contains("&lt;script&gt;"), "{svg}");
@@ -728,13 +738,13 @@ mod tests {
 
         let scene = parse_scene(
             &json!({
-                "id": "s", "projectId": "p", "name": "S", "formatVersion": "0.1",
+                "id": "s", "projectId": "p", "name": "S", "formatVersion": "0.2",
                 "canvas": { "width": 200.0, "height": 100.0, "background": "#ffffff" },
                 "elements": [{
                     "id": "t1", "sceneId": "s", "order": 0, "kind": "text", "name": "Wordmark",
                     "geometry": { "x": 10.0, "y": 60.0, "text": "Hi", "fontSize": 48.0 },
                     "transform": { "translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0 },
-                    "fillToken": "ink", "opacity": 1.0, "visible": true
+                    "fill": { "kind": "token", "ref": "ink" }, "opacity": 1.0, "visible": true
                 }]
             })
             .to_string(),
@@ -750,6 +760,7 @@ mod tests {
             &StyleContext {
                 palette: None,
                 strokes: &[],
+                gradients: &[],
                 fonts: &fonts,
             },
         )

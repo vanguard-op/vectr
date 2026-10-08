@@ -9,7 +9,7 @@ mod common;
 use common::*;
 use serde_json::json;
 use vectr_core::export::svg::{export_svg_reporting, UNSUPPORTED};
-use vectr_core::render::{Paint, RenderCanvas, RenderMeta, RenderModel, ResolvedNode};
+use vectr_core::render::{NodePaint, RenderCanvas, RenderMeta, RenderModel, ResolvedNode};
 use vectr_core::{Affine, Diagnostics, FontAsset, Rect, Shape, StyleContext};
 
 fn named_nested_groups() -> serde_json::Value {
@@ -45,7 +45,7 @@ fn plain_node(id: &str, kind: &str, geometry: Shape) -> ResolvedNode {
         geometry: Some(geometry),
         text: None,
         transform: Affine::IDENTITY,
-        paint: Paint::default(),
+        paint: NodePaint::default(),
         opacity: 1.0,
         visible: true,
     }
@@ -78,13 +78,13 @@ fn stroked_and_filled_shapes_match_the_render_model() {
             .expect("a profile");
     let mut card = rect("card", 0, 1.0, 2.0, 30.0, 40.0);
     card["name"] = json!("Box");
-    card["fillToken"] = json!("accent");
-    card["strokeProfileId"] = json!("outline");
-    card["strokeToken"] = json!("accent");
+    card["fill"] = token_paint("accent");
+    card["stroke"] = stroke("outline", "accent");
     let document = scene_with(vec![card], None, Some("brand"));
     let style = StyleContext {
         palette: Some(&brand),
         strokes: std::slice::from_ref(&outline),
+        gradients: &[],
         fonts: &[],
     };
     let model = compile_with(&document, &style).expect("compiles");
@@ -115,6 +115,7 @@ fn text_is_emitted_as_outlined_paths_with_its_name_and_accessible_text() {
     let style = StyleContext {
         palette: None,
         strokes: &[],
+        gradients: &[],
         fonts: &fonts,
     };
     let model = compile_with(&document, &style).expect("compiles");
@@ -206,11 +207,12 @@ fn emitted_svg_is_inert_with_no_script_or_event_handler() {
     .expect("a palette");
     let mut card = rect("card", 0, 0.0, 0.0, 10.0, 10.0);
     card["name"] = json!("<script>alert(1)</script>");
-    card["fillToken"] = json!("accent");
+    card["fill"] = token_paint("accent");
     let document = scene_with(vec![card], None, Some("brand"));
     let style = StyleContext {
         palette: Some(&brand),
         strokes: &[],
+        gradients: &[],
         fonts: &[],
     };
     let model = compile_with(&document, &style).expect("compiles");

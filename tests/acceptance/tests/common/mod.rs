@@ -15,16 +15,43 @@ use vectr_core::render::RenderModel;
 use vectr_core::{compile, compile_with_style, parse, Diagnostics, Scene, Shape, StyleContext};
 
 /// The format version the build writes and reads (C-001).
-pub const VERSION: &str = "0.1";
+pub const VERSION: &str = "0.2";
 
 /// The scene id every inline test scene uses.
 pub const SCENE_ID: &str = "s";
 
+/// A token paint reference as the scene language carries it.
+pub fn token_paint(token: &str) -> Value {
+    json!({ "kind": "token", "ref": token })
+}
+
+/// A gradient paint reference as the scene language carries it.
+pub fn gradient_paint(id: &str) -> Value {
+    json!({ "kind": "gradient", "ref": id })
+}
+
+/// A stroke pairing a profile with a token paint.
+pub fn stroke(profile: &str, token: &str) -> Value {
+    json!({ "profileId": profile, "paint": token_paint(token) })
+}
+
+/// The colour a resolved paint carries, or `None` for a gradient.
+pub fn color(paint: &vectr_core::render::Paint) -> Option<&str> {
+    match paint {
+        vectr_core::render::Paint::Color { value } => Some(value),
+        vectr_core::render::Paint::Gradient(_) => None,
+    }
+}
+
+/// The colour of a node's resolved fill, or `None` for no fill or a gradient.
+pub fn fill_color(node: &vectr_core::render::ResolvedNode) -> Option<&str> {
+    node.paint.fill.as_ref().and_then(color)
+}
+
 /// Builds one element with the required fields and an identity transform.
 ///
-/// Optional fields (`parentId`, `name`, `fillToken`, `strokeProfileId`,
-/// `strokeToken`, `fontId`) are added by the caller mutating the returned JSON
-/// object.
+/// Optional fields (`parentId`, `name`, `fill`, `stroke`, `fontId`) are added
+/// by the caller mutating the returned JSON object.
 pub fn element(id: &str, order: i64, kind: &str, geometry: Value) -> Value {
     json!({
         "id": id,

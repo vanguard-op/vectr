@@ -97,19 +97,12 @@ pub struct Element {
     pub geometry: Geometry,
     /// Affine transform applied to the element and its children.
     pub transform: Transform,
-    /// Palette token used as fill; absent or `null` for no fill.
+    /// The element's fill paint, or absent for no fill (C-001).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fill_token: Option<String>,
-    /// Stroke profile used for the stroke; absent or `null` for no stroke.
+    pub fill: Option<Paint>,
+    /// The element's stroke, or absent for no stroke (C-001).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stroke_profile_id: Option<String>,
-    /// Palette token used as stroke colour; absent or `null` for no stroke.
-    ///
-    /// Required when `stroke_profile_id` is set and absent otherwise: a stroke
-    /// needs both a profile for its geometry and a token for its colour, so
-    /// every colour lives in the palette (D-015).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stroke_token: Option<String>,
+    pub stroke: Option<Stroke>,
     /// Font asset a text element renders with; absent or `null` selects the
     /// default open-licensed font.
     ///
@@ -121,6 +114,43 @@ pub struct Element {
     pub opacity: f64,
     /// Whether the element is rendered.
     pub visible: bool,
+}
+
+/// A paint an element's fill or stroke names (C-001).
+///
+/// A paint names either a Palette token (a solid colour) or a Gradient (a
+/// gradient); the reference is a name, not resolved at parse time, so the
+/// compiler resolves it against the caller's palette and gradients (D-021).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Paint {
+    /// Whether the reference names a palette token or a gradient.
+    pub kind: PaintKind,
+    /// The palette token name when `kind` is `token`, or the gradient id when
+    /// `kind` is `gradient`.
+    #[serde(rename = "ref")]
+    pub reference: String,
+}
+
+/// The kind of paint a reference names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PaintKind {
+    /// The reference names a palette token (a solid paint).
+    Token,
+    /// The reference names a gradient (a gradient paint).
+    Gradient,
+}
+
+/// An element's stroke: a profile for its geometry and a paint for its colour
+/// (C-001).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Stroke {
+    /// References the stroke profile supplying width, cap and join.
+    pub profile_id: String,
+    /// The stroke's paint.
+    pub paint: Paint,
 }
 
 /// The element's role.

@@ -22,11 +22,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use vectr_core::compiler::FONT;
-use vectr_core::style::UNDEFINED_STROKE;
+use vectr_core::style::{UNDEFINED_GRADIENT, UNDEFINED_STROKE};
 use vectr_core::{
-    parse_palette, parse_stroke_profile, validate_palette, validate_stroke_profile, Diagnostic,
-    DiagnosticCode, Diagnostics, ElementKind, FontAsset, Location, Palette, Scene, StrokeProfile,
-    StyleContext, DEFAULT_FONT_ID, FALLBACK_FONT_ID,
+    parse_gradient, parse_palette, parse_stroke_profile, validate_gradient, validate_palette,
+    validate_stroke_profile, Diagnostic, DiagnosticCode, Diagnostics, ElementKind, FontAsset,
+    Gradient, Location, PaintKind, Palette, Scene, StrokeProfile, StyleContext, DEFAULT_FONT_ID,
+    FALLBACK_FONT_ID,
 };
 
 /// The project configuration that marks a directory as a project root.
@@ -37,6 +38,9 @@ const PALETTE_DIR: &str = "palettes";
 
 /// The folder holding stroke-profile documents.
 const STROKE_DIR: &str = "strokes";
+
+/// The folder holding gradient documents.
+const GRADIENT_DIR: &str = "gradients";
 
 /// The folder holding asset documents, including the fonts a scene may name.
 const ASSET_DIR: &str = "assets";
@@ -63,6 +67,7 @@ const FALLBACK_FONT_BYTES: &[u8] = include_bytes!("../../../assets/fonts/NotoSan
 pub struct ProjectAssets {
     palette: Option<Palette>,
     strokes: Vec<StrokeProfile>,
+    gradients: Vec<Gradient>,
     fonts: Vec<FontAsset>,
 }
 
@@ -95,6 +100,14 @@ impl ProjectAssets {
             }
         };
 
+        let gradients = match load_gradients(&root) {
+            Ok(gradients) => gradients,
+            Err(findings) => {
+                diagnostics.extend(findings);
+                Vec::new()
+            }
+        };
+
         // The bundled fonts are only meaningful for a scene with text; carrying
         // them into a scene with none would embed a font file nothing uses.
         let mut fonts = Vec::new();
@@ -112,6 +125,7 @@ impl ProjectAssets {
         Ok(Self {
             palette,
             strokes,
+            gradients,
             fonts,
         })
     }
@@ -121,6 +135,7 @@ impl ProjectAssets {
         StyleContext {
             palette: self.palette.as_ref(),
             strokes: &self.strokes,
+            gradients: &self.gradients,
             fonts: &self.fonts,
         }
     }
@@ -128,6 +143,11 @@ impl ProjectAssets {
     /// The palette the scene selected, when the project provides it.
     pub fn palette(&self) -> Option<&Palette> {
         self.palette.as_ref()
+    }
+
+    /// The gradients the project defines (FEAT-027).
+    pub fn gradients(&self) -> &[Gradient] {
+        &self.gradients
     }
 
     /// Checks a scene's stroke and font references against the loaded assets.
@@ -139,19 +159,56 @@ impl ProjectAssets {
     pub fn check_references(&self, scene: &Scene) -> Diagnostics {
         let mut diagnostics = Diagnostics::new();
         for element in &scene.elements {
-            if let Some(id) = element.stroke_profile_id.as_deref() {
-                if !self.strokes.iter().any(|profile| profile.id == id) {
+            if let Some(stroke) = &element.stroke {
+                if !self
+                    .strokes
+                    .iter()
+                    .any(|profile| profile.id == stroke.profile_id)
+                {
                     diagnostics.push(
                         Diagnostic::error(
                             UNDEFINED_STROKE,
                             format!(
-                                "element `{}` references undefined stroke profile `{id}`",
-                                element.id
+                                "element `{}` references undefined stroke profile `{}`",
+                                element.id, stroke.profile_id
                             ),
                         )
                         .with_location(Location::element_at(
                             element.id.clone(),
-                            "/strokeProfileId",
+                            "/stroke/profileId",
+                        )),
+                    );
+                }
+            }
+            for (paint, field) in [
+                (element.fill.as_ref(), "fill"),
+                (
+                    element.stroke.as_ref().map(|stroke| &stroke.paint),
+                    "stroke/paint",
+                ),
+            ] {
+                let Some(paint) = paint else {
+                    continue;
+                };
+                if paint.kind != PaintKind::Gradient {
+                    continue;
+                }
+                if !self
+                    .gradients
+                    .iter()
+                    .any(|gradient| gradient.id == paint.reference)
+                {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            UNDEFINED_GRADIENT,
+                            format!(
+                                "element `{}` references undefined gradient `{}`",
+                                element.id, paint.reference
+                            ),
+                        )
+                        .with_location(Location::element_at(
+                            element.id.clone(),
+                            format!("/{field}"),
                         )),
                     );
                 }
@@ -265,6 +322,24 @@ fn load_strokes(root: &Path) -> Result<Vec<StrokeProfile>, Diagnostics> {
         Err(diagnostics)
     } else {
         Ok(profiles)
+    }
+}
+
+/// Loads every gradient the project defines.
+fn load_gradients(root: &Path) -> Result<Vec<Gradient>, Diagnostics> {
+    let dir = root.join(GRADIENT_DIR);
+    let mut gradients = Vec::new();
+    let mut diagnostics = Diagnostics::new();
+    for path in json_files(&dir) {
+        match read_document(&path, "gradient", parse_gradient, validate_gradient) {
+            Ok(gradient) => gradients.push(gradient),
+            Err(findings) => diagnostics.extend(findings),
+        }
+    }
+    if diagnostics.has_errors() {
+        Err(diagnostics)
+    } else {
+        Ok(gradients)
     }
 }
 
@@ -417,7 +492,7 @@ mod tests {
       "id": "s",
       "projectId": "p",
       "name": "Text",
-      "formatVersion": "0.1",
+      "formatVersion": "0.2",
       "canvas": { "width": 100, "height": 100, "background": "#ffffff" },
       "elements": [
         {
@@ -433,7 +508,7 @@ mod tests {
       "id": "s",
       "projectId": "p",
       "name": "Rect",
-      "formatVersion": "0.1",
+      "formatVersion": "0.2",
       "canvas": { "width": 100, "height": 100, "background": "#ffffff" },
       "elements": [
         {
@@ -530,7 +605,7 @@ mod tests {
         write(dir.path(), "vectr.project.json", "{}");
         let scene_text = RECT_SCENE.replace(
             r##""kind": "rect","##,
-            r##""kind": "rect", "strokeProfileId": "outline", "strokeToken": "accent","##,
+            r##""kind": "rect", "stroke": {"profileId": "outline", "paint": {"kind": "token", "ref": "accent"}},"##,
         );
         let scene_path = write(dir.path(), "scenes/scene.json", &scene_text);
         let scene = parse_scene(&scene_text).expect("a valid scene");
@@ -564,7 +639,7 @@ mod tests {
         );
         let scene_text = RECT_SCENE.replace(
             r##""kind": "rect","##,
-            r##""kind": "rect", "strokeProfileId": "outline", "strokeToken": "accent","##,
+            r##""kind": "rect", "stroke": {"profileId": "outline", "paint": {"kind": "token", "ref": "accent"}},"##,
         );
         let scene_text = scene_text.replace(
             r##""elements": ["##,
@@ -582,7 +657,12 @@ mod tests {
             .as_ref()
             .expect("a resolved stroke");
         assert_eq!(stroke.width, 3.0);
-        assert_eq!(stroke.value, "#0000ff");
+        assert_eq!(
+            stroke.paint,
+            vectr_core::render::Paint::Color {
+                value: "#0000ff".to_string()
+            }
+        );
     }
 
     #[test]

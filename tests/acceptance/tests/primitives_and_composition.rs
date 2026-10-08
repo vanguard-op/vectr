@@ -25,14 +25,14 @@ fn a_rectangle_renders_at_its_position_and_size_with_fill_and_stroke() {
     let outline = vectr_core::parse_stroke_profile(&stroke_text).expect("a profile");
 
     let mut card = rect("card", 0, 10.0, 20.0, 30.0, 40.0);
-    card["fillToken"] = json!("accent");
-    card["strokeProfileId"] = json!("outline");
-    card["strokeToken"] = json!("accent");
+    card["fill"] = token_paint("accent");
+    card["stroke"] = stroke("outline", "accent");
     let document = scene_with(vec![card], None, Some("brand"));
 
     let style = StyleContext {
         palette: Some(&brand),
         strokes: std::slice::from_ref(&outline),
+        gradients: &[],
         fonts: &[],
     };
     let model = compile_with(&document, &style).expect("compiles");
@@ -49,9 +49,9 @@ fn a_rectangle_renders_at_its_position_and_size_with_fill_and_stroke() {
             ry: 0.0,
         }))
     );
-    assert_eq!(node.paint.fill.as_deref(), Some("#ff0000"));
+    assert_eq!(fill_color(node), Some("#ff0000"));
     let stroke = node.paint.stroke.as_ref().expect("a stroke");
-    assert_eq!(stroke.value, "#ff0000");
+    assert_eq!(color(&stroke.paint), Some("#ff0000"));
     assert_eq!(stroke.width, 3.0);
     assert_eq!(stroke.cap, StrokeCap::Round);
     assert_eq!(stroke.join, StrokeJoin::Bevel);
@@ -75,21 +75,21 @@ fn a_path_with_fill_and_stroke_renders_both_and_honours_cap_and_join() {
     let outline = vectr_core::parse_stroke_profile(&stroke_text).expect("a profile");
 
     let mut path = element("p1", 0, "path", json!({ "pathData": "M0 0 L10 0" }));
-    path["fillToken"] = json!("accent");
-    path["strokeProfileId"] = json!("outline");
-    path["strokeToken"] = json!("accent");
+    path["fill"] = token_paint("accent");
+    path["stroke"] = stroke("outline", "accent");
     let document = scene_with(vec![path], None, Some("brand"));
 
     let style = StyleContext {
         palette: Some(&brand),
         strokes: std::slice::from_ref(&outline),
+        gradients: &[],
         fonts: &[],
     };
     let model = compile_with(&document, &style).expect("compiles");
 
     let node = &model.nodes[0];
     assert!(matches!(node.geometry, Some(Shape::Path(_))));
-    assert_eq!(node.paint.fill.as_deref(), Some("#ff0000"));
+    assert_eq!(fill_color(node), Some("#ff0000"));
     let stroke = node.paint.stroke.as_ref().expect("a stroke");
     assert_eq!(stroke.width, 3.0);
     assert_eq!(stroke.cap, StrokeCap::Round);
@@ -132,12 +132,13 @@ fn a_text_element_renders_at_its_anchor_with_alignment_spacing_and_fill() {
     wordmark["geometry"]["align"] = json!("center");
     wordmark["geometry"]["lineHeight"] = json!(30.0);
     wordmark["geometry"]["letterSpacing"] = json!(1.5);
-    wordmark["fillToken"] = json!("ink");
+    wordmark["fill"] = token_paint("ink");
     let document = scene_with(vec![wordmark], None, Some("brand"));
 
     let style = StyleContext {
         palette: Some(&brand),
         strokes: &[],
+        gradients: &[],
         fonts: &[],
     };
     let model = compile_with(&document, &style).expect("compiles");
@@ -151,7 +152,7 @@ fn a_text_element_renders_at_its_anchor_with_alignment_spacing_and_fill() {
     assert_eq!(run.line_height, 30.0);
     assert_eq!(run.letter_spacing, 1.5);
     assert_eq!(run.align.as_str(), "center");
-    assert_eq!(node.paint.fill.as_deref(), Some("#123456"));
+    assert_eq!(fill_color(node), Some("#123456"));
     // The anchor is baked into the resolved transform.
     let origin = node.transform.apply([0.0, 0.0]);
     assert!(
@@ -397,16 +398,17 @@ fn an_invalid_transform_is_a_validation_error() {
 #[test]
 fn a_composition_lowers_to_concrete_geometry_with_no_unresolved_reference() {
     let mut repeat = element("row", 0, "repeat", json!({ "count": 2, "spacing": 20.0 }));
-    repeat["fillToken"] = json!("accent");
+    repeat["fill"] = token_paint("accent");
     let mut child = rect("cell", 0, 0.0, 0.0, 10.0, 10.0);
     child["parentId"] = json!("row");
-    child["fillToken"] = json!("accent");
+    child["fill"] = token_paint("accent");
     let document = scene_with(vec![repeat, child], None, Some("brand"));
     let brand =
         vectr_core::parse_palette(&palette("brand", &[("accent", "#abcdef")])).expect("a palette");
     let style = StyleContext {
         palette: Some(&brand),
         strokes: &[],
+        gradients: &[],
         fonts: &[],
     };
 
@@ -417,7 +419,7 @@ fn a_composition_lowers_to_concrete_geometry_with_no_unresolved_reference() {
             node.geometry.is_some(),
             "every node carries concrete geometry"
         );
-        assert_eq!(node.paint.fill.as_deref(), Some("#abcdef"));
+        assert_eq!(fill_color(node), Some("#abcdef"));
         assert_eq!(node.kind, "rect");
         assert_ne!(
             node.kind, "repeat",

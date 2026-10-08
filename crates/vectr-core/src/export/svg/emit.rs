@@ -15,9 +15,9 @@ use std::fmt::Write as _;
 use crate::composition::Affine;
 use crate::fonts::FontLibrary;
 use crate::primitives::{Path as PathGeometry, Rect, Segment, Shape};
-use crate::render::{NodeGroup, RenderModel, ResolvedNode};
+use crate::render::{NodeGroup, Paint, RenderModel, ResolvedNode};
 use crate::scene::{Diagnostic, Diagnostics, Location};
-use crate::style::{StrokeCap, StrokeJoin};
+use crate::style::{GradientType, Spread, StrokeCap, StrokeJoin};
 
 use super::UNSUPPORTED;
 
@@ -69,10 +69,128 @@ pub(crate) fn document(
 
     let mut ids = IdAllocator::default();
     let fonts = FontLibrary::new(&model.fonts);
-    emit_nodes(&mut out, &model.nodes, &fonts, &mut ids, diagnostics);
+    let defs = GradientDefs::build(&model.nodes, &mut ids);
+    if !defs.is_empty() {
+        let _ = writeln!(out, "  <defs>");
+        defs.write(&mut out);
+        let _ = writeln!(out, "  </defs>");
+    }
+    emit_nodes(&mut out, &model.nodes, &fonts, &defs, &mut ids, diagnostics);
 
     out.push_str("</svg>\n");
     out
+}
+
+/// The gradient definitions a document needs, each with a stable identifier
+/// shared by every node that uses it (FEAT-027).
+///
+/// The model's gradients are concrete by the time they reach here, so a
+/// definition is written once per distinct paint and referenced by
+/// `url(#id)`; identical gradients share an identifier, keeping the output
+/// deterministic and compact.
+#[derive(Default)]
+struct GradientDefs {
+    entries: Vec<(Paint, String)>,
+}
+
+impl GradientDefs {
+    /// Registers every gradient paint in the model, in node order.
+    fn build(nodes: &[ResolvedNode], ids: &mut IdAllocator) -> Self {
+        let mut defs = GradientDefs::default();
+        for node in nodes {
+            if let Some(fill) = &node.paint.fill {
+                defs.register(fill, ids);
+            }
+            if let Some(stroke) = &node.paint.stroke {
+                defs.register(&stroke.paint, ids);
+            }
+        }
+        defs
+    }
+
+    fn register(&mut self, paint: &Paint, ids: &mut IdAllocator) {
+        if !matches!(paint, Paint::Gradient(_)) {
+            return;
+        }
+        if self.entries.iter().any(|(existing, _)| existing == paint) {
+            return;
+        }
+        let id = ids.allocate(&format!("gradient-{}", self.entries.len() + 1));
+        self.entries.push((paint.clone(), id));
+    }
+
+    fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// The identifier for a gradient paint, or `None` for a colour.
+    fn id(&self, paint: &Paint) -> Option<&str> {
+        if !matches!(paint, Paint::Gradient(_)) {
+            return None;
+        }
+        self.entries
+            .iter()
+            .find(|(existing, _)| existing == paint)
+            .map(|(_, id)| id.as_str())
+    }
+
+    /// Writes each gradient definition, indented inside `<defs>`.
+    fn write(&self, out: &mut String) {
+        for (paint, id) in &self.entries {
+            let Paint::Gradient(gradient) = paint else {
+                continue;
+            };
+            let spread = spread_name(gradient.spread);
+            match gradient.gradient_type {
+                GradientType::Linear => {
+                    let _ = writeln!(
+                        out,
+                        "    <linearGradient id=\"{id}\" x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" spreadMethod=\"{spread}\">",
+                        number(gradient.x1.unwrap_or(0.0)),
+                        number(gradient.y1.unwrap_or(0.0)),
+                        number(gradient.x2.unwrap_or(1.0)),
+                        number(gradient.y2.unwrap_or(0.0)),
+                    );
+                }
+                GradientType::Radial => {
+                    let _ = writeln!(
+                        out,
+                        "    <radialGradient id=\"{id}\" cx=\"{}\" cy=\"{}\" r=\"{}\" fx=\"{}\" fy=\"{}\" spreadMethod=\"{spread}\">",
+                        number(gradient.cx.unwrap_or(0.5)),
+                        number(gradient.cy.unwrap_or(0.5)),
+                        number(gradient.r.unwrap_or(0.5)),
+                        number(gradient.fx.unwrap_or(0.5)),
+                        number(gradient.fy.unwrap_or(0.5)),
+                    );
+                }
+            }
+            for stop in &gradient.stops {
+                let _ = write!(
+                    out,
+                    "      <stop offset=\"{}\" stop-color=\"{}\"",
+                    number(stop.offset),
+                    escape_attr(&stop.color),
+                );
+                if stop.opacity < 1.0 {
+                    let _ = write!(out, " stop-opacity=\"{}\"", number(stop.opacity));
+                }
+                out.push_str("/>\n");
+            }
+            let close = match gradient.gradient_type {
+                GradientType::Linear => "linearGradient",
+                GradientType::Radial => "radialGradient",
+            };
+            let _ = writeln!(out, "    </{close}>");
+        }
+    }
+}
+
+fn spread_name(spread: Spread) -> &'static str {
+    match spread {
+        Spread::Pad => "pad",
+        Spread::Reflect => "reflect",
+        Spread::Repeat => "repeat",
+    }
 }
 
 /// Emits every node in paint order, opening and closing the named-group
@@ -97,6 +215,7 @@ fn emit_nodes(
     out: &mut String,
     nodes: &[ResolvedNode],
     fonts: &FontLibrary<'_>,
+    defs: &GradientDefs,
     ids: &mut IdAllocator,
     diagnostics: &mut Diagnostics,
 ) {
@@ -106,7 +225,7 @@ fn emit_nodes(
             omit(diagnostics, node, reason);
             continue;
         }
-        let Some(shape) = shape_for(node, fonts, diagnostics) else {
+        let Some(shape) = shape_for(node, fonts, defs, diagnostics) else {
             continue;
         };
 
@@ -162,6 +281,7 @@ fn unsupported(node: &ResolvedNode) -> Option<&'static str> {
 fn shape_for(
     node: &ResolvedNode,
     fonts: &FontLibrary<'_>,
+    defs: &GradientDefs,
     diagnostics: &mut Diagnostics,
 ) -> Option<String> {
     match &node.text {
@@ -171,10 +291,10 @@ fn shape_for(
             if outlined.path.is_empty() {
                 None
             } else {
-                Some(text_element(node, &outlined.path))
+                Some(text_element(node, &outlined.path, defs))
             }
         }
-        None => shape_element(node),
+        None => shape_element(node, defs),
     }
 }
 
@@ -227,9 +347,9 @@ fn omit(diagnostics: &mut Diagnostics, node: &ResolvedNode, reason: &str) {
 }
 
 /// The SVG shape element for a node, or `None` when it draws nothing.
-fn shape_element(node: &ResolvedNode) -> Option<String> {
+fn shape_element(node: &ResolvedNode, defs: &GradientDefs) -> Option<String> {
     let shape = node.geometry.as_ref()?;
-    let mut attrs = paint_attributes(node);
+    let mut attrs = paint_attributes(node, defs);
     if node.transform != Affine::IDENTITY {
         let transform = node.transform;
         let _ = write!(
@@ -275,9 +395,9 @@ fn shape_element(node: &ResolvedNode) -> Option<String> {
 /// The glyph contours are concrete geometry by the time they reach here, so a
 /// text node emits exactly like any other path: its paint, its resolved
 /// transform, and one `d` attribute carrying every contour.
-fn text_element(node: &ResolvedNode, path: &PathGeometry) -> String {
+fn text_element(node: &ResolvedNode, path: &PathGeometry, defs: &GradientDefs) -> String {
     let data = path_data(path);
-    let mut attrs = paint_attributes(node);
+    let mut attrs = paint_attributes(node, defs);
     if node.transform != Affine::IDENTITY {
         let transform = node.transform;
         let _ = write!(
@@ -329,25 +449,43 @@ fn normalize_extent(origin: f64, extent: f64) -> (f64, f64) {
 }
 
 /// The fill and stroke attributes for a node.
-fn paint_attributes(node: &ResolvedNode) -> String {
+///
+/// A concrete colour is written as a value; a gradient is written as a
+/// `url(#id)` reference to the definition [`GradientDefs`] emitted (FEAT-027).
+fn paint_attributes(node: &ResolvedNode, defs: &GradientDefs) -> String {
     let mut attrs = String::new();
     match &node.paint.fill {
-        Some(fill) => {
-            let _ = write!(attrs, " fill=\"{}\"", escape_attr(fill));
-        }
+        Some(fill) => write_paint(&mut attrs, "fill", fill, defs),
         None => attrs.push_str(" fill=\"none\""),
     }
     if let Some(stroke) = &node.paint.stroke {
+        write_paint(&mut attrs, "stroke", &stroke.paint, defs);
         let _ = write!(
             attrs,
-            " stroke=\"{}\" stroke-width=\"{}\" stroke-linecap=\"{}\" stroke-linejoin=\"{}\"",
-            escape_attr(&stroke.value),
+            " stroke-width=\"{}\" stroke-linecap=\"{}\" stroke-linejoin=\"{}\"",
             number(stroke.width),
             cap_name(stroke.cap),
             join_name(stroke.join),
         );
     }
     attrs
+}
+
+/// Writes one paint as an attribute: a colour value or a gradient reference.
+fn write_paint(attrs: &mut String, name: &str, paint: &Paint, defs: &GradientDefs) {
+    match defs.id(paint) {
+        Some(id) => {
+            let _ = write!(attrs, " {name}=\"url(#{id})\"");
+        }
+        None => {
+            let value = match paint {
+                Paint::Color { value } => value.as_str(),
+                // A gradient always has a definition; unreachable in practice.
+                Paint::Gradient(_) => "none",
+            };
+            let _ = write!(attrs, " {name}=\"{}\"", escape_attr(value));
+        }
+    }
 }
 
 /// SVG path data for a concrete path, with absolute commands.

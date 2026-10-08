@@ -467,7 +467,7 @@ mod tests {
             format!(r#","constraints":{constraints}"#)
         };
         parse_scene(&format!(
-            r#"{{"id":"s","projectId":"p","name":"S","formatVersion":"0.1","canvas":{{"width":400,"height":400,"background":"transparent"}},"elements":[{}]{constraints}}}"#,
+            r#"{{"id":"s","projectId":"p","name":"S","formatVersion":"0.2","canvas":{{"width":400,"height":400,"background":"transparent"}},"elements":[{}]{constraints}}}"#,
             elements.join(",")
         ))
         .expect("valid scene")

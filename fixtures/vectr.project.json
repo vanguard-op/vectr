@@ -1,7 +1,7 @@
 {
   "id": "project",
   "name": "Vectr fixtures",
-  "formatVersion": "0.1",
+  "formatVersion": "0.2",
   "output": {
     "format": "svg",
     "width": 512,

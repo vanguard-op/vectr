@@ -28,7 +28,15 @@ const STARTER_SCENE_ID: &str = "example";
 
 /// The entity directories a project holds, alongside `dist/` for output and
 /// `assets/` for the fonts and images a scene may reference.
-const PROJECT_DIRS: [&str; 6] = ["scenes", "palettes", "strokes", "recipes", "assets", "dist"];
+const PROJECT_DIRS: [&str; 7] = [
+    "scenes",
+    "palettes",
+    "strokes",
+    "gradients",
+    "recipes",
+    "assets",
+    "dist",
+];
 
 /// Creates a project scaffold in `dir`.
 pub fn scaffold(dir: &Path) -> Report {

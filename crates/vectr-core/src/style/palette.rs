@@ -1,8 +1,8 @@
 //! Named color tokens that elements reference by name (FEAT-005).
 //!
-//! A palette holds color tokens; an element's `fillToken` names one. Resolving
-//! the name yields the token's value, so editing one token restyles every
-//! element that references it on the next recompile (FEAT-005).
+//! A palette holds color tokens; an element's `fill` names one by paint.
+//! Resolving the name yields the token's value, so editing one token restyles
+//! every element that references it on the next recompile (FEAT-005).
 //!
 //! Two tokens may share a name: the later definition wins and a warning is
 //! raised. A referenced name that no token defines is an error naming the
@@ -12,8 +12,10 @@ use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
 
-use super::{parse_document, to_json, REDEFINED_TOKEN, UNDEFINED_TOKEN, UNUSED_TOKEN};
-use crate::scene::{Diagnostic, DiagnosticCode, Diagnostics, Location, Scene};
+use super::{parse_document, to_json, Gradient, REDEFINED_TOKEN, UNDEFINED_TOKEN, UNUSED_TOKEN};
+use crate::scene::{
+    Diagnostic, DiagnosticCode, Diagnostics, Element, Location, Paint, PaintKind, Scene,
+};
 
 /// A named set of color tokens that scenes reference by token name.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -119,23 +121,25 @@ pub fn validate(palette: &Palette) -> Diagnostics {
 /// Checks a scene's references against a palette.
 ///
 /// A referenced token no definition provides is an error naming the token and
-/// the element; a token nothing references is a warning. Redefinitions are
-/// reported as by [`validate`] (FEAT-005).
-pub fn validate_usage(scene: &Scene, palette: &Palette) -> Diagnostics {
+/// the element or gradient; a token nothing references is a warning. Tokens
+/// named by a gradient's stops count as used. Redefinitions are reported as by
+/// [`validate`] (FEAT-005, FEAT-027).
+pub fn validate_usage(scene: &Scene, palette: &Palette, gradients: &[Gradient]) -> Diagnostics {
     let mut diagnostics = validate(palette);
 
-    let used: HashSet<&str> = scene
-        .elements
-        .iter()
-        .flat_map(|element| {
-            [
-                element.fill_token.as_deref(),
-                element.stroke_token.as_deref(),
-            ]
-            .into_iter()
-            .flatten()
-        })
-        .collect();
+    let mut used: HashSet<&str> = HashSet::new();
+    for element in &scene.elements {
+        for paint in element_paints(element) {
+            if paint.kind == PaintKind::Token {
+                used.insert(paint.reference.as_str());
+            }
+        }
+    }
+    for gradient in gradients {
+        for stop in &gradient.stops {
+            used.insert(stop.token.as_str());
+        }
+    }
 
     for (index, token) in palette.first_definitions() {
         if !used.contains(token.name.as_str()) {
@@ -150,20 +154,26 @@ pub fn validate_usage(scene: &Scene, palette: &Palette) -> Diagnostics {
     }
 
     for (index, element) in scene.elements.iter().enumerate() {
-        for (token, field) in [
-            (element.fill_token.as_deref(), "fillToken"),
-            (element.stroke_token.as_deref(), "strokeToken"),
+        for (paint, field) in [
+            (element.fill.as_ref(), "fill"),
+            (
+                element.stroke.as_ref().map(|stroke| &stroke.paint),
+                "stroke/paint",
+            ),
         ] {
-            let Some(token) = token else {
+            let Some(paint) = paint else {
                 continue;
             };
-            if palette.resolve(token).is_none() {
+            if paint.kind != PaintKind::Token {
+                continue;
+            }
+            if palette.resolve(&paint.reference).is_none() {
                 diagnostics.push(
                     Diagnostic::error(
                         UNDEFINED_TOKEN,
                         format!(
-                            "element `{}` references undefined palette token `{token}`",
-                            element.id
+                            "element `{}` references undefined palette token `{}`",
+                            element.id, paint.reference
                         ),
                     )
                     .with_location(Location::element_at(
@@ -175,7 +185,36 @@ pub fn validate_usage(scene: &Scene, palette: &Palette) -> Diagnostics {
         }
     }
 
+    for (index, gradient) in gradients.iter().enumerate() {
+        for (stop_index, stop) in gradient.stops.iter().enumerate() {
+            if palette.resolve(&stop.token).is_none() {
+                diagnostics.push(
+                    Diagnostic::error(
+                        UNDEFINED_TOKEN,
+                        format!(
+                            "gradient `{}` references undefined palette token `{}`",
+                            gradient.id, stop.token
+                        ),
+                    )
+                    .at_path(format!("/gradients/{index}/stops/{stop_index}")),
+                );
+            }
+        }
+    }
+
     diagnostics
+}
+
+/// The paints an element declares, its fill and its stroke's paint.
+fn element_paints(element: &Element) -> Vec<&Paint> {
+    let mut paints = Vec::new();
+    if let Some(fill) = &element.fill {
+        paints.push(fill);
+    }
+    if let Some(stroke) = &element.stroke {
+        paints.push(&stroke.paint);
+    }
+    paints
 }
 
 #[cfg(test)]
@@ -229,12 +268,12 @@ mod tests {
     #[test]
     fn an_undefined_token_is_an_error_naming_the_token() {
         let scene = crate::scene::parse(
-            r#"{"id":"s","projectId":"p","name":"S","formatVersion":"0.1","canvas":{"width":1,"height":1,"background":"transparent"},"elements":[{"id":"e1","sceneId":"s","order":0,"kind":"rect","geometry":{"width":1,"height":1},"transform":{"translateX":0,"translateY":0,"rotate":0,"scaleX":1,"scaleY":1},"fillToken":"missing","opacity":1,"visible":true}]}"#,
+            r#"{"id":"s","projectId":"p","name":"S","formatVersion":"0.2","canvas":{"width":1,"height":1,"background":"transparent"},"elements":[{"id":"e1","sceneId":"s","order":0,"kind":"rect","geometry":{"width":1,"height":1},"transform":{"translateX":0,"translateY":0,"rotate":0,"scaleX":1,"scaleY":1},"fill":{"kind":"token","ref":"missing"},"opacity":1,"visible":true}]}"#,
         )
         .unwrap();
         let palette = parse(&palette()).unwrap();
 
-        let diagnostics = validate_usage(&scene, &palette);
+        let diagnostics = validate_usage(&scene, &palette, &[]);
         let error = diagnostics.errors().next().expect("an error");
         assert_eq!(error.code, UNDEFINED_TOKEN);
         assert!(error.message.contains("missing"));
@@ -250,12 +289,12 @@ mod tests {
     #[test]
     fn an_unused_token_is_a_warning_not_an_error() {
         let scene = crate::scene::parse(
-            r#"{"id":"s","projectId":"p","name":"S","formatVersion":"0.1","canvas":{"width":1,"height":1,"background":"transparent"},"elements":[{"id":"e1","sceneId":"s","order":0,"kind":"rect","geometry":{"width":1,"height":1},"transform":{"translateX":0,"translateY":0,"rotate":0,"scaleX":1,"scaleY":1},"fillToken":"accent","opacity":1,"visible":true}]}"#,
+            r#"{"id":"s","projectId":"p","name":"S","formatVersion":"0.2","canvas":{"width":1,"height":1,"background":"transparent"},"elements":[{"id":"e1","sceneId":"s","order":0,"kind":"rect","geometry":{"width":1,"height":1},"transform":{"translateX":0,"translateY":0,"rotate":0,"scaleX":1,"scaleY":1},"fill":{"kind":"token","ref":"accent"},"opacity":1,"visible":true}]}"#,
         )
         .unwrap();
         let palette = parse(&palette()).unwrap();
 
-        let diagnostics = validate_usage(&scene, &palette);
+        let diagnostics = validate_usage(&scene, &palette, &[]);
         assert!(!diagnostics.has_errors());
         let warning = diagnostics.warnings().next().expect("a warning");
         assert_eq!(warning.code, UNUSED_TOKEN);
@@ -265,12 +304,12 @@ mod tests {
     #[test]
     fn a_referenced_stroke_token_counts_as_used() {
         let scene = crate::scene::parse(
-            r#"{"id":"s","projectId":"p","name":"S","formatVersion":"0.1","canvas":{"width":1,"height":1,"background":"transparent"},"elements":[{"id":"e1","sceneId":"s","order":0,"kind":"rect","geometry":{"width":1,"height":1},"transform":{"translateX":0,"translateY":0,"rotate":0,"scaleX":1,"scaleY":1},"strokeProfileId":"stroke-1","strokeToken":"ink","opacity":1,"visible":true}]}"#,
+            r#"{"id":"s","projectId":"p","name":"S","formatVersion":"0.2","canvas":{"width":1,"height":1,"background":"transparent"},"elements":[{"id":"e1","sceneId":"s","order":0,"kind":"rect","geometry":{"width":1,"height":1},"transform":{"translateX":0,"translateY":0,"rotate":0,"scaleX":1,"scaleY":1},"stroke":{"profileId":"stroke-1","paint":{"kind":"token","ref":"ink"}},"opacity":1,"visible":true}]}"#,
         )
         .unwrap();
         let palette = parse(&palette()).unwrap();
 
-        let diagnostics = validate_usage(&scene, &palette);
+        let diagnostics = validate_usage(&scene, &palette, &[]);
         assert!(!diagnostics.has_errors());
         let unused: Vec<&str> = diagnostics
             .warnings()
@@ -286,12 +325,12 @@ mod tests {
     #[test]
     fn an_undefined_stroke_token_is_an_error_naming_the_token() {
         let scene = crate::scene::parse(
-            r#"{"id":"s","projectId":"p","name":"S","formatVersion":"0.1","canvas":{"width":1,"height":1,"background":"transparent"},"elements":[{"id":"e1","sceneId":"s","order":0,"kind":"rect","geometry":{"width":1,"height":1},"transform":{"translateX":0,"translateY":0,"rotate":0,"scaleX":1,"scaleY":1},"strokeProfileId":"stroke-1","strokeToken":"missing","opacity":1,"visible":true}]}"#,
+            r#"{"id":"s","projectId":"p","name":"S","formatVersion":"0.2","canvas":{"width":1,"height":1,"background":"transparent"},"elements":[{"id":"e1","sceneId":"s","order":0,"kind":"rect","geometry":{"width":1,"height":1},"transform":{"translateX":0,"translateY":0,"rotate":0,"scaleX":1,"scaleY":1},"stroke":{"profileId":"stroke-1","paint":{"kind":"token","ref":"missing"}},"opacity":1,"visible":true}]}"#,
         )
         .unwrap();
         let palette = parse(&palette()).unwrap();
 
-        let diagnostics = validate_usage(&scene, &palette);
+        let diagnostics = validate_usage(&scene, &palette, &[]);
         let error = diagnostics.errors().next().expect("an error");
         assert_eq!(error.code, UNDEFINED_TOKEN);
         assert!(error.message.contains("missing"));
@@ -300,7 +339,29 @@ mod tests {
                 .location
                 .as_ref()
                 .and_then(|location| location.json_path.as_deref()),
-            Some("/elements/0/strokeToken")
+            Some("/elements/0/stroke/paint")
+        );
+    }
+
+    #[test]
+    fn a_gradient_stop_token_counts_as_used() {
+        let scene = crate::scene::parse(
+            r#"{"id":"s","projectId":"p","name":"S","formatVersion":"0.2","canvas":{"width":1,"height":1,"background":"transparent"},"elements":[{"id":"e1","sceneId":"s","order":0,"kind":"rect","geometry":{"width":1,"height":1},"transform":{"translateX":0,"translateY":0,"rotate":0,"scaleX":1,"scaleY":1},"opacity":1,"visible":true}]}"#,
+        )
+        .unwrap();
+        let palette = parse(&palette()).unwrap();
+        let gradient = super::super::parse_gradient(
+            r##"{"id":"fade","projectId":"p","name":"F","type":"linear","stops":[{"offset":0,"token":"accent"},{"offset":1,"token":"ink"}]}"##,
+        )
+        .unwrap();
+
+        let diagnostics = validate_usage(&scene, &palette, std::slice::from_ref(&gradient));
+        assert!(!diagnostics.has_errors());
+        assert!(
+            !diagnostics
+                .warnings()
+                .any(|warning| warning.code == UNUSED_TOKEN),
+            "gradient stop tokens are used: {diagnostics:?}"
         );
     }
 }

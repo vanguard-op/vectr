@@ -5,7 +5,8 @@
 //! scene draws (FEAT-002), [`composition`] composes them into concrete
 //! placements and geometry (FEAT-003), [`constraints`] resolves stated
 //! relationships into concrete placements (FEAT-004), [`style`] holds the
-//! palettes, stroke profiles and recipes applied to elements (FEAT-005),
+//! palettes, stroke profiles, gradients and recipes applied to elements
+//! (FEAT-005, FEAT-027),
 //! [`compiler`] compiles a validated scene into one [`render`] model shared by
 //! every exporter (FEAT-011), [`render`] defines that model (C-003), [`fonts`]
 //! finalizes a text node's glyph geometry (FEAT-024), and [`export`] writes that
@@ -40,16 +41,19 @@ pub use fonts::{
 };
 pub use primitives::{Ellipse, Line, Polygon, Rect, Shape};
 pub use render::{
-    NodeStroke, Paint, RenderCanvas, RenderMeta, RenderModel, ResolvedFont, ResolvedNode, TextRun,
+    GradientPaint, NodePaint, NodeStroke, Paint, RenderCanvas, RenderMeta, RenderModel,
+    ResolvedFont, ResolvedNode, ResolvedStop, TextRun,
 };
 pub use scene::{
     parse, validate, Canvas, Constraint, ConstraintKind, Diagnostic, DiagnosticCode, Diagnostics,
-    Element, ElementKind, Geometry, Location, ProjectionAxis, Scene, Severity, TextAlign,
-    Transform, MAX_SCENE_BYTES,
+    Element, ElementKind, Geometry, Location, PaintKind, ProjectionAxis, Scene, Severity,
+    TextAlign, Transform, MAX_SCENE_BYTES,
 };
 pub use style::{
-    parse_palette, parse_stroke_profile, parse_style_recipe, resolve_fill, resolve_stroke,
-    resolve_stroke_color, validate_palette, validate_palette_usage, validate_stroke_profile,
-    validate_style_recipe, Palette, PaletteToken, RecipeName, RecipeParameters, ResolvedStroke,
-    Shading, StrokeCap, StrokeJoin, StrokeProfile, StyleRecipe,
+    parse_gradient, parse_palette, parse_stroke_profile, parse_style_recipe, resolve_fill,
+    resolve_gradient, resolve_stroke, resolve_stroke_paint, validate_gradient,
+    validate_gradient_usage, validate_palette, validate_palette_usage, validate_stroke_profile,
+    validate_style_recipe, Gradient, GradientStop, GradientType, Palette, PaletteToken, RecipeName,
+    RecipeParameters, ResolvedStroke, Shading, Spread, StrokeCap, StrokeJoin, StrokeProfile,
+    StyleRecipe,
 };

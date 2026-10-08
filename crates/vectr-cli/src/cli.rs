@@ -26,8 +26,8 @@ use vectr_core::export::png as png_export;
 use vectr_core::export::svg as svg_export;
 use vectr_core::{
     compile_with_style, export_png_reporting, export_svg_reporting, parse as parse_scene_source,
-    validate as validate_scene_model, validate_palette_usage, Diagnostic, Diagnostics,
-    RasterOptions, SvgOptions,
+    validate as validate_scene_model, validate_gradient_usage, validate_palette_usage, Diagnostic,
+    Diagnostics, RasterOptions, SvgOptions,
 };
 
 use crate::init;
@@ -442,8 +442,9 @@ fn validate_scene(scene: &Path, json: bool) -> Report {
     // before anything is compiled (FEAT-005, FEAT-024).
     let mut findings = validate_scene_model(&parsed);
     if let Some(palette) = assets.palette() {
-        findings.extend(validate_palette_usage(&parsed, palette));
+        findings.extend(validate_palette_usage(&parsed, palette, assets.gradients()));
     }
+    findings.extend(validate_gradient_usage(&parsed, assets.gradients()));
     findings.extend(assets.check_references(&parsed));
 
     let code = if findings.has_errors() {
@@ -767,7 +768,7 @@ mod tests {
       "id": "scene-1",
       "projectId": "project",
       "name": "Example",
-      "formatVersion": "0.1",
+      "formatVersion": "0.2",
       "canvas": { "width": 100, "height": 100, "background": "#ffffff" },
       "elements": [
         {
@@ -785,7 +786,7 @@ mod tests {
       "id": "scene-1",
       "projectId": "project",
       "name": "Cycle",
-      "formatVersion": "0.1",
+      "formatVersion": "0.2",
       "canvas": { "width": 100, "height": 100, "background": "#ffffff" },
       "elements": [
         {
@@ -807,7 +808,7 @@ mod tests {
       "id": "scene-1",
       "projectId": "project",
       "name": "Example",
-      "formatVersion": "0.1",
+      "formatVersion": "0.2",
       "canvas": { "width": 100, "height": 100, "background": "#ffffff" },
       "elements": [
         {
@@ -1186,7 +1187,7 @@ mod tests {
       "id": "s",
       "projectId": "project",
       "name": "Text",
-      "formatVersion": "0.1",
+      "formatVersion": "0.2",
       "canvas": { "width": 200, "height": 100, "background": "#ffffff" },
       "elements": [
         {
@@ -1204,7 +1205,7 @@ mod tests {
       "id": "s",
       "projectId": "project",
       "name": "Brand",
-      "formatVersion": "0.1",
+      "formatVersion": "0.2",
       "paletteId": "brand",
       "canvas": { "width": 100, "height": 100, "background": "#ffffff" },
       "elements": [
@@ -1212,7 +1213,7 @@ mod tests {
           "id": "r1", "sceneId": "s", "order": 0, "kind": "rect",
           "geometry": { "x": 0, "y": 0, "width": 10, "height": 10 },
           "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
-          "fillToken": "accent", "opacity": 1, "visible": true
+          "fill": { "kind": "token", "ref": "accent" }, "opacity": 1, "visible": true
         }
       ]
     }"##;
@@ -1288,7 +1289,12 @@ mod tests {
         assert_eq!(report.code, EXIT_SUCCESS, "{}", report.stderr);
         let text = fs::read_to_string(&out).expect("reads the model");
         let model = vectr_core::render::parse(&text).expect("a render model");
-        assert_eq!(model.nodes[0].paint.fill.as_deref(), Some("#ff0000"));
+        assert_eq!(
+            model.nodes[0].paint.fill,
+            Some(vectr_core::render::Paint::Color {
+                value: "#ff0000".to_string()
+            })
+        );
     }
 
     #[test]

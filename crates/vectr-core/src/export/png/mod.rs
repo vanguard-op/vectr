@@ -223,7 +223,9 @@ mod tests {
     use super::*;
     use crate::composition::Affine;
     use crate::primitives::{Rect, Shape};
-    use crate::render::{Paint, RenderCanvas, RenderMeta, ResolvedFont, ResolvedNode, TextRun};
+    use crate::render::{
+        NodePaint, Paint, RenderCanvas, RenderMeta, ResolvedFont, ResolvedNode, TextRun,
+    };
     use crate::scene::TextAlign;
 
     fn rect(x: f64, y: f64, width: f64, height: f64) -> Shape {
@@ -247,7 +249,7 @@ mod tests {
             geometry: Some(geometry),
             text: None,
             transform: Affine::IDENTITY,
-            paint: Paint::default(),
+            paint: NodePaint::default(),
             opacity: 1.0,
             visible: true,
         }
@@ -270,7 +272,9 @@ mod tests {
     /// A model with a red rectangle covering the left half of the canvas.
     fn half_red() -> RenderModel {
         let mut shape = node("e1", rect(0.0, 0.0, 50.0, 50.0));
-        shape.paint.fill = Some("#ff0000".to_string());
+        shape.paint.fill = Some(Paint::Color {
+            value: "#ff0000".to_string(),
+        });
         model(vec![shape])
     }
 
@@ -423,8 +427,10 @@ mod tests {
                 width: None,
             }),
             transform: Affine::translate(5.0, 45.0),
-            paint: Paint {
-                fill: Some("#000000".to_string()),
+            paint: NodePaint {
+                fill: Some(Paint::Color {
+                    value: "#000000".to_string(),
+                }),
                 stroke: None,
             },
             opacity: 1.0,

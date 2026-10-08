@@ -13,7 +13,7 @@ use vectr_core::{FontAsset, StyleContext};
 #[test]
 fn compiling_the_same_scene_twice_yields_an_identical_model() {
     let mut card = rect("card", 0, 10.0, 20.0, 30.0, 40.0);
-    card["fillToken"] = json!("accent");
+    card["fill"] = token_paint("accent");
     let document = scene_with(
         vec![
             group("mark", 0, Some("Mark")),
@@ -31,6 +31,7 @@ fn compiling_the_same_scene_twice_yields_an_identical_model() {
     let style = StyleContext {
         palette: Some(&brand),
         strokes: &[],
+        gradients: &[],
         fonts: &[],
     };
 
@@ -117,6 +118,7 @@ fn a_text_element_carries_its_string_resolved_font_and_layout() {
     let style = StyleContext {
         palette: None,
         strokes: &[],
+        gradients: &[],
         fonts: &fonts,
     };
 
@@ -156,13 +158,14 @@ fn an_unsupported_feature_is_refused_by_name() {
 #[test]
 fn the_render_model_round_trips_through_its_json_representation() {
     let mut card = rect("card", 0, 1.0, 2.0, 30.0, 40.0);
-    card["fillToken"] = json!("accent");
+    card["fill"] = token_paint("accent");
     let document = scene_with(vec![card], None, Some("brand"));
     let brand =
         vectr_core::parse_palette(&palette("brand", &[("accent", "#ff0000")])).expect("a palette");
     let style = StyleContext {
         palette: Some(&brand),
         strokes: &[],
+        gradients: &[],
         fonts: &[],
     };
     let model = compile_with(&document, &style).expect("compiles");
@@ -170,5 +173,8 @@ fn the_render_model_round_trips_through_its_json_representation() {
     let text = model.to_json_string().expect("serializable");
     let reparsed = vectr_core::render::parse(&text).expect("deserializable");
     assert_eq!(model, reparsed);
-    assert!(text.contains("\"fill\":\"#ff0000\""), "{text}");
+    assert!(
+        text.contains("\"kind\":\"color\",\"value\":\"#ff0000\""),
+        "{text}"
+    );
 }
