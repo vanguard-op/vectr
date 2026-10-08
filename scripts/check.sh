@@ -21,3 +21,10 @@ cargo build --workspace --locked
 
 echo "==> cargo test --workspace --locked"
 cargo test --workspace --locked
+
+# The phase-gate acceptance suite is its own crate outside the product
+# workspace (`members = ["crates/*"]`), so the workspace test run above does
+# not reach it. It is part of the gate: a failure here fails the build
+# (NFR-001, NFR-011).
+echo "==> cargo test --manifest-path tests/acceptance/Cargo.toml --locked"
+cargo test --manifest-path tests/acceptance/Cargo.toml --locked
