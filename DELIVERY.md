@@ -1,7 +1,7 @@
 # Delivery
 
 ## Source of truth
-docs/Vectr/ — git submodule, remote https://github.com/vanguard-op/vectr-docs.git; working tree at 9fc7d1f (validated alpha colour model, single-layer shading scheduled as Phase 6), the recorded pointer advancing with the Phase 3 work. The docs are authoritative for what to build; this file tracks state only and never restates the spec.
+docs/Vectr/ — git submodule, remote https://github.com/vanguard-op/vectr-docs.git; working tree at bfb1d01 (full-complexity scope, validated alpha colour model, single-layer shading scheduled as Phase 6), the recorded pointer advancing with the build. The docs are authoritative for what to build; this file tracks state only and never restates the spec.
 
 ## Team & file ownership
 | Member | Owns |
@@ -77,6 +77,8 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | T-048 | FEAT-020 | ai-engineer | Done | C-004, C-005 |
 | T-049 | FEAT-003, FEAT-011 | qa-engineer | Done | C-002, C-003 |
 | T-050 | FEAT-003 | backend-engineer | Done | C-002, C-003 |
+| T-051 | FEAT-003, FEAT-011, FEAT-020 | qa-engineer | Done | C-001, C-002, C-003, C-004, C-005 |
+| T-052 | FEAT-011 | backend-engineer | In Progress | C-002, C-003 |
 
 ## Decisions log
 | # | Decision | Rationale | By |
