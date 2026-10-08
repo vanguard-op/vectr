@@ -15,3 +15,8 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
+# The engine the CLI drives: parse, validate, compile and export (C-002).
+vectr-core = { path = "../vectr-core" }
+
+# Structured output for `validate --json` (C-004).
+serde_json = { workspace = true }
