@@ -81,7 +81,8 @@ use crate::composition::{
 use crate::constraints::{self, Point, Resolution};
 use crate::fonts::FALLBACK_FONT_ID;
 use crate::primitives::{
-    self, parse as parse_path, Line, Path as PathGeometry, Polygon, Segment, Shape, SubPath,
+    self, parse as parse_path, Ellipse, Line, Path as PathGeometry, Polygon, Rect, Segment, Shape,
+    SubPath,
 };
 use crate::render::{
     NodeGroup, NodePaint, NodeStroke, RenderCanvas, RenderMeta, RenderModel, ResolvedFont,
@@ -613,7 +614,10 @@ impl Compiler<'_, '_> {
                 if failed {
                     return None;
                 }
-                self.bake(shape?, local)
+                // A primitive used as a composition operand is placed by the
+                // same geometry as one drawn directly, so it snaps the same way.
+                let shape = self.snap_geometry(shape?);
+                self.bake(shape, local)
             }
             ElementKind::Group => {
                 let shapes = self.lower_children(index);
@@ -857,88 +861,97 @@ impl Compiler<'_, '_> {
 
     /// Plans a grid recipe's alignment for every element (FEAT-009, FEAT-010).
     ///
-    /// The geometric recipe aligns elements to its axis-aligned grid; the
-    /// isometric recipe aligns them to the isometric grid. Either way the plan
-    /// is computed once, before emission, so a composition operand lowered
-    /// several times snaps identically and is reported once.
+    /// The geometric recipe aligns elements to its axis-aligned grid and the
+    /// isometric recipe onto the lattice its two 30° axes span. An element is
+    /// placed by its transform translation and, when it is a rect, an ellipse, a
+    /// polygon or a line, also by the geometry it carries (schema.md,
+    /// "Element"); both placements snap, so the drawn shape lands on the grid.
+    /// The plan is computed once, before emission, so a composition operand
+    /// lowered several times snaps identically and is reported once.
     fn plan_snap(&mut self) {
         let Some(recipe) = self.style.recipe else {
             return;
         };
-        if recipe.snaps_to_grid() {
-            self.plan_geometric_snap(recipe);
+        let (code, grid, clause) = if recipe.snaps_to_grid() {
+            (
+                style::GRID_SNAPPED,
+                "geometric",
+                "to the nearest grid intersection",
+            )
         } else if recipe.snaps_to_isometric_grid() {
-            self.plan_isometric_snap(recipe);
-        }
-    }
+            (
+                style::ISOMETRIC_OFF_AXIS,
+                "isometric",
+                "onto the isometric axes",
+            )
+        } else {
+            return;
+        };
 
-    /// Plans the geometric recipe's grid alignment for every element (FEAT-009).
-    ///
-    /// The recipe aligns elements to its grid: each element's resolved position
-    /// snaps to the nearest grid intersection, and an element that sat off the
-    /// grid is reported.
-    fn plan_geometric_snap(&mut self, recipe: &StyleRecipe) {
-        let plan: Vec<(String, [f64; 2], bool)> = self
+        let plan: Vec<(String, [f64; 2], bool, bool)> = self
             .scene
             .elements
             .iter()
-            .map(|element| {
+            .enumerate()
+            .map(|(index, element)| {
                 let declared = [element.transform.translate_x, element.transform.translate_y];
                 let current = self.resolution.translation(&element.id).unwrap_or(declared);
-                let (x, moved_x) = recipe.snap_coordinate(current[0]);
-                let (y, moved_y) = recipe.snap_coordinate(current[1]);
-                (element.id.clone(), [x, y], moved_x || moved_y)
+                let (translation, transform_moved) = recipe.snap_point(current);
+                let geometry_moved = self.geometry_off_grid(index, recipe);
+                (
+                    element.id.clone(),
+                    translation,
+                    transform_moved,
+                    geometry_moved,
+                )
             })
             .collect();
 
-        for (id, translation, moved) in plan {
-            if moved {
+        for (id, translation, transform_moved, geometry_moved) in plan {
+            if transform_moved || geometry_moved {
+                // The finding names the placement that sat off the grid: the
+                // geometry an element is placed by, or its transform.
+                let path = if geometry_moved {
+                    "/geometry"
+                } else {
+                    "/transform"
+                };
                 self.diagnostics.push(
                     Diagnostic::warning(
-                        style::GRID_SNAPPED,
-                        format!(
-                            "element `{id}` sits off the geometric grid; it was snapped to the nearest grid intersection"
-                        ),
+                        code.clone(),
+                        format!("element `{id}` sits off the {grid} grid; it was snapped {clause}"),
                     )
-                    .with_location(Location::element_at(id.clone(), "/transform")),
+                    .with_location(Location::element_at(id.clone(), path)),
                 );
             }
             self.snapped.insert(id, translation);
         }
     }
 
-    /// Plans the isometric recipe's grid alignment for every element (FEAT-010).
+    /// Whether an element is placed by geometry that sits off the recipe's grid
+    /// (FEAT-009, FEAT-010).
     ///
-    /// The recipe aligns elements to the isometric grid: each element's resolved
-    /// position snaps onto the axes, and an element that sat off the grid is
-    /// reported. Only the position moves — geometry is not re-projected, so a
-    /// non-isometric shape stays a billboard.
-    fn plan_isometric_snap(&mut self, recipe: &StyleRecipe) {
-        let plan: Vec<(String, [f64; 2], bool)> = self
-            .scene
-            .elements
-            .iter()
-            .map(|element| {
-                let declared = [element.transform.translate_x, element.transform.translate_y];
-                let current = self.resolution.translation(&element.id).unwrap_or(declared);
-                let (snapped, moved) = recipe.snap_isometric(current);
-                (element.id.clone(), snapped, moved)
-            })
-            .collect();
-
-        for (id, translation, moved) in plan {
-            if moved {
-                self.diagnostics.push(
-                    Diagnostic::warning(
-                        style::ISOMETRIC_OFF_AXIS,
-                        format!(
-                            "element `{id}` sits off the isometric grid; it was snapped onto the isometric axes"
-                        ),
-                    )
-                    .with_location(Location::element_at(id.clone(), "/transform")),
-                );
-            }
-            self.snapped.insert(id, translation);
+    /// A rect and an ellipse are placed by the origin of their bounding box and
+    /// a polygon and a line by their point list (schema.md, "Element"); these
+    /// are the placements [`Compiler::snap_geometry`] snaps. Every other kind is
+    /// placed by its transform, which the transform snap accounts for on its
+    /// own.
+    fn geometry_off_grid(&self, index: usize, recipe: &StyleRecipe) -> bool {
+        let element = &self.scene.elements[index];
+        let moved = |point: [f64; 2]| recipe.snap_point(point).1;
+        match element.kind {
+            ElementKind::Rect | ElementKind::Ellipse => moved([
+                element.geometry.x.unwrap_or(0.0),
+                element.geometry.y.unwrap_or(0.0),
+            ]),
+            ElementKind::Polygon | ElementKind::Line => element
+                .geometry
+                .points
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .any(|point| moved(*point)),
+            _ => false,
         }
     }
 
@@ -983,31 +996,48 @@ impl Compiler<'_, '_> {
         });
     }
 
-    /// Snaps constructed geometry to the scene's grid (FEAT-009).
+    /// Snaps constructed geometry onto the scene's grid (FEAT-009, FEAT-010).
     ///
-    /// Under the geometric recipe a polygon's vertices snap to grid
-    /// intersections, so a set of polygons is constructed on shared grid points
-    /// and their edges line up. Every other shape and every other recipe is
-    /// left untouched.
+    /// An element that is placed by its geometry — a rect or an ellipse by the
+    /// origin of its bounding box, a polygon or a line by its point list
+    /// (schema.md, "Element") — has that placement snapped, so a set of shapes is
+    /// constructed on shared grid points and their edges line up. The geometric
+    /// recipe snaps to its axis-aligned grid and the isometric recipe onto the
+    /// lattice its 30° axes span. A path (a freeform shape) and every shape
+    /// under another recipe keep their exact geometry.
     fn snap_geometry(&self, geometry: Shape) -> Shape {
         let Some(recipe) = self.style.recipe else {
             return geometry;
         };
-        if !recipe.snaps_to_grid() {
+        if !recipe.snaps_to_grid() && !recipe.snaps_to_isometric_grid() {
             return geometry;
         }
+        let snap = |point: [f64; 2]| recipe.snap_point(point).0;
         match geometry {
+            Shape::Rect(rect) => {
+                let origin = snap([rect.x, rect.y]);
+                Shape::Rect(Rect {
+                    x: origin[0],
+                    y: origin[1],
+                    ..rect
+                })
+            }
+            Shape::Ellipse(ellipse) => {
+                // The ellipse is carried as its centre, but it is placed by the
+                // origin of its bounding box, so snap that origin and move the
+                // centre with it.
+                let origin = snap([ellipse.cx - ellipse.rx, ellipse.cy - ellipse.ry]);
+                Shape::Ellipse(Ellipse {
+                    cx: origin[0] + ellipse.rx,
+                    cy: origin[1] + ellipse.ry,
+                    ..ellipse
+                })
+            }
             Shape::Polygon(polygon) => Shape::Polygon(Polygon {
-                points: polygon
-                    .points
-                    .iter()
-                    .map(|point| {
-                        [
-                            recipe.snap_coordinate(point[0]).0,
-                            recipe.snap_coordinate(point[1]).0,
-                        ]
-                    })
-                    .collect(),
+                points: polygon.points.iter().map(|point| snap(*point)).collect(),
+            }),
+            Shape::Line(line) => Shape::Line(Line {
+                points: line.points.iter().map(|point| snap(*point)).collect(),
             }),
             other => other,
         }
@@ -2879,6 +2909,119 @@ mod tests {
                 "polygon `{id}` is constructed on the grid"
             );
         }
+    }
+
+    #[test]
+    fn a_geometric_recipe_snaps_an_element_placed_by_its_geometry_origin() {
+        // A rect is placed by the x and y origin of its bounding box
+        // (schema.md, "Element"), so the geometric grid snaps that origin even
+        // when the transform carries no translation.
+        let card = base(
+            "card",
+            0,
+            "rect",
+            json!({ "x": 13.0, "y": 27.0, "width": 10.0, "height": 10.0 }),
+        );
+        let scene = scene_of(json!([card]), None);
+        let recipe = geometric_recipe(10.0);
+        let style = StyleContext {
+            palette: None,
+            strokes: &[],
+            gradients: &[],
+            fonts: &[],
+            recipe: Some(&recipe),
+        };
+
+        let model = compile_with_style(&scene, &style).expect("compiles");
+        let node = model.node("card").expect("the node");
+        let Some(Shape::Rect(rect)) = &node.geometry else {
+            panic!("a rect node");
+        };
+        let origin = node.transform.apply([rect.x, rect.y]);
+        assert_eq!(
+            origin,
+            [10.0, 30.0],
+            "the placed origin snaps to the nearest grid intersection"
+        );
+        let warning = model
+            .diagnostics
+            .warnings()
+            .find(|warning| warning.code == GRID_SNAPPED)
+            .expect("an off-grid placement is reported");
+        assert!(warning.message.contains("card"), "{}", warning.message);
+        assert_eq!(
+            warning
+                .location
+                .as_ref()
+                .and_then(|location| location.json_path.as_deref()),
+            Some("/geometry"),
+            "the finding names the placement that sat off the grid"
+        );
+    }
+
+    #[test]
+    fn a_geometric_recipe_snaps_a_line_by_its_point_list() {
+        let wire = base(
+            "wire",
+            0,
+            "line",
+            json!({ "points": [[3.0, 4.0], [23.0, 24.0]] }),
+        );
+        let scene = scene_of(json!([wire]), None);
+        let recipe = geometric_recipe(10.0);
+        let style = StyleContext {
+            palette: None,
+            strokes: &[],
+            gradients: &[],
+            fonts: &[],
+            recipe: Some(&recipe),
+        };
+
+        let model = compile_with_style(&scene, &style).expect("compiles");
+        let Some(Shape::Line(line)) = &model.node("wire").expect("the node").geometry else {
+            panic!("a line node");
+        };
+        assert_eq!(
+            line.points,
+            vec![[0.0, 0.0], [20.0, 20.0]],
+            "a line's endpoints are constructed on the grid"
+        );
+    }
+
+    #[test]
+    fn an_isometric_recipe_aligns_an_element_placed_by_its_geometry_origin() {
+        // An ellipse is placed by the origin of its bounding box
+        // (schema.md, "Element"), so the isometric grid aligns that origin.
+        let disc = base(
+            "disc",
+            0,
+            "ellipse",
+            json!({ "x": 1.0, "y": 1.0, "width": 10.0, "height": 10.0 }),
+        );
+        let scene = scene_of(json!([disc]), None);
+        let recipe = isometric_recipe(10.0);
+
+        let model = compile_with_style(&scene, &isometric_style(&recipe)).expect("compiles");
+        let node = model.node("disc").expect("the node");
+        let Some(Shape::Ellipse(ellipse)) = &node.geometry else {
+            panic!("an ellipse node");
+        };
+        let origin = node
+            .transform
+            .apply([ellipse.cx - ellipse.rx, ellipse.cy - ellipse.ry]);
+        assert!(
+            origin[0].abs() < 1e-9 && origin[1].abs() < 1e-9,
+            "the placed origin snaps onto the isometric axes: {origin:?}"
+        );
+        assert!(
+            model
+                .diagnostics
+                .warnings()
+                .any(|warning| warning.code == ISOMETRIC_OFF_AXIS
+                    && warning.message.contains("disc")),
+            "an off-axis placement is reported: {:?}",
+            model.diagnostics
+        );
     }
 
     #[test]

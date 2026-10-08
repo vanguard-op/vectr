@@ -269,6 +269,28 @@ impl StyleRecipe {
         (snapped, moved)
     }
 
+    /// Snaps a placement point onto whichever grid the recipe constructs on
+    /// (FEAT-009, FEAT-010).
+    ///
+    /// The geometric recipe snaps each coordinate to its axis-aligned grid; the
+    /// isometric recipe snaps the point onto the lattice its two 30° axes span.
+    /// Every other look, a gridless recipe, and a point already on the grid come
+    /// back untouched with `moved` false. This is the grid a shape's own
+    /// placement snaps to — a rect or an ellipse's bounding-box origin, a
+    /// polygon or line's vertices (schema.md, "Element") — as distinct from the
+    /// element's transform translation.
+    pub fn snap_point(&self, point: [f64; 2]) -> ([f64; 2], bool) {
+        if self.snaps_to_grid() {
+            let (x, moved_x) = self.snap_coordinate(point[0]);
+            let (y, moved_y) = self.snap_coordinate(point[1]);
+            ([x, y], moved_x || moved_y)
+        } else if self.snaps_to_isometric_grid() {
+            self.snap_isometric(point)
+        } else {
+            (point, false)
+        }
+    }
+
     /// The isometric depth of a point: larger values are nearer the viewer
     /// (FEAT-010).
     ///
@@ -638,6 +660,30 @@ mod tests {
         assert!(!flat.is_geometric());
         assert!(!flat.snaps_to_grid());
         assert_eq!(flat.snap_coordinate(13.0), (13.0, false));
+    }
+
+    #[test]
+    fn a_placement_point_snaps_through_the_recipe_that_owns_the_grid() {
+        // The geometric look snaps each coordinate to its axis-aligned grid.
+        assert_eq!(
+            geometric(10.0, None).snap_point([13.0, -4.0]),
+            ([10.0, 0.0], true)
+        );
+        assert_eq!(
+            geometric(10.0, None).snap_point([20.0, 30.0]),
+            ([20.0, 30.0], false)
+        );
+
+        // The isometric look snaps the point onto its 30° lattice.
+        let (snapped, moved) = isometric(10.0, None).snap_point([1.0, 1.0]);
+        assert!(moved);
+        assert!(close(snapped, [0.0, 0.0]));
+
+        // Another look leaves the point where it is.
+        let flat =
+            parse(r#"{"id":"r","projectId":"p","name":"flat","parameters":{"gridSize":10}}"#)
+                .unwrap();
+        assert_eq!(flat.snap_point([3.0, 4.0]), ([3.0, 4.0], false));
     }
 
     #[test]
