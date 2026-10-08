@@ -1,0 +1,41 @@
+{
+  "skill_name": "vectr",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "make me a logo for a habit tracking app called Habit: a rounded badge with a check mark and the word Habit, in a purple",
+      "expected_output": "A Vectr scene document at formatVersion 0.2 with a palette token for the purple, a rounded rect badge, an ellipse or path check, and a text element. The skill validates it, compiles it, renders a PNG preview, inspects it, and exports SVG and PNG with no further instruction.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "I only have the scene schema, no examples. Give me a minimal valid Vectr scene for a red circle on a white canvas.",
+      "expected_output": "A scene conforming to the published schema: required scene fields, an ellipse element with a complete transform object and a geometry object, a canvas background colour, and a fill that resolves through a palette token. It validates against the contract.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "Here is my rendered logo, but the wordmark is floating far above the badge and looks wrong. Fix it.",
+      "expected_output": "The agent inspects the rendered PNG, identifies that a text element is anchored by x/y at the baseline of its first line, corrects the text geometry (or align/lineHeight), re-renders, and confirms the label now sits on the badge.",
+      "files": []
+    },
+    {
+      "id": 4,
+      "prompt": "Build this scene for me: a rect with opacity 3 in a 0.2 scene.",
+      "expected_output": "The skill authors the scene, runs validate, reads the E_SCHEMA diagnostic at /elements/<n>/opacity, corrects opacity to a value in 0..1, and re-validates successfully. If it cannot be corrected in one retry, it reports the diagnostics and produces no output.",
+      "files": []
+    },
+    {
+      "id": 5,
+      "prompt": "make an icon for my app",
+      "expected_output": "The skill picks the documented defaults (512x512 canvas, transparent background, a simple mark, the project's default recipe, the bundled sans, a named palette), states them briefly, and authors a valid scene rather than stalling to ask what the icon should show.",
+      "files": []
+    },
+    {
+      "id": 6,
+      "prompt": "Author a scene with the Vectr skill, but the installed vectr is version 0.2.0 and the skill targets 0.1.0.",
+      "expected_output": "Before authoring, the skill compares the installed tool version (vectr --version or MCP serverInfo.version) with the skill version, reports the mismatch naming both versions, and does not silently author against the wrong build.",
+      "files": []
+    }
+  ]
+}
