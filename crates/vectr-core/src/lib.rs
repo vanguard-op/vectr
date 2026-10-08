@@ -19,6 +19,7 @@ pub mod constraints;
 /// Declared inline so the SVG subtree is addressed by its own path
 /// (`export/svg/`); later exporters add sibling modules here.
 pub mod export {
+    pub mod png;
     pub mod svg;
 }
 
@@ -30,6 +31,7 @@ pub mod style;
 pub use compiler::{compile, compile_with_style, StyleContext};
 pub use composition::{flatten_shape, is_composition, projection_for, resolve_transform, Affine};
 pub use constraints::{resolve as resolve_constraints, Attachment, Frame, Placement, Resolution};
+pub use export::png::{export_png, export_png_reporting, PngExport, RasterOptions};
 pub use export::svg::{export_svg, export_svg_reporting, SvgExport, SvgOptions};
 pub use primitives::{Ellipse, Line, Polygon, Rect, Shape};
 pub use render::{NodeStroke, Paint, RenderCanvas, RenderMeta, RenderModel, ResolvedNode};

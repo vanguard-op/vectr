@@ -20,3 +20,21 @@ serde_json = { workspace = true }
 # Boolean composition of filled regions for the composition primitives
 # (D-007, FEAT-003).
 i_overlay = { workspace = true }
+
+# The rasterizer behind PNG export (D-007, FEAT-013). It is optional so a build
+# without it still validates, compiles and exports SVG, and reports PNG's
+# missing capability rather than failing silently (NFR-004).
+#
+# Declared with an explicit version rather than `workspace = true`: cargo
+# ignores a member's `default-features = false` when inheriting a workspace
+# dependency, and the rasterizer must stay pure-Rust and free of native system
+# dependencies (D-007), so its text, system-font, SVGZ and raster-image
+# defaults stay off. The workspace `resvg` entry should carry
+# `default-features = false` so this can inherit again.
+resvg = { version = "0.48.1", optional = true, default-features = false }
+
+[features]
+default = ["rasterizer"]
+# PNG export (FEAT-013); disabling it makes `export_png` report the missing
+# rasterizer.
+rasterizer = ["dep:resvg"]
