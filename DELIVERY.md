@@ -1,7 +1,7 @@
 # Delivery
 
 ## Source of truth
-docs/Vectr/ — git submodule, pinned at 7d203fc, remote https://github.com/vanguard-op/vectr-docs.git. The docs are authoritative for what to build; this file tracks state only and never restates the spec.
+docs/Vectr/ — git submodule, pinned at 974979a, remote https://github.com/vanguard-op/vectr-docs.git. The docs are authoritative for what to build; this file tracks state only and never restates the spec.
 
 ## Team & file ownership
 | Member | Owns |
@@ -75,7 +75,7 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | T-005 | FEAT-005 | backend-engineer | Done | C-001 |
 | T-006 | FEAT-004 | backend-engineer | Done | C-003 |
 | T-007 | FEAT-011 | backend-engineer | Done | C-002, C-003 |
-| T-008 | FEAT-012 | backend-engineer | Ready | C-002 |
+| T-008 | FEAT-012 | backend-engineer | In Progress | C-002 |
 | T-009 | FEAT-013 | backend-engineer | Ready | C-002 |
 | T-010 | FEAT-024 | backend-engineer | Backlog | C-002 |
 | T-011 | FEAT-016 | backend-engineer | Backlog | C-004 |
@@ -84,7 +84,8 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | T-014 | FEAT-002, FEAT-003 | backend-engineer | Done | C-001, C-003 |
 | T-015 | — (foundation) | backend-engineer | Done | — |
 | T-016 | FEAT-011 | backend-engineer | Done | C-003 |
-| T-017 | FEAT-011 | backend-engineer | In Progress | C-001, C-002, C-003 |
+| T-017 | FEAT-011 | backend-engineer | Done | C-001, C-002, C-003 |
+| T-018 | FEAT-011 | backend-engineer | Ready | C-003 |
 
 ## Decisions log
 | # | Decision | Rationale | By |
@@ -104,6 +105,7 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | D-013 | Style assets reach the compiler through a caller-supplied context: `compile(&Scene)` stays the no-style entry point and `compile_with_style(&Scene, &StyleContext)` resolves the palette and stroke profiles. | schema.md models Palette, StrokeProfile and StyleRecipe as separate documents referenced by id, so the library cannot load them itself without filesystem access; a caller-supplied context keeps the library deterministic and free of file or network access (NFR-010, NFR-021). | lead |
 | D-014 | The render model is serializable to camelCase JSON, and `vectr compile --out` writes it. | C-004 reserves `compile --out`, user-flow's compile stage yields a render model, and the MCP compile tool returns it; the model must cross the process/tool boundary as data. | lead |
 | D-015 | A stroke's colour is a palette token the element names (`strokeToken`), parallel to fill; `StrokeProfile` carries geometry only, and a stroke needs both a profile and a colour token. | The docs settled no stroke-colour source, so the user directed the gap to product-shaper; the spec now keeps every colour in the palette (FEAT-007) with no silent fallback. | user |
+| D-016 | The render model retains element names and group nesting: each node carries its ancestor group chain, and the SVG exporter emits nested named groups. | FEAT-011 and FEAT-012 require named-group preservation in Phase 1; the flat paint-order node list keeps the seam simple while carrying the structure the exporter needs. FEAT-026 is the accessible-metadata layer above it. | lead |
 
 ## Definition of Done
 - Every acceptance criterion in the task's FEAT file is met, including its edge cases and failure states.
