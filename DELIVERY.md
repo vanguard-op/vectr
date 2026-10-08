@@ -72,8 +72,8 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | T-032 | FEAT-027 | backend-engineer | Done | C-001, C-002, C-003 |
 | T-028 | FEAT-007 | backend-engineer | Done | C-002, C-003 |
 | T-029 | FEAT-008 | backend-engineer | Done | C-002, C-003 |
-| T-030 | FEAT-009 | backend-engineer | In Progress | C-002, C-003 |
-| T-031 | FEAT-010 | backend-engineer | Backlog | C-002, C-003 |
+| T-030 | FEAT-009 | backend-engineer | Done | C-002, C-003 |
+| T-031 | FEAT-010 | backend-engineer | In Progress | C-002, C-003 |
 | T-034 | FEAT-007, FEAT-008, FEAT-009, FEAT-010 | backend-engineer | Backlog | C-002, C-004 |
 
 ## Decisions log
@@ -104,6 +104,7 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | D-023 | The project layout gains a `gradients/` directory of Gradient documents, scaffolded by `vectr init`. | Gradients are project documents referenced by paint, parallel to palettes and strokes; the docs name no on-disk layout. Extends D-009. | lead |
 | D-024 | In a line-art scene, a stroke profile whose width is 0 takes the recipe's `strokeWeight`; a positive profile width is the explicit weight the recipe honors. | FEAT-008 requires the recipe to fix a consistent weight while honoring explicitly varied weights, but the scene language has no separate per-element weight field and a profile's width is required. Width 0 is the only channel that reads as "no explicit weight". | lead |
 | D-025 | The minimum renderable stroke weight is 0.05 scene units; a line-art stroke below it is clamped and warned. | FEAT-008 requires a minimum renderable unit but the docs name no figure. | lead |
+| D-026 | The minimum usable grid spacing is 0.05 scene units; a geometric recipe with a finer grid is reported as a performance warning and the grid is not applied. | FEAT-009 requires a performance warning for a grid finer than the renderable resolution but the docs name no figure; mirrors D-025. | lead |
 
 ## Definition of Done
 - Every acceptance criterion in the task's FEAT file is met, including its edge cases and failure states.
