@@ -16,7 +16,10 @@ workspace = true
 
 [dependencies]
 # The engine the CLI drives: parse, validate, compile and export (C-002).
-vectr-core = { path = "../vectr-core" }
+# The explicit version keeps the path dependency from registering as a `*`
+# wildcard in the dependency graph (NFR-020); it must track vectr-core's
+# package version in the workspace manifest.
+vectr-core = { version = "0.1.0", path = "../vectr-core" }
 
 # Structured output for `validate --json` (C-004).
 serde_json = { workspace = true }
