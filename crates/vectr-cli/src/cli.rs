@@ -11,21 +11,28 @@
 //! to exit with; only [`main`](crate::main) touches the process. Diagnostics are
 //! the engine's structured findings, so a failure names its code, message and
 //! location (NFR-011).
+//!
+//! `validate`, `compile` and `export` load the assets the scene's project
+//! provides — its palette, stroke profiles, and fonts — and compile against
+//! them, so a scene's style and font references resolve to concrete values
+//! before anything is written (FEAT-005, FEAT-024).
 
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use vectr_core::compiler::FONT;
 use vectr_core::export::png as png_export;
 use vectr_core::export::svg as svg_export;
 use vectr_core::{
-    compile as compile_scene_model, export_png_reporting, export_svg_reporting,
-    parse as parse_scene_source, validate as validate_scene_model, Diagnostic, Diagnostics,
+    compile_with_style, export_png_reporting, export_svg_reporting, parse as parse_scene_source,
+    validate as validate_scene_model, validate_palette_usage, Diagnostic, Diagnostics,
     RasterOptions, SvgOptions,
 };
 
 use crate::init;
 use crate::output::write_atomic;
+use crate::project::ProjectAssets;
 
 /// The command succeeded.
 pub const EXIT_SUCCESS: i32 = 0;
@@ -417,37 +424,34 @@ fn validate_scene(scene: &Path, json: bool) -> Report {
         Err(report) => return report,
     };
 
-    match parse_scene_source(&source) {
-        Ok(parsed) => {
-            // Parsing keeps a valid scene but drops its warnings; re-validate to
-            // report them, which is the whole of `validate`'s success output.
-            let findings = validate_scene_model(&parsed);
-            if json {
-                Report {
-                    code: EXIT_SUCCESS,
-                    stdout: json_diagnostics(&findings),
-                    stderr: String::new(),
-                }
-            } else {
-                Report {
-                    code: EXIT_SUCCESS,
-                    stdout: String::new(),
-                    stderr: diagnostics_text(&findings),
-                }
-            }
-        }
+    let parsed = match parse_scene_source(&source) {
+        Ok(parsed) => parsed,
+        Err(diagnostics) => return report_findings(EXIT_INVALID_SCENE, diagnostics, json),
+    };
+
+    let assets = match ProjectAssets::load(scene, &parsed) {
+        Ok(assets) => assets,
         Err(diagnostics) => {
-            if json {
-                Report {
-                    code: EXIT_INVALID_SCENE,
-                    stdout: json_diagnostics(&diagnostics),
-                    stderr: String::new(),
-                }
-            } else {
-                Report::failure(EXIT_INVALID_SCENE, diagnostics_text(&diagnostics))
-            }
+            return report_findings(asset_exit_code(&diagnostics), diagnostics, json)
         }
+    };
+
+    // Validation is the gate a project's references pass: a palette token the
+    // palette no longer defines, a stroke profile, or a font that does not
+    // resolve is an error naming it, so a restyle that broke a scene is caught
+    // before anything is compiled (FEAT-005, FEAT-024).
+    let mut findings = validate_scene_model(&parsed);
+    if let Some(palette) = assets.palette() {
+        findings.extend(validate_palette_usage(&parsed, palette));
     }
+    findings.extend(assets.check_references(&parsed));
+
+    let code = if findings.has_errors() {
+        dependency_exit_code(&findings, EXIT_INVALID_SCENE)
+    } else {
+        EXIT_SUCCESS
+    };
+    report_findings(code, findings, json)
 }
 
 fn compile_scene(scene: &Path, out: Option<&Path>, check: bool) -> Report {
@@ -461,9 +465,32 @@ fn compile_scene(scene: &Path, out: Option<&Path>, check: bool) -> Report {
             return Report::failure(EXIT_INVALID_SCENE, diagnostics_text(&diagnostics))
         }
     };
-    let model = match compile_scene_model(&parsed) {
+    let assets = match ProjectAssets::load(scene, &parsed) {
+        Ok(assets) => assets,
+        Err(diagnostics) => {
+            return Report::failure(
+                asset_exit_code(&diagnostics),
+                diagnostics_text(&diagnostics),
+            )
+        }
+    };
+    let references = assets.check_references(&parsed);
+    if references.has_errors() {
+        return Report::failure(
+            dependency_exit_code(&references, EXIT_COMPILE),
+            diagnostics_text(&references),
+        );
+    }
+
+    let style = assets.style_context();
+    let model = match compile_with_style(&parsed, &style) {
         Ok(model) => model,
-        Err(diagnostics) => return Report::failure(EXIT_COMPILE, diagnostics_text(&diagnostics)),
+        Err(diagnostics) => {
+            return Report::failure(
+                dependency_exit_code(&diagnostics, EXIT_COMPILE),
+                diagnostics_text(&diagnostics),
+            )
+        }
     };
     let warnings = diagnostics_text(&model.diagnostics);
 
@@ -511,9 +538,32 @@ fn export_scene(
             return Report::failure(EXIT_INVALID_SCENE, diagnostics_text(&diagnostics))
         }
     };
-    let model = match compile_scene_model(&parsed) {
+    let assets = match ProjectAssets::load(scene, &parsed) {
+        Ok(assets) => assets,
+        Err(diagnostics) => {
+            return Report::failure(
+                asset_exit_code(&diagnostics),
+                diagnostics_text(&diagnostics),
+            )
+        }
+    };
+    let references = assets.check_references(&parsed);
+    if references.has_errors() {
+        return Report::failure(
+            dependency_exit_code(&references, EXIT_COMPILE),
+            diagnostics_text(&references),
+        );
+    }
+
+    let style = assets.style_context();
+    let model = match compile_with_style(&parsed, &style) {
         Ok(model) => model,
-        Err(diagnostics) => return Report::failure(EXIT_COMPILE, diagnostics_text(&diagnostics)),
+        Err(diagnostics) => {
+            return Report::failure(
+                dependency_exit_code(&diagnostics, EXIT_COMPILE),
+                diagnostics_text(&diagnostics),
+            )
+        }
     };
     let mut warnings = diagnostics_text(&model.diagnostics);
 
@@ -618,6 +668,41 @@ fn export_exit_code(diagnostics: &Diagnostics) -> i32 {
         }
     }
     code
+}
+
+/// Classifies a project-asset loading failure: a missing font is a dependency,
+/// any other unreadable project asset is missing input.
+fn asset_exit_code(diagnostics: &Diagnostics) -> i32 {
+    dependency_exit_code(diagnostics, EXIT_USAGE)
+}
+
+/// Elevates a missing-font error to the dependency exit, keeping the caller's
+/// class for every other finding (C-004).
+fn dependency_exit_code(diagnostics: &Diagnostics, fallback: i32) -> i32 {
+    if diagnostics.errors().any(|error| error.code == FONT) {
+        EXIT_DEPENDENCY
+    } else {
+        fallback
+    }
+}
+
+/// Renders findings for `validate`, to stdout as JSON or to stderr as text.
+fn report_findings(code: i32, findings: Diagnostics, json: bool) -> Report {
+    if json {
+        Report {
+            code,
+            stdout: json_diagnostics(&findings),
+            stderr: String::new(),
+        }
+    } else if code == EXIT_SUCCESS {
+        Report {
+            code,
+            stdout: String::new(),
+            stderr: diagnostics_text(&findings),
+        }
+    } else {
+        Report::failure(code, diagnostics_text(&findings))
+    }
 }
 
 /// Renders findings as newline-terminated text, empty when there are none.
@@ -1095,5 +1180,141 @@ mod tests {
             background: None,
         });
         assert_eq!(report.code, EXIT_USAGE);
+    }
+
+    const PROJECT_TEXT_SCENE: &str = r##"{
+      "id": "s",
+      "projectId": "project",
+      "name": "Text",
+      "formatVersion": "0.1",
+      "canvas": { "width": 200, "height": 100, "background": "#ffffff" },
+      "elements": [
+        {
+          "id": "t1", "sceneId": "s", "order": 0, "kind": "text",
+          "geometry": { "text": "Hi", "fontSize": 32, "x": 10, "y": 60 },
+          "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
+          "opacity": 1, "visible": true
+        }
+      ]
+    }"##;
+
+    const PALETTE: &str = r##"{"id":"brand","projectId":"project","name":"Brand","tokens":[{"name":"accent","value":"#ff0000"}]}"##;
+
+    const PALETTE_SCENE: &str = r##"{
+      "id": "s",
+      "projectId": "project",
+      "name": "Brand",
+      "formatVersion": "0.1",
+      "paletteId": "brand",
+      "canvas": { "width": 100, "height": 100, "background": "#ffffff" },
+      "elements": [
+        {
+          "id": "r1", "sceneId": "s", "order": 0, "kind": "rect",
+          "geometry": { "x": 0, "y": 0, "width": 10, "height": 10 },
+          "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
+          "fillToken": "accent", "opacity": 1, "visible": true
+        }
+      ]
+    }"##;
+
+    /// Writes a file, creating the directories its path names.
+    fn write_at(dir: &TempDir, name: &str, text: &str) -> PathBuf {
+        let path = dir.path().join(name);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("creates the parent");
+        }
+        fs::write(&path, text).expect("writes the file");
+        path
+    }
+
+    #[test]
+    fn a_project_scene_exports_text_as_outlines() {
+        let dir = TempDir::new("project-text");
+        write_at(&dir, "vectr.project.json", "{}");
+        let scene = write_at(&dir, "scenes/logo.json", PROJECT_TEXT_SCENE);
+        let out = dir.path().join("logo.svg");
+
+        let report = run(Command::Export {
+            scene,
+            format: Format::Svg,
+            out: Some(out.clone()),
+            width: None,
+            height: None,
+            density: None,
+            background: None,
+        });
+        assert_eq!(report.code, EXIT_SUCCESS, "{}", report.stderr);
+        let svg = fs::read_to_string(&out).expect("reads the svg");
+        assert!(svg.contains("<desc>Hi</desc>"), "{svg}");
+        assert!(svg.contains("<path"), "{svg}");
+        assert!(
+            !svg.contains("<text"),
+            "glyphs are outlined, not left font-dependent (FEAT-024): {svg}"
+        );
+    }
+
+    #[test]
+    fn a_missing_font_exits_four() {
+        let dir = TempDir::new("project-missing-font");
+        write_at(&dir, "vectr.project.json", "{}");
+        let scene_text = PROJECT_TEXT_SCENE.replace(
+            r##""kind": "text","##,
+            r##""kind": "text", "fontId": "absent","##,
+        );
+        let scene = write_at(&dir, "scenes/logo.json", &scene_text);
+
+        let report = run(Command::Compile {
+            scene,
+            out: None,
+            check: true,
+        });
+        assert_eq!(report.code, EXIT_DEPENDENCY);
+        assert!(report.stderr.contains("absent"), "{}", report.stderr);
+    }
+
+    #[test]
+    fn a_project_palette_resolves_a_fill_token() {
+        let dir = TempDir::new("project-palette");
+        write_at(&dir, "vectr.project.json", "{}");
+        write_at(&dir, "palettes/brand.json", PALETTE);
+        let scene = write_at(&dir, "scenes/brand.json", PALETTE_SCENE);
+        let out = dir.path().join("brand.json");
+
+        let report = run(Command::Compile {
+            scene,
+            out: Some(out.clone()),
+            check: false,
+        });
+        assert_eq!(report.code, EXIT_SUCCESS, "{}", report.stderr);
+        let text = fs::read_to_string(&out).expect("reads the model");
+        let model = vectr_core::render::parse(&text).expect("a render model");
+        assert_eq!(model.nodes[0].paint.fill.as_deref(), Some("#ff0000"));
+    }
+
+    #[test]
+    fn validate_reports_an_undefined_palette_token() {
+        let dir = TempDir::new("project-undefined-token");
+        write_at(&dir, "vectr.project.json", "{}");
+        write_at(
+            &dir,
+            "palettes/brand.json",
+            r##"{"id":"brand","projectId":"project","name":"Brand","tokens":[{"name":"other","value":"#ff0000"}]}"##,
+        );
+        let scene = write_at(&dir, "scenes/brand.json", PALETTE_SCENE);
+
+        let report = run(Command::Validate { scene, json: false });
+        assert_eq!(report.code, EXIT_INVALID_SCENE);
+        assert!(report.stderr.contains("accent"), "{}", report.stderr);
+    }
+
+    #[test]
+    fn a_missing_palette_is_missing_input() {
+        let dir = TempDir::new("project-missing-palette");
+        write_at(&dir, "vectr.project.json", "{}");
+        let scene = write_at(&dir, "scenes/brand.json", PALETTE_SCENE);
+
+        let report = run(Command::Validate { scene, json: false });
+        assert_eq!(report.code, EXIT_USAGE);
+        assert!(report.stderr.contains("brand"), "{}", report.stderr);
     }
 }

@@ -3,12 +3,14 @@
 //! Parses the command line, runs exactly one command, prints its output, and
 //! exits with the command's status so a pipeline can gate on the result. The
 //! command grammar and the exit codes are the interface the contract freezes;
-//! [`cli`] owns both, [`init`] scaffolds a project, and [`output`] writes files
-//! without leaving a partial result behind (NFR-011).
+//! [`cli`] owns both, [`init`] scaffolds a project, [`project`] loads the
+//! assets a scene's project provides, and [`output`] writes files without
+//! leaving a partial result behind (NFR-011).
 
 mod cli;
 mod init;
 mod output;
+mod project;
 
 #[cfg(test)]
 mod testing;

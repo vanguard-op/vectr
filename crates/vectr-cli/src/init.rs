@@ -2,9 +2,10 @@
 //!
 //! A project is a directory holding `vectr.project.json` and the entity folders
 //! the scene model refers to: `scenes/`, `palettes/`, `strokes/`, `recipes/`,
-//! with `dist/` for output. Initializing writes the project configuration and a
-//! starter scene; running it again reports the project as already initialized
-//! and leaves every file untouched.
+//! with `assets/` for the fonts a scene may name and `dist/` for output.
+//! Initializing writes the project configuration and a starter scene; running
+//! it again reports the project as already initialized and leaves every file
+//! untouched.
 
 use std::fs;
 use std::path::Path;
@@ -25,8 +26,9 @@ const STARTER_SCENE_FILE: &str = "example.json";
 /// The starter scene's stable identifier.
 const STARTER_SCENE_ID: &str = "example";
 
-/// The entity directories a project holds, alongside `dist/` for output.
-const PROJECT_DIRS: [&str; 5] = ["scenes", "palettes", "strokes", "recipes", "dist"];
+/// The entity directories a project holds, alongside `dist/` for output and
+/// `assets/` for the fonts and images a scene may reference.
+const PROJECT_DIRS: [&str; 6] = ["scenes", "palettes", "strokes", "recipes", "assets", "dist"];
 
 /// Creates a project scaffold in `dir`.
 pub fn scaffold(dir: &Path) -> Report {
