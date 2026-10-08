@@ -1,7 +1,7 @@
 # Delivery
 
 ## Source of truth
-docs/Vectr/ — git submodule, pinned at f026ecf, remote https://github.com/vanguard-op/vectr-docs.git. The docs are authoritative for what to build; this file tracks state only and never restates the spec.
+docs/Vectr/ — git submodule, pinned at b428725, remote https://github.com/vanguard-op/vectr-docs.git. The docs are authoritative for what to build; this file tracks state only and never restates the spec.
 
 ## Team & file ownership
 | Member | Owns |
@@ -69,6 +69,10 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 ### Active phase: Phase 2 — Style Core
 | Task | Feature | Owner | Status | Contract |
 |---|---|---|---|---|
+| T-028 | FEAT-007 | backend-engineer | Backlog | C-002, C-003 |
+| T-029 | FEAT-008 | backend-engineer | Backlog | C-002, C-003 |
+| T-030 | FEAT-009 | backend-engineer | Backlog | C-002, C-003 |
+| T-031 | FEAT-010 | backend-engineer | Backlog | C-002, C-003 |
 
 ## Decisions log
 | # | Decision | Rationale | By |
