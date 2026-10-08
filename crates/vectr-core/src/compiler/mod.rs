@@ -55,6 +55,12 @@
 //! points, and an element that sat off the grid is reported. A freeform curve
 //! is kept as an explicit exception and reported, and a grid finer than the
 //! renderable resolution is reported as a performance concern.
+//! The isometric recipe (FEAT-010) aligns elements to the isometric grid — the
+//! lattice the two 30° axes span — snapping an off-axis element onto the axes
+//! and reporting it, then paints the nodes in isometric depth order so a stack
+//! overlaps back to front. Geometry is not re-projected: a non-isometric shape
+//! is allowed as a billboard, and a flat shape becomes an isometric face only
+//! where the scene projects it through a `projection` element (FEAT-003).
 //!
 //! # Fonts
 //!
@@ -259,7 +265,7 @@ pub fn compile_with_style<'s>(
     if compiler.diagnostics.has_errors() {
         return Err(compiler.diagnostics);
     }
-    compiler.plan_geometric_snap();
+    compiler.plan_snap();
     compiler.run();
     compiler.carry_fallback();
 
@@ -375,6 +381,10 @@ impl Compiler<'_, '_> {
         self.children = children;
     }
 
+    /// Emits every root subtree in paint order.
+    ///
+    /// Roots are taken in document order, then, under the isometric recipe,
+    /// reordered back-to-front by depth so a stack overlaps correctly (FEAT-010).
     fn run(&mut self) {
         let mut roots: Vec<usize> = (0..self.scene.elements.len())
             .filter(|&index| self.parent[index].is_none())
@@ -385,6 +395,7 @@ impl Compiler<'_, '_> {
                 .cmp(&self.scene.elements[right].order)
                 .then(left.cmp(&right))
         });
+        self.order_siblings(&mut roots);
         for root in roots {
             if self.limit_hit {
                 break;
@@ -719,7 +730,8 @@ impl Compiler<'_, '_> {
         copy: Option<&CopyTag>,
         groups: &[NodeGroup],
     ) {
-        let children = self.children[index].clone();
+        let mut children = self.children[index].clone();
+        self.order_siblings(&mut children);
         for child in children {
             if self.limit_hit {
                 break;
@@ -797,7 +809,30 @@ impl Compiler<'_, '_> {
 
     /// The element's resolved local transform: its declared transform with the
     /// constraint-resolved translation.
+    ///
+    /// The same values [`Compiler::resolved_local`] computes, reported as a
+    /// located error when the transform is malformed.
     fn local_affine(&mut self, index: usize) -> Option<Affine> {
+        let resolved = self.resolved_local(index);
+        if resolved.is_none() {
+            let id = self.scene.elements[index].id.clone();
+            self.diagnostics.push(
+                Diagnostic::error(
+                    composition::TRANSFORM,
+                    format!("element `{id}` has a malformed transform"),
+                )
+                .with_location(Location::element(id)),
+            );
+        }
+        resolved
+    }
+
+    /// The element's resolved local transform, without recording a diagnostic.
+    ///
+    /// Used where an element's position is only needed to order it — isometric
+    /// depth — so a malformed transform is reported once, by the emission that
+    /// refuses it, not by the ordering that reads past it.
+    fn resolved_local(&self, index: usize) -> Option<Affine> {
         let (id, mut transform, declared) = {
             let element = &self.scene.elements[index];
             (
@@ -816,16 +851,24 @@ impl Compiler<'_, '_> {
         transform.translate_y = translation[1];
         match Affine::from_scene(&transform) {
             Ok(affine) if affine.is_finite() => Some(affine),
-            _ => {
-                self.diagnostics.push(
-                    Diagnostic::error(
-                        composition::TRANSFORM,
-                        format!("element `{id}` has a malformed transform"),
-                    )
-                    .with_location(Location::element(id)),
-                );
-                None
-            }
+            _ => None,
+        }
+    }
+
+    /// Plans a grid recipe's alignment for every element (FEAT-009, FEAT-010).
+    ///
+    /// The geometric recipe aligns elements to its axis-aligned grid; the
+    /// isometric recipe aligns them to the isometric grid. Either way the plan
+    /// is computed once, before emission, so a composition operand lowered
+    /// several times snaps identically and is reported once.
+    fn plan_snap(&mut self) {
+        let Some(recipe) = self.style.recipe else {
+            return;
+        };
+        if recipe.snaps_to_grid() {
+            self.plan_geometric_snap(recipe);
+        } else if recipe.snaps_to_isometric_grid() {
+            self.plan_isometric_snap(recipe);
         }
     }
 
@@ -833,17 +876,8 @@ impl Compiler<'_, '_> {
     ///
     /// The recipe aligns elements to its grid: each element's resolved position
     /// snaps to the nearest grid intersection, and an element that sat off the
-    /// grid is reported. The plan is computed once, before emission, so a
-    /// composition operand that is lowered several times snaps identically and
-    /// is reported once.
-    fn plan_geometric_snap(&mut self) {
-        let Some(recipe) = self.style.recipe else {
-            return;
-        };
-        if !recipe.snaps_to_grid() {
-            return;
-        }
-
+    /// grid is reported.
+    fn plan_geometric_snap(&mut self, recipe: &StyleRecipe) {
         let plan: Vec<(String, [f64; 2], bool)> = self
             .scene
             .elements
@@ -871,6 +905,82 @@ impl Compiler<'_, '_> {
             }
             self.snapped.insert(id, translation);
         }
+    }
+
+    /// Plans the isometric recipe's grid alignment for every element (FEAT-010).
+    ///
+    /// The recipe aligns elements to the isometric grid: each element's resolved
+    /// position snaps onto the axes, and an element that sat off the grid is
+    /// reported. Only the position moves — geometry is not re-projected, so a
+    /// non-isometric shape stays a billboard.
+    fn plan_isometric_snap(&mut self, recipe: &StyleRecipe) {
+        let plan: Vec<(String, [f64; 2], bool)> = self
+            .scene
+            .elements
+            .iter()
+            .map(|element| {
+                let declared = [element.transform.translate_x, element.transform.translate_y];
+                let current = self.resolution.translation(&element.id).unwrap_or(declared);
+                let (snapped, moved) = recipe.snap_isometric(current);
+                (element.id.clone(), snapped, moved)
+            })
+            .collect();
+
+        for (id, translation, moved) in plan {
+            if moved {
+                self.diagnostics.push(
+                    Diagnostic::warning(
+                        style::ISOMETRIC_OFF_AXIS,
+                        format!(
+                            "element `{id}` sits off the isometric grid; it was snapped onto the isometric axes"
+                        ),
+                    )
+                    .with_location(Location::element_at(id.clone(), "/transform")),
+                );
+            }
+            self.snapped.insert(id, translation);
+        }
+    }
+
+    /// The isometric depth of an element's resolved position (FEAT-010).
+    ///
+    /// The element's own position is its depth, the way an object's base sits
+    /// on the grid; a group's position is therefore the depth of everything it
+    /// contains, so a group orders as one object and its identity survives
+    /// (FEAT-012).
+    fn element_depth(&self, index: usize) -> f64 {
+        let Some(recipe) = self.style.recipe else {
+            return 0.0;
+        };
+        let origin = self
+            .resolved_local(index)
+            .map(|affine| affine.apply([0.0, 0.0]))
+            .unwrap_or([0.0, 0.0]);
+        recipe.isometric_depth(origin)
+    }
+
+    /// Orders a set of siblings back-to-front by isometric depth (FEAT-010).
+    ///
+    /// Only the isometric recipe orders; every other recipe keeps the document
+    /// order. An element further back — a smaller depth — is emitted first, so a
+    /// stack overlaps correctly. The sort is stable and the list arrives in
+    /// document order, so siblings at the same depth — an ambiguous stack — keep
+    /// the order they were declared in, and each subtree stays contiguous so a
+    /// group's identity survives (FEAT-012, NFR-010).
+    fn order_siblings(&self, siblings: &mut [usize]) {
+        if !self
+            .style
+            .recipe
+            .is_some_and(|recipe| recipe.is_isometric())
+        {
+            return;
+        }
+        siblings.sort_by(|&left, &right| {
+            let left = self.element_depth(left);
+            let right = self.element_depth(right);
+            left.partial_cmp(&right)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
     }
 
     /// Snaps constructed geometry to the scene's grid (FEAT-009).
@@ -1450,8 +1560,8 @@ mod tests {
     use crate::primitives::{Ellipse, Rect as PrimRect};
     use crate::style::{
         parse_gradient, parse_palette, parse_stroke_profile, parse_style_recipe, FREEFORM_CURVE,
-        GRID_SNAPPED, GRID_TOO_FINE, LINE_ART_EMPTY, MIN_GRID_SIZE, MIN_STROKE_WEIGHT,
-        STROKE_WEIGHT_CLAMPED, TEXTURE_UNSUPPORTED, UNDEFINED_TOKEN,
+        GRID_SNAPPED, GRID_TOO_FINE, ISOMETRIC_OFF_AXIS, LINE_ART_EMPTY, MIN_GRID_SIZE,
+        MIN_STROKE_WEIGHT, STROKE_WEIGHT_CLAMPED, TEXTURE_UNSUPPORTED, UNDEFINED_TOKEN,
     };
     use serde_json::{json, Value};
 
@@ -2881,6 +2991,235 @@ mod tests {
         assert_eq!(
             compile_with_style(&scene, &style).expect("compiles"),
             compile_with_style(&scene, &style).expect("compiles"),
+            "repeated runs must be identical (NFR-010)"
+        );
+    }
+
+    /// An isometric recipe constructing on the given grid.
+    fn isometric_recipe(grid: f64) -> crate::style::StyleRecipe {
+        parse_style_recipe(&format!(
+            r#"{{"id":"recipe-i","projectId":"p","name":"isometric","parameters":{{"gridSize":{grid}}}}}"#
+        ))
+        .expect("an isometric recipe")
+    }
+
+    /// The x coordinate of the isometric grid's unit x-axis at a spacing of 10.
+    fn isometric_axis() -> f64 {
+        10.0 * 3.0_f64.sqrt() / 2.0
+    }
+
+    fn isometric_style<'a>(recipe: &'a crate::style::StyleRecipe) -> StyleContext<'a> {
+        StyleContext {
+            palette: None,
+            strokes: &[],
+            gradients: &[],
+            fonts: &[],
+            recipe: Some(recipe),
+        }
+    }
+
+    #[test]
+    fn an_isometric_recipe_snaps_off_axis_elements_and_warns() {
+        let mut element = rect("e1", 0, 10.0, 10.0);
+        element["transform"]["translateX"] = json!(1.0);
+        element["transform"]["translateY"] = json!(1.0);
+        let scene = scene_of(json!([element]), None);
+        let recipe = isometric_recipe(10.0);
+
+        let model = compile_with_style(&scene, &isometric_style(&recipe)).expect("compiles");
+        assert_eq!(model.meta.recipe.as_deref(), Some("isometric"));
+        let origin = model
+            .node("e1")
+            .expect("the node")
+            .transform
+            .apply([0.0, 0.0]);
+        assert!(
+            origin[0].abs() < 1e-9 && origin[1].abs() < 1e-9,
+            "an off-axis element snaps onto the isometric grid: {origin:?}"
+        );
+        let warning = model
+            .diagnostics
+            .warnings()
+            .find(|warning| warning.code == ISOMETRIC_OFF_AXIS)
+            .expect("an off-axis element is reported");
+        assert!(warning.message.contains("e1"), "{}", warning.message);
+    }
+
+    #[test]
+    fn an_element_on_the_isometric_grid_is_left_alone() {
+        let mut element = rect("e1", 0, 10.0, 10.0);
+        element["transform"]["translateX"] = json!(isometric_axis());
+        element["transform"]["translateY"] = json!(5.0);
+        let scene = scene_of(json!([element]), None);
+        let recipe = isometric_recipe(10.0);
+
+        let model = compile_with_style(&scene, &isometric_style(&recipe)).expect("compiles");
+        let origin = model
+            .node("e1")
+            .expect("the node")
+            .transform
+            .apply([0.0, 0.0]);
+        assert!((origin[0] - isometric_axis()).abs() < 1e-9, "{origin:?}");
+        assert!((origin[1] - 5.0).abs() < 1e-9, "{origin:?}");
+        assert!(
+            !model
+                .diagnostics
+                .warnings()
+                .any(|warning| warning.code == ISOMETRIC_OFF_AXIS),
+            "an element already on the grid is not reported"
+        );
+    }
+
+    #[test]
+    fn stacked_elements_paint_back_to_front_by_isometric_depth() {
+        // The front element is written first, so the document order alone would
+        // paint it underneath; depth ordering must repaint it last.
+        let mut front = rect("front", 0, 10.0, 10.0);
+        front["transform"]["translateY"] = json!(10.0);
+        let mut back = rect("back", 1, 10.0, 10.0);
+        back["transform"]["translateY"] = json!(0.0);
+        let scene = scene_of(json!([front, back]), None);
+        let recipe = isometric_recipe(10.0);
+
+        let model = compile_with_style(&scene, &isometric_style(&recipe)).expect("compiles");
+        let ids: Vec<&str> = model.nodes.iter().map(|node| node.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["back", "front"],
+            "the back element paints first and the near one on top"
+        );
+        assert_eq!(model.nodes[0].order, 0);
+        assert_eq!(model.nodes[1].order, 1);
+    }
+
+    #[test]
+    fn elements_at_the_same_isometric_depth_keep_document_order() {
+        // `left` and `right` share a depth row and tie; they keep the order
+        // they were declared in, while `front` is nearer and paints last.
+        let mut right = rect("right", 1, 10.0, 10.0);
+        right["transform"]["translateX"] = json!(isometric_axis());
+        right["transform"]["translateY"] = json!(5.0);
+        let mut left = rect("left", 0, 10.0, 10.0);
+        left["transform"]["translateX"] = json!(-isometric_axis());
+        left["transform"]["translateY"] = json!(5.0);
+        let mut front = rect("front", 2, 10.0, 10.0);
+        front["transform"]["translateY"] = json!(10.0);
+        let scene = scene_of(json!([left, right, front]), None);
+        let recipe = isometric_recipe(10.0);
+
+        let model = compile_with_style(&scene, &isometric_style(&recipe)).expect("compiles");
+        let ids: Vec<&str> = model.nodes.iter().map(|node| node.id.as_str()).collect();
+        assert_eq!(ids, vec!["left", "right", "front"]);
+    }
+
+    #[test]
+    fn a_named_group_orders_as_one_object_and_stays_contiguous() {
+        // The group sits in front of the sibling shape but holds a back-most
+        // shape; it must order by its own position and keep its children
+        // together, so the exporter opens it once (FEAT-012).
+        let mut group = base("g", 0, "group", json!({}));
+        group["name"] = json!("Object");
+        group["transform"]["translateY"] = json!(10.0);
+        let mut inner = rect("c1", 0, 10.0, 10.0);
+        inner["parentId"] = json!("g");
+        let mut lower = rect("c2", 1, 10.0, 10.0);
+        lower["parentId"] = json!("g");
+        lower["transform"]["translateY"] = json!(5.0);
+        let sibling = rect("s", 1, 10.0, 10.0);
+        let scene = scene_of(json!([group, inner, lower, sibling]), None);
+        let recipe = isometric_recipe(10.0);
+
+        let model = compile_with_style(&scene, &isometric_style(&recipe)).expect("compiles");
+        let ids: Vec<&str> = model.nodes.iter().map(|node| node.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["s", "c1", "c2"],
+            "the back sibling paints first, then the group's shapes"
+        );
+        for id in ["c1", "c2"] {
+            assert_eq!(
+                model.node(id).expect("the node").groups,
+                vec![crate::render::NodeGroup {
+                    id: "g".to_string(),
+                    name: Some("Object".to_string()),
+                }],
+                "the group identity travels on every child"
+            );
+        }
+    }
+
+    #[test]
+    fn a_flat_shape_projected_in_an_isometric_scene_becomes_an_isometric_face() {
+        let projection = base("p1", 0, "projection", json!({ "axis": "isometric" }));
+        let mut child = rect("c1", 0, 10.0, 10.0);
+        child["parentId"] = json!("p1");
+        let scene = scene_of(json!([projection, child]), None);
+        let recipe = isometric_recipe(10.0);
+
+        let model = compile_with_style(&scene, &isometric_style(&recipe)).expect("compiles");
+        let node = model.node("c1").expect("the projected child");
+        assert_eq!(
+            node.transform,
+            crate::composition::Affine::isometric(),
+            "the flat shape is lifted onto the isometric axes"
+        );
+        let x_axis = node.transform.apply([1.0, 0.0]);
+        let y_axis = node.transform.apply([0.0, 1.0]);
+        assert!(x_axis[0] > 0.0 && x_axis[1] > 0.0, "{x_axis:?}");
+        assert!(y_axis[0] < 0.0 && y_axis[1] > 0.0, "{y_axis:?}");
+    }
+
+    #[test]
+    fn a_non_isometric_shape_is_allowed_as_a_billboard() {
+        // A rotated shape is not projected onto the axes; it keeps its own
+        // orientation and renders as a billboard.
+        let mut element = rect("e1", 0, 10.0, 10.0);
+        element["transform"]["rotate"] = json!(45.0);
+        let scene = scene_of(json!([element]), None);
+        let recipe = isometric_recipe(10.0);
+
+        let model = compile_with_style(&scene, &isometric_style(&recipe)).expect("compiles");
+        let node = model.node("e1").expect("the node");
+        assert!(
+            matches!(node.geometry, Some(Shape::Rect(_))),
+            "the billboard's own geometry is kept"
+        );
+        assert!(
+            node.transform.b.abs() > 0.5,
+            "the billboard keeps its own rotation: {:?}",
+            node.transform
+        );
+        assert!(
+            !model.diagnostics.has_errors(),
+            "a non-isometric shape is allowed, not refused"
+        );
+    }
+
+    #[test]
+    fn another_recipe_does_not_order_by_isometric_depth() {
+        let mut front = rect("front", 0, 10.0, 10.0);
+        front["transform"]["translateY"] = json!(10.0);
+        let mut back = rect("back", 1, 10.0, 10.0);
+        back["transform"]["translateY"] = json!(0.0);
+        let scene = scene_of(json!([front, back]), None);
+        let recipe = flat_recipe("none");
+
+        let model = compile_with_style(&scene, &isometric_style(&recipe)).expect("compiles");
+        let ids: Vec<&str> = model.nodes.iter().map(|node| node.id.as_str()).collect();
+        assert_eq!(ids, vec!["front", "back"], "document order is untouched");
+    }
+
+    #[test]
+    fn isometric_compilation_is_deterministic() {
+        let mut first = rect("a", 0, 10.0, 10.0);
+        first["transform"]["translateX"] = json!(1.0);
+        let mut second = rect("b", 1, 10.0, 10.0);
+        second["transform"]["translateY"] = json!(11.0);
+        let scene = scene_of(json!([first, second]), None);
+        let recipe = isometric_recipe(10.0);
+        assert_eq!(
+            compile_with_style(&scene, &isometric_style(&recipe)).expect("compiles"),
+            compile_with_style(&scene, &isometric_style(&recipe)).expect("compiles"),
             "repeated runs must be identical (NFR-010)"
         );
     }

@@ -131,6 +131,20 @@ pub const MIN_GRID_SIZE: f64 = 0.05;
 /// already counts as on it (FEAT-009).
 const GRID_TOLERANCE_FRACTION: f64 = 1e-6;
 
+/// An element sat off the isometric grid and was snapped onto the axes
+/// (FEAT-010).
+pub const ISOMETRIC_OFF_AXIS: DiagnosticCode = DiagnosticCode::new("W_ISOMETRIC_OFF_AXIS");
+
+/// Cosine and sine of the isometric axes' 30° elevation (FEAT-010).
+///
+/// The isometric grid is spanned by two unit axes rising 30° from the
+/// horizontal — the positive x-axis to the upper right and the y-axis to the
+/// upper left — the same axes the isometric projection helper maps onto
+/// (FEAT-003). `ISOMETRIC_AXIS_COS` is `sqrt(3)/2` and `ISOMETRIC_AXIS_SIN`
+/// is `1/2`.
+const ISOMETRIC_AXIS_COS: f64 = 0.866_025_403_784_438_6;
+const ISOMETRIC_AXIS_SIN: f64 = 0.5;
+
 impl StyleRecipe {
     /// The recipe name as it appears in the scene language.
     pub fn name_str(&self) -> &'static str {
@@ -152,19 +166,41 @@ impl StyleRecipe {
         self.name == RecipeName::Geometric
     }
 
-    /// The recipe's grid spacing, when it declares one (FEAT-009).
+    /// Whether this is the isometric recipe.
+    pub fn is_isometric(&self) -> bool {
+        self.name == RecipeName::Isometric
+    }
+
+    /// The recipe's grid spacing, when it declares one (FEAT-009, FEAT-010).
     pub fn grid_size(&self) -> Option<f64> {
         self.parameters.grid_size
     }
 
-    /// Whether the geometric recipe aligns its elements to the grid.
+    /// Whether the geometric recipe aligns its elements to its grid.
     ///
     /// Aligning to a grid is the geometric look's construction rule (FEAT-009),
     /// so it is on whenever the recipe names a usable grid, and off when `snap`
-    /// is explicitly false or the grid is absent or unusable. No other recipe
-    /// snaps; the flat, line-art and isometric looks leave positions untouched.
+    /// is explicitly false or the grid is absent or unusable. The isometric
+    /// recipe snaps to its own grid instead ([`StyleRecipe::snaps_to_isometric_grid`]);
+    /// the flat and line-art looks leave positions untouched.
     pub fn snaps_to_grid(&self) -> bool {
         self.is_geometric()
+            && self.parameters.snap.unwrap_or(true)
+            && self
+                .grid_size()
+                .is_some_and(|size| size.is_finite() && size > 0.0)
+    }
+
+    /// Whether the isometric recipe aligns its elements to the isometric grid
+    /// (FEAT-010).
+    ///
+    /// Aligning elements to the isometric grid is what makes them sit on the
+    /// axes, so it is on whenever the isometric recipe names a usable grid, and
+    /// off when `snap` is explicitly false or the grid is absent or unusable.
+    /// The other looks, including the geometric one, snap to their own grid or
+    /// not at all.
+    pub fn snaps_to_isometric_grid(&self) -> bool {
+        self.is_isometric()
             && self.parameters.snap.unwrap_or(true)
             && self
                 .grid_size()
@@ -193,6 +229,62 @@ impl StyleRecipe {
         let target = (value / size).round() * size;
         let tolerance = size * GRID_TOLERANCE_FRACTION;
         (target, (value - target).abs() > tolerance)
+    }
+
+    /// Snaps a point onto the isometric grid (FEAT-010).
+    ///
+    /// The isometric grid is the lattice spanned by the two 30° axes at the
+    /// recipe's grid spacing, so snapping a point expresses it in the axes'
+    /// coordinates, rounds both, and maps it back — the same move as snapping a
+    /// square grid in the plane before the isometric projection. Returns the
+    /// nearest lattice point and whether the original sat off the grid beyond
+    /// tolerance. A point already on the lattice comes back unchanged, and a
+    /// recipe that does not construct on the isometric grid returns the point
+    /// untouched, so its positions are exactly those the scene declared.
+    pub fn snap_isometric(&self, point: [f64; 2]) -> ([f64; 2], bool) {
+        if !self.snaps_to_isometric_grid() {
+            return (point, false);
+        }
+        let Some(size) = self.grid_size() else {
+            return (point, false);
+        };
+        if !point[0].is_finite() || !point[1].is_finite() {
+            return (point, false);
+        }
+
+        // Express the point in the axes' coordinates, round each, and map back:
+        // a lattice point `(i, j)` lands at `size * (i·u + j·v)`.
+        let along_x = point[0] / (2.0 * size * ISOMETRIC_AXIS_COS);
+        let along_y = point[1] / size;
+        let i = (along_x + along_y).round();
+        let j = (-along_x + along_y).round();
+        let snapped = [
+            size * ISOMETRIC_AXIS_COS * (i - j),
+            size * ISOMETRIC_AXIS_SIN * (i + j),
+        ];
+
+        let tolerance = size * GRID_TOLERANCE_FRACTION;
+        let moved =
+            (point[0] - snapped[0]).abs() > tolerance || (point[1] - snapped[1]).abs() > tolerance;
+        (snapped, moved)
+    }
+
+    /// The isometric depth of a point: larger values are nearer the viewer
+    /// (FEAT-010).
+    ///
+    /// Both isometric axes descend the screen, so a point's depth is its screen
+    /// y, which is the grid row `i + j` scaled by the spacing. With a usable
+    /// grid the depth is quantized to whole rows, so elements that share a row
+    /// share a depth; without one it falls back to the raw y, and the ordering
+    /// stays deterministic either way (NFR-010).
+    pub fn isometric_depth(&self, point: [f64; 2]) -> f64 {
+        let Some(size) = self.grid_size() else {
+            return point[1];
+        };
+        if !size.is_finite() || size <= 0.0 {
+            return point[1];
+        }
+        (point[1] / (size * ISOMETRIC_AXIS_SIN)).round()
     }
 
     /// The recipe's default stroke weight, when it declares one (FEAT-008).
@@ -569,5 +661,97 @@ mod tests {
             parse(r#"{"id":"r","projectId":"p","name":"flat","parameters":{"gridSize":0.0001}}"#)
                 .unwrap();
         assert!(check_grid(&flat).warnings().next().is_none());
+    }
+
+    fn isometric(grid: f64, snap: Option<bool>) -> StyleRecipe {
+        let snap = match snap {
+            Some(value) => format!(r#","snap":{value}"#),
+            None => String::new(),
+        };
+        parse(&format!(
+            r#"{{"id":"r","projectId":"p","name":"isometric","parameters":{{"gridSize":{grid}{snap}}}}}"#
+        ))
+        .expect("an isometric recipe")
+    }
+
+    fn close(left: [f64; 2], right: [f64; 2]) -> bool {
+        (left[0] - right[0]).abs() < 1e-9 && (left[1] - right[1]).abs() < 1e-9
+    }
+
+    #[test]
+    fn the_isometric_recipe_aligns_a_point_to_its_axes() {
+        let recipe = isometric(10.0, None);
+        assert!(recipe.is_isometric());
+        let axis = 3.0_f64.sqrt() / 2.0;
+
+        // Points already on the lattice — the origin and the two axes and their
+        // sum — are left where they are.
+        for point in [
+            [0.0, 0.0],
+            [10.0 * axis, 5.0],
+            [-10.0 * axis, 5.0],
+            [0.0, 10.0],
+        ] {
+            assert_eq!(recipe.snap_isometric(point), (point, false), "{point:?}");
+        }
+
+        // An off-axis point snaps to the nearest lattice point and is reported.
+        assert_eq!(recipe.snap_isometric([1.0, 1.0]), ([0.0, 0.0], true));
+        let (snapped, moved) = recipe.snap_isometric([5.0, 5.0]);
+        assert!(moved, "an off-axis point is reported");
+        assert!(
+            close(snapped, [10.0 * axis, 5.0]),
+            "snapped to a grid intersection: {snapped:?}"
+        );
+    }
+
+    #[test]
+    fn the_isometric_recipe_snaps_unless_explicitly_disabled() {
+        assert!(isometric(10.0, None).snaps_to_isometric_grid());
+        assert!(isometric(10.0, Some(true)).snaps_to_isometric_grid());
+        assert!(!isometric(10.0, Some(false)).snaps_to_isometric_grid());
+
+        // Without a usable grid there is nothing to snap to.
+        let no_grid =
+            parse(r#"{"id":"r","projectId":"p","name":"isometric","parameters":{}}"#).unwrap();
+        assert!(!no_grid.snaps_to_isometric_grid());
+        assert_eq!(no_grid.snap_isometric([1.0, 1.0]), ([1.0, 1.0], false));
+    }
+
+    #[test]
+    fn another_recipe_never_snaps_isometrically() {
+        let flat =
+            parse(r#"{"id":"r","projectId":"p","name":"flat","parameters":{"gridSize":10}}"#)
+                .unwrap();
+        assert!(!flat.snaps_to_isometric_grid());
+        assert_eq!(flat.snap_isometric([1.0, 1.0]), ([1.0, 1.0], false));
+
+        // The geometric recipe owns its own axis-aligned grid, not this one.
+        let geometric = geometric(10.0, None);
+        assert!(!geometric.snaps_to_isometric_grid());
+        assert_eq!(geometric.snap_isometric([1.0, 1.0]), ([1.0, 1.0], false));
+    }
+
+    #[test]
+    fn the_isometric_depth_follows_the_grid_row() {
+        let recipe = isometric(10.0, None);
+        // Depth is the grid row `i + j`: the origin is back-most and lower
+        // points are nearer the viewer, so a stack paints back to front.
+        assert_eq!(recipe.isometric_depth([0.0, 0.0]), 0.0);
+        assert_eq!(recipe.isometric_depth([0.0, 5.0]), 1.0);
+        assert_eq!(recipe.isometric_depth([0.0, 10.0]), 2.0);
+        assert_eq!(recipe.isometric_depth([0.0, -10.0]), -2.0);
+
+        // Two points on the same row share a depth, so their order is
+        // ambiguous and left to the deterministic tie-break.
+        assert_eq!(
+            recipe.isometric_depth([8.0, 5.0]),
+            recipe.isometric_depth([-8.0, 5.0])
+        );
+
+        // Without a grid the raw screen position is the depth.
+        let no_grid =
+            parse(r#"{"id":"r","projectId":"p","name":"isometric","parameters":{}}"#).unwrap();
+        assert_eq!(no_grid.isometric_depth([7.0, 3.0]), 3.0);
     }
 }
