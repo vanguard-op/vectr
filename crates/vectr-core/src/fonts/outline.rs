@@ -1,13 +1,13 @@
 //! Glyph outline collection for the Font & Asset Manager (FEAT-024).
 //!
-//! `ttf-parser` walks a glyph's contours through the [`OutlineBuilder`] trait,
+//! `skrifa` walks a glyph's contours through the [`OutlinePen`] trait,
 //! reporting points in font units with the y-axis pointing up. This builder
 //! turns each command into the engine's concrete [`SubPath`]/[`Segment`]
 //! geometry, scaled into scene units and flipped to the y-down axis the render
 //! model and every exporter use, so the result drops straight into the same
 //! path representation the rest of the pipeline carries.
 
-use ttf_parser::OutlineBuilder;
+use skrifa::outline::OutlinePen;
 
 use crate::primitives::{Segment, SubPath};
 
@@ -52,7 +52,7 @@ impl GlyphOutline {
     }
 }
 
-impl OutlineBuilder for GlyphOutline {
+impl OutlinePen for GlyphOutline {
     fn move_to(&mut self, x: f32, y: f32) {
         let start = self.point(x, y);
         self.subpaths.push(SubPath {

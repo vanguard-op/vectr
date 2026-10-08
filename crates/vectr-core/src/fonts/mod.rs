@@ -5,8 +5,8 @@
 //! file in the render model (C-003), leaving only glyph geometry for an exporter
 //! to finalize (FEAT-011). This module supplies that geometry: it parses the
 //! model's fonts, lays a run out into lines, wraps it to its declared width,
-//! aligns it about the anchor, shapes it with `rustybuzz`, and reads each glyph's
-//! contours with `ttf-parser` as concrete path geometry. Every exporter then
+//! aligns it about the anchor, shapes it with `harfrust`, and reads each glyph's
+//! contours with `skrifa` as concrete path geometry. Every exporter then
 //! emits outlines, so SVG, PNG and PDF output does not depend on the font being
 //! installed (FEAT-012, FEAT-013, NFR-040).
 //!
@@ -21,6 +21,10 @@
 //! (NFR-010).
 
 mod outline;
+
+use harfrust::{Buffer, ShapeOptions, ShaperFont};
+use skrifa::instance::Size;
+use skrifa::{FontRef, GlyphId, OutlineGlyphCollection};
 
 use crate::primitives::{Path, Segment, SubPath};
 use crate::render::{ResolvedFont, TextRun};
@@ -67,16 +71,23 @@ pub struct FontLibrary<'a> {
     fallback: Option<usize>,
 }
 
-/// A parsed font face, borrowing the model's font bytes.
+/// A parsed font face: the shaper's font plus the outline source and metrics.
+///
+/// `font` owns a copy of the model's font bytes because `harfrust` shapes
+/// through an owned font, while `outlines` borrows the model's bytes directly
+/// for glyph geometry. Both parse the same file, so shaping and outlining agree
+/// on every glyph.
 struct LoadedFace<'a> {
     id: &'a str,
-    face: rustybuzz::Face<'a>,
+    font: harfrust::Font,
+    outlines: OutlineGlyphCollection<'a>,
+    units_per_em: u16,
 }
 
 /// One shaped glyph, its offsets and advance already in scene units.
 struct ShapedGlyph {
     face: usize,
-    glyph_id: u16,
+    glyph_id: u32,
     x_offset: f64,
     y_offset: f64,
     x_advance: f64,
@@ -92,12 +103,21 @@ impl<'a> FontLibrary<'a> {
     pub fn new(fonts: &'a [ResolvedFont]) -> Self {
         let mut faces = Vec::with_capacity(fonts.len());
         for font in fonts {
-            if let Some(face) = rustybuzz::Face::from_slice(&font.data, 0) {
-                faces.push(LoadedFace {
-                    id: font.id.as_str(),
-                    face,
-                });
-            }
+            // Both parsers read the same file; a font either parser rejects is
+            // left out, and a text node naming it reports a missing font.
+            let Ok(reference) = FontRef::from_index(&font.data, 0) else {
+                continue;
+            };
+            let Some(shaper_font) = harfrust::Font::new(font.data.clone(), 0) else {
+                continue;
+            };
+            let units_per_em = shaper_font.units_per_em();
+            faces.push(LoadedFace {
+                id: font.id.as_str(),
+                font: shaper_font,
+                outlines: OutlineGlyphCollection::new(&reference),
+                units_per_em,
+            });
         }
         let fallback = faces
             .iter()
@@ -290,8 +310,11 @@ impl<'a> FontLibrary<'a> {
                 pen + glyph.x_offset,
                 -glyph.y_offset,
             );
-            face.face
-                .outline_glyph(ttf_parser::GlyphId(glyph.glyph_id), &mut outline);
+            if let Some(glyph_outline) = face.outlines.get(GlyphId::new(glyph.glyph_id)) {
+                // Outlines come in font units; the pen scales and flips them.
+                // A glyph whose outline cannot be read simply draws nothing.
+                let _ = glyph_outline.draw(Size::unscaled(), &mut outline);
+            }
             subpaths.extend(outline.subpaths);
             pen += glyph.x_advance + spacing;
         }
@@ -307,7 +330,15 @@ impl<'a> FontLibrary<'a> {
         text: &str,
         size: f64,
     ) -> (Vec<ShapedGlyph>, Vec<char>) {
-        let (runs, missing) = self.runs(primary, fallback, text);
+        let primary_shaper = ShaperFont::new(&self.faces[primary].font);
+        let fallback_shaper = fallback.map(|index| ShaperFont::new(&self.faces[index].font));
+        let (runs, missing) = split_runs(
+            text,
+            &primary_shaper,
+            fallback_shaper.as_ref(),
+            primary,
+            fallback,
+        );
         let mut glyphs = Vec::new();
         for (face_index, run_text) in runs {
             let face = &self.faces[face_index];
@@ -315,13 +346,23 @@ impl<'a> FontLibrary<'a> {
             if scale == 0.0 {
                 continue;
             }
-            let mut buffer = rustybuzz::UnicodeBuffer::new();
+            let shaper = if face_index == primary {
+                &primary_shaper
+            } else if let Some(shaper) = fallback_shaper.as_ref() {
+                shaper
+            } else {
+                continue;
+            };
+            let mut buffer = Buffer::new();
             buffer.push_str(run_text);
-            let output = rustybuzz::shape(&face.face, &[], buffer);
-            for (info, position) in output.glyph_infos().iter().zip(output.glyph_positions()) {
+            buffer.guess_segment_properties();
+            if harfrust::shape(shaper, &mut buffer, ShapeOptions::default()).is_err() {
+                continue;
+            }
+            for (info, position) in buffer.glyph_infos().iter().zip(buffer.glyph_positions()) {
                 glyphs.push(ShapedGlyph {
                     face: face_index,
-                    glyph_id: info.glyph_id as u16,
+                    glyph_id: info.glyph_id,
                     x_offset: f64::from(position.x_offset) * scale,
                     y_offset: f64::from(position.y_offset) * scale,
                     x_advance: f64::from(position.x_advance) * scale,
@@ -330,49 +371,58 @@ impl<'a> FontLibrary<'a> {
         }
         (glyphs, missing)
     }
+}
 
-    /// Splits a string into runs of characters the same font covers, collecting
-    /// the characters no available font covers.
-    fn runs<'b>(
-        &self,
-        primary: usize,
-        fallback: Option<usize>,
-        text: &'b str,
-    ) -> (Vec<(usize, &'b str)>, Vec<char>) {
-        let mut runs: Vec<(usize, &str)> = Vec::new();
-        let mut missing = Vec::new();
-        let mut current: Option<usize> = None;
-        let mut start = 0;
-        for (index, ch) in text.char_indices() {
-            let face = if self.faces[primary].face.glyph_index(ch).is_some() {
-                Some(primary)
-            } else {
-                fallback.filter(|&other| self.faces[other].face.glyph_index(ch).is_some())
-            };
-            match face {
-                Some(face) => {
-                    if current != Some(face) {
-                        if let Some(previous) = current {
-                            runs.push((previous, &text[start..index]));
-                        }
-                        current = Some(face);
-                        start = index;
-                    }
-                }
-                None => {
+/// Splits a string into runs of characters the same font covers, collecting
+/// the characters no available font covers.
+///
+/// Coverage is read from the same shapers used to shape the runs, so a run is
+/// only ever handed to a font that can draw its characters.
+fn split_runs<'b>(
+    text: &'b str,
+    primary: &ShaperFont<'_, '_>,
+    fallback: Option<&ShaperFont<'_, '_>>,
+    primary_index: usize,
+    fallback_index: Option<usize>,
+) -> (Vec<(usize, &'b str)>, Vec<char>) {
+    let mut runs: Vec<(usize, &str)> = Vec::new();
+    let mut missing = Vec::new();
+    let mut current: Option<usize> = None;
+    let mut start = 0;
+    for (index, ch) in text.char_indices() {
+        let face = if primary.default_nominal_glyph(ch as u32).is_some() {
+            Some(primary_index)
+        } else if let (Some(index), Some(shaper)) = (fallback_index, fallback) {
+            shaper
+                .default_nominal_glyph(ch as u32)
+                .is_some()
+                .then_some(index)
+        } else {
+            None
+        };
+        match face {
+            Some(face) => {
+                if current != Some(face) {
                     if let Some(previous) = current {
                         runs.push((previous, &text[start..index]));
-                        current = None;
                     }
-                    missing.push(ch);
+                    current = Some(face);
+                    start = index;
                 }
             }
+            None => {
+                if let Some(previous) = current {
+                    runs.push((previous, &text[start..index]));
+                    current = None;
+                }
+                missing.push(ch);
+            }
         }
-        if let Some(previous) = current {
-            runs.push((previous, &text[start..]));
-        }
-        (runs, missing)
     }
+    if let Some(previous) = current {
+        runs.push((previous, &text[start..]));
+    }
+    (runs, missing)
 }
 
 impl OutlinedText {
@@ -397,11 +447,10 @@ pub fn outline_text(run: &TextRun, element_id: &str, fonts: &[ResolvedFont]) -> 
 /// The scene-unit scale of a font: the run's em size over the font's design
 /// units, or zero when the font reports no usable em.
 fn glyph_scale(face: &LoadedFace<'_>, size: f64) -> f64 {
-    let units = face.face.units_per_em();
-    if units <= 0 {
+    if face.units_per_em == 0 {
         0.0
     } else {
-        size / f64::from(units)
+        size / f64::from(face.units_per_em)
     }
 }
 

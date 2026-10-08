@@ -21,11 +21,13 @@ serde_json = { workspace = true }
 # (D-007, FEAT-003).
 i_overlay = { workspace = true }
 
-# Text shaping and font parsing for the Font & Asset Manager (D-004, D-007,
-# FEAT-024). The workspace pins both versions; text is shaped with rustybuzz
-# and glyph outlines are read with ttf-parser.
-rustybuzz = { workspace = true }
-ttf-parser = { workspace = true }
+# Text shaping and font parsing for the Font & Asset Manager (D-004, D-019,
+# FEAT-024). The workspace pins both versions; text is shaped with harfrust
+# and glyph outlines are read with skrifa, so shaping and outlining share one
+# font parser (read-fonts) and the unmaintained rustybuzz/ttf-parser stack
+# stays out of the tree (NFR-020).
+harfrust = { workspace = true }
+skrifa = { workspace = true }
 
 # The rasterizer behind PNG export (D-007, FEAT-013). It is optional so a build
 # without it still validates, compiles and exports SVG, and reports PNG's
