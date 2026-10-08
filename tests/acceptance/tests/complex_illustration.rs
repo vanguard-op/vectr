@@ -495,6 +495,35 @@ fn the_documented_large_scene_compiles_completely_and_deterministically() {
 }
 
 #[test]
+fn a_composition_above_the_documented_large_scene_count_is_warned_not_silent() {
+    // 200 rows × 300 columns = 60,000 rendered elements, above the documented
+    // 50,000 complex-illustration count (nfr.md, "Complex illustration"): the
+    // scaling trigger says such a scene is processed with a warning rather than
+    // silently (NFR-011, nfr.md "Scaling trigger").
+    let document = dense_illustration(200, 300);
+    let brand =
+        vectr_core::parse_palette(&palette("brand", &[("accent", "#abcdef")])).expect("a palette");
+    let style = StyleContext {
+        palette: Some(&brand),
+        strokes: &[],
+        gradients: &[],
+        fonts: &[],
+        recipe: None,
+    };
+
+    let model = compile_with(&document, &style).expect("a dense composition compiles");
+    assert_eq!(model.nodes.len(), 60_000, "the render model is complete");
+    assert!(
+        model
+            .diagnostics
+            .iter()
+            .any(|finding| finding.code.as_str() == "W_LARGE_SCENE"),
+        "a composition above the documented large-scene count is processed with a warning, not silently: {:?}",
+        model.diagnostics
+    );
+}
+
+#[test]
 fn a_large_composition_reports_an_unprocessable_element_rather_than_dropping_it() {
     // A raster layer the compiler does not yet accept, buried under the dense
     // composition: it is named as an error, never silently dropped (FEAT-011).
