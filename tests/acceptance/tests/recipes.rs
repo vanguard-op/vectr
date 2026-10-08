@@ -797,17 +797,14 @@ fn recipe_project(tag: &str, recipe_id: Option<&str>, default_recipe: Option<&st
     if let Some(recipe_id) = recipe_id {
         scene["recipeId"] = json!(recipe_id);
     }
-    dir.write("scenes/scene.json", &scene.to_string());
+    dir.write("scenes/s.json", &scene.to_string());
     dir
 }
 
 #[test]
 fn a_scene_selected_recipe_reaches_the_compiled_output() {
     let dir = recipe_project("recipe-scene", Some("line"), None);
-    let output = run_vectr(
-        dir.path(),
-        &["compile", "scenes/scene.json", "--out", "model.json"],
-    );
+    let output = run_vectr(dir.path(), &["compile", "s", "--out", "model.json"]);
     assert_eq!(code(&output), 0, "{}", stderr(&output));
 
     let text = std::fs::read_to_string(dir.path().join("model.json")).expect("the model");
@@ -827,14 +824,7 @@ fn a_recipe_selected_through_a_project_reaches_exported_svg() {
     let dir = recipe_project("recipe-export", Some("line"), None);
     let output = run_vectr(
         dir.path(),
-        &[
-            "export",
-            "scenes/scene.json",
-            "--format",
-            "svg",
-            "--out",
-            "scene.svg",
-        ],
+        &["export", "s", "--format", "svg", "--out", "scene.svg"],
     );
     assert_eq!(code(&output), 0, "{}", stderr(&output));
     let svg = std::fs::read_to_string(dir.path().join("scene.svg")).expect("the svg");
@@ -845,10 +835,7 @@ fn a_recipe_selected_through_a_project_reaches_exported_svg() {
 #[test]
 fn a_project_default_recipe_applies_when_the_scene_names_none() {
     let dir = recipe_project("recipe-default", None, Some("line"));
-    let output = run_vectr(
-        dir.path(),
-        &["compile", "scenes/scene.json", "--out", "model.json"],
-    );
+    let output = run_vectr(dir.path(), &["compile", "s", "--out", "model.json"]);
     assert_eq!(code(&output), 0, "{}", stderr(&output));
 
     let text = std::fs::read_to_string(dir.path().join("model.json")).expect("the model");
@@ -859,7 +846,7 @@ fn a_project_default_recipe_applies_when_the_scene_names_none() {
 #[test]
 fn an_unresolvable_recipe_is_reported_as_missing_input() {
     let dir = recipe_project("recipe-missing", Some("absent"), None);
-    let output = run_vectr(dir.path(), &["compile", "scenes/scene.json", "--check"]);
+    let output = run_vectr(dir.path(), &["compile", "s", "--check"]);
     assert_eq!(code(&output), 2, "{}", stderr(&output));
     assert!(stderr(&output).contains("absent"), "{}", stderr(&output));
 }
@@ -877,7 +864,7 @@ fn an_invalid_recipe_document_is_reported_with_a_location() {
         .to_string(),
     );
     dir.write(
-        "scenes/scene.json",
+        "scenes/s.json",
         &json!({
             "id": "s", "projectId": "p", "name": "S", "formatVersion": VERSION,
             "recipeId": "bad",
@@ -892,7 +879,7 @@ fn an_invalid_recipe_document_is_reported_with_a_location() {
         .to_string(),
     );
 
-    let output = run_vectr(dir.path(), &["compile", "scenes/scene.json", "--check"]);
+    let output = run_vectr(dir.path(), &["compile", "s", "--check"]);
     assert_eq!(code(&output), 2, "{}", stderr(&output));
     assert!(stderr(&output).contains("gridSize"), "{}", stderr(&output));
 }

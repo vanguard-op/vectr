@@ -1,23 +1,26 @@
 //! Acceptance tests for the command-line interface (FEAT-016, C-004).
 //!
-//! Drives the built `vectr` binary as a subprocess: exit codes distinguish
-//! success from each class of failure, `--check` writes nothing, a missing input
-//! or unwritable output is a clear error, `validate --json` is machine-readable,
-//! and `init` scaffolds an idempotent project.
+//! Drives the built `vectr` binary as a subprocess: a scene is addressed by its
+//! identifier among the project's `scenes/` documents, an omitted scene uses the
+//! project's default, exit codes distinguish success from each class of failure,
+//! `--check` writes nothing, a missing scene or unwritable output is a clear
+//! error, `validate --json` is machine-readable, and `init` scaffolds an
+//! idempotent project whose starter scene is named as the default.
 
 mod common;
 
 use common::*;
+use serde_json::{json, Value};
 
 const VALID_SCENE: &str = r##"{
-  "id": "s",
+  "id": "scene",
   "projectId": "project",
   "name": "S",
   "formatVersion": "0.2",
   "canvas": { "width": 100, "height": 100, "background": "#ffffff" },
   "elements": [
     {
-      "id": "e1", "sceneId": "s", "order": 0, "kind": "rect",
+      "id": "e1", "sceneId": "scene", "order": 0, "kind": "rect",
       "geometry": { "x": 0, "y": 0, "width": 10, "height": 10 },
       "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
       "opacity": 1, "visible": true
@@ -26,14 +29,14 @@ const VALID_SCENE: &str = r##"{
 }"##;
 
 const INVALID_SCENE: &str = r##"{
-  "id": "s",
+  "id": "scene",
   "projectId": "project",
   "name": "S",
   "formatVersion": "0.2",
   "canvas": { "width": 100, "height": 100, "background": "#ffffff" },
   "elements": [
     {
-      "id": "e1", "sceneId": "s", "order": 0, "kind": "rect",
+      "id": "e1", "sceneId": "scene", "order": 0, "kind": "rect",
       "geometry": { "x": 0, "y": 0, "width": 10, "height": 10 },
       "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
       "opacity": 2, "visible": true
@@ -42,20 +45,20 @@ const INVALID_SCENE: &str = r##"{
 }"##;
 
 const CYCLIC_SCENE: &str = r##"{
-  "id": "s",
+  "id": "scene",
   "projectId": "project",
   "name": "S",
   "formatVersion": "0.2",
   "canvas": { "width": 100, "height": 100, "background": "#ffffff" },
   "elements": [
     {
-      "id": "a", "sceneId": "s", "parentId": "b", "order": 0, "kind": "rect",
+      "id": "a", "sceneId": "scene", "parentId": "b", "order": 0, "kind": "rect",
       "geometry": { "width": 10, "height": 10 },
       "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
       "opacity": 1, "visible": true
     },
     {
-      "id": "b", "sceneId": "s", "parentId": "a", "order": 1, "kind": "rect",
+      "id": "b", "sceneId": "scene", "parentId": "a", "order": 1, "kind": "rect",
       "geometry": { "width": 10, "height": 10 },
       "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
       "opacity": 1, "visible": true
@@ -64,14 +67,14 @@ const CYCLIC_SCENE: &str = r##"{
 }"##;
 
 const TEXT_MISSING_FONT: &str = r##"{
-  "id": "s",
+  "id": "scene",
   "projectId": "project",
   "name": "S",
   "formatVersion": "0.2",
   "canvas": { "width": 200, "height": 100, "background": "#ffffff" },
   "elements": [
     {
-      "id": "t1", "sceneId": "s", "order": 0, "kind": "text", "fontId": "absent",
+      "id": "t1", "sceneId": "scene", "order": 0, "kind": "text", "fontId": "absent",
       "geometry": { "x": 10, "y": 60, "text": "Hi", "fontSize": 32 },
       "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
       "opacity": 1, "visible": true
@@ -79,11 +82,62 @@ const TEXT_MISSING_FONT: &str = r##"{
   ]
 }"##;
 
+/// A project holding one scene, `scenes/scene.json`, addressed as `scene`.
+///
+/// The project config names no default, so a command that omits the scene is a
+/// usage error; tests that exercise the default build their own project.
 fn project_with(tag: &str, scene: &str) -> TempDir {
     let dir = TempDir::new(tag);
     dir.write("vectr.project.json", "{}");
     dir.write("scenes/scene.json", scene);
     dir
+}
+
+/// A scene at `scenes/<id>.json` whose one filled rect resolves palette `red` or
+/// `blue`, so a test can tell which scene's assets a command resolved.
+fn colored_scene(id: &str, palette_id: &str) -> Value {
+    let mut element = rect("r1", 0, 0.0, 0.0, 10.0, 10.0);
+    element["fill"] = token_paint("accent");
+    let mut document = scene(vec![element]);
+    document["id"] = json!(id);
+    document["paletteId"] = json!(palette_id);
+    document["elements"][0]["sceneId"] = json!(id);
+    document
+}
+
+/// A project holding two scenes, `red` and `blue`, each resolving its own
+/// palette, and optionally naming a default scene (FEAT-016).
+fn two_scene_project(tag: &str, default_scene: Option<&str>) -> TempDir {
+    let dir = TempDir::new(tag);
+    let mut config = json!({});
+    if let Some(id) = default_scene {
+        config["defaultSceneId"] = json!(id);
+    }
+    dir.write("vectr.project.json", &config.to_string());
+    dir.write(
+        "palettes/red.json",
+        &palette("red", &[("accent", "#ff0000")]),
+    );
+    dir.write(
+        "palettes/blue.json",
+        &palette("blue", &[("accent", "#0000ff")]),
+    );
+    dir.write("scenes/red.json", &colored_scene("red", "red").to_string());
+    dir.write(
+        "scenes/blue.json",
+        &colored_scene("blue", "blue").to_string(),
+    );
+    dir
+}
+
+/// Reads a render model written by a command and returns its first node's fill.
+fn first_fill(path: &std::path::Path) -> String {
+    let text = std::fs::read_to_string(path).expect("the render model was written");
+    let model: Value = serde_json::from_str(&text).expect("the render model is JSON");
+    model["nodes"][0]["paint"]["fill"]["value"]
+        .as_str()
+        .expect("the first node carries a resolved fill")
+        .to_string()
 }
 
 #[test]
@@ -99,10 +153,7 @@ fn no_arguments_prints_usage_and_exits_zero() {
 #[test]
 fn a_valid_scene_compiles_and_exits_zero_writing_the_model() {
     let dir = project_with("cli-compile", VALID_SCENE);
-    let output = run_vectr(
-        dir.path(),
-        &["compile", "scenes/scene.json", "--out", "model.json"],
-    );
+    let output = run_vectr(dir.path(), &["compile", "scene", "--out", "model.json"]);
     assert_eq!(code(&output), 0, "{}", stderr(&output));
 
     let text = std::fs::read_to_string(dir.path().join("model.json")).expect("the model");
@@ -112,7 +163,7 @@ fn a_valid_scene_compiles_and_exits_zero_writing_the_model() {
 #[test]
 fn an_invalid_scene_exits_one_with_diagnostics() {
     let dir = project_with("cli-invalid", INVALID_SCENE);
-    let output = run_vectr(dir.path(), &["validate", "scenes/scene.json"]);
+    let output = run_vectr(dir.path(), &["validate", "scene"]);
     assert_eq!(code(&output), 1);
     assert!(stderr(&output).contains("E_SCHEMA"), "{}", stderr(&output));
 }
@@ -120,7 +171,7 @@ fn an_invalid_scene_exits_one_with_diagnostics() {
 #[test]
 fn check_only_writes_nothing_and_reflects_validity() {
     let dir = project_with("cli-check", VALID_SCENE);
-    let output = run_vectr(dir.path(), &["compile", "scenes/scene.json", "--check"]);
+    let output = run_vectr(dir.path(), &["compile", "scene", "--check"]);
     assert_eq!(code(&output), 0, "{}", stderr(&output));
     assert!(
         !dir.path().join("dist/scene.json").exists(),
@@ -129,16 +180,32 @@ fn check_only_writes_nothing_and_reflects_validity() {
 }
 
 #[test]
-fn a_missing_input_file_is_a_clear_error_with_a_non_zero_exit() {
-    let dir = TempDir::new("cli-missing");
-    let output = run_vectr(dir.path(), &["validate", "absent.json"]);
-    assert_ne!(code(&output), 0);
+fn a_named_scene_no_document_provides_is_a_clear_error() {
+    let dir = project_with("cli-missing-scene", VALID_SCENE);
+    let output = run_vectr(dir.path(), &["validate", "absent"]);
     assert_eq!(code(&output), 2);
+    let err = stderr(&output);
+    assert!(err.contains("absent"), "the missing scene is named: {err}");
     assert!(
-        stderr(&output).contains("cannot read"),
-        "{}",
-        stderr(&output)
+        err.contains("was not found"),
+        "the error says the scene was not found: {err}"
     );
+}
+
+#[test]
+fn an_identifier_that_escapes_the_scene_directory_is_refused() {
+    // An identifier is untrusted: it must not name a file outside `scenes/`
+    // (NFR-021). The document exists, but only under a rejected identifier.
+    let dir = project_with("cli-escape", VALID_SCENE);
+    for id in ["../scene", "nested/scene", "."] {
+        let output = run_vectr(dir.path(), &["validate", id]);
+        assert_eq!(code(&output), 2, "`{id}` must be refused");
+        assert!(
+            stderr(&output).contains("not a valid scene identifier"),
+            "{}",
+            stderr(&output)
+        );
+    }
 }
 
 #[test]
@@ -147,12 +214,7 @@ fn an_unwritable_output_path_is_a_clear_error_with_a_non_zero_exit() {
     dir.write("blocker", "not a directory");
     let output = run_vectr(
         dir.path(),
-        &[
-            "compile",
-            "scenes/scene.json",
-            "--out",
-            "blocker/model.json",
-        ],
+        &["compile", "scene", "--out", "blocker/model.json"],
     );
     assert_eq!(code(&output), 5);
     assert!(
@@ -166,10 +228,7 @@ fn an_unwritable_output_path_is_a_clear_error_with_a_non_zero_exit() {
 fn a_failed_compile_leaves_an_existing_output_untouched() {
     let dir = project_with("cli-untouched", INVALID_SCENE);
     dir.write("model.json", "previous");
-    let output = run_vectr(
-        dir.path(),
-        &["compile", "scenes/scene.json", "--out", "model.json"],
-    );
+    let output = run_vectr(dir.path(), &["compile", "scene", "--out", "model.json"]);
     assert_ne!(code(&output), 0);
     assert_eq!(
         std::fs::read_to_string(dir.path().join("model.json")).expect("reads"),
@@ -181,12 +240,12 @@ fn a_failed_compile_leaves_an_existing_output_untouched() {
 #[test]
 fn validate_json_emits_machine_readable_findings() {
     let valid = project_with("cli-json-valid", VALID_SCENE);
-    let output = run_vectr(valid.path(), &["validate", "--json", "scenes/scene.json"]);
+    let output = run_vectr(valid.path(), &["validate", "--json", "scene"]);
     assert_eq!(code(&output), 0);
     assert_eq!(stdout(&output).trim(), "[]");
 
     let invalid = project_with("cli-json-invalid", INVALID_SCENE);
-    let output = run_vectr(invalid.path(), &["validate", "--json", "scenes/scene.json"]);
+    let output = run_vectr(invalid.path(), &["validate", "--json", "scene"]);
     assert_eq!(code(&output), 1);
     let parsed: serde_json::Value =
         serde_json::from_str(stdout(&output).trim()).expect("valid JSON");
@@ -197,28 +256,16 @@ fn validate_json_emits_machine_readable_findings() {
 fn the_exit_codes_distinguish_each_failure_class() {
     // 1: invalid scene.
     let invalid = project_with("cli-exit-1", INVALID_SCENE);
-    assert_eq!(
-        code(&run_vectr(
-            invalid.path(),
-            &["validate", "scenes/scene.json"]
-        )),
-        1
-    );
+    assert_eq!(code(&run_vectr(invalid.path(), &["validate", "scene"])), 1);
 
-    // 2: usage error or missing input.
+    // 2: usage error or missing scene.
     let usage = TempDir::new("cli-exit-2");
-    assert_eq!(
-        code(&run_vectr(usage.path(), &["validate", "absent.json"])),
-        2
-    );
+    assert_eq!(code(&run_vectr(usage.path(), &["validate", "absent"])), 2);
 
     // 3: compilation failure (a cycle).
     let cyclic = project_with("cli-exit-3", CYCLIC_SCENE);
     assert_eq!(
-        code(&run_vectr(
-            cyclic.path(),
-            &["compile", "scenes/scene.json", "--check"]
-        )),
+        code(&run_vectr(cyclic.path(), &["compile", "scene", "--check"])),
         3
     );
 
@@ -227,7 +274,7 @@ fn the_exit_codes_distinguish_each_failure_class() {
     assert_eq!(
         code(&run_vectr(
             missing_font.path(),
-            &["compile", "scenes/scene.json", "--check"]
+            &["compile", "scene", "--check"]
         )),
         4
     );
@@ -238,12 +285,7 @@ fn the_exit_codes_distinguish_each_failure_class() {
     assert_eq!(
         code(&run_vectr(
             unwritable.path(),
-            &[
-                "compile",
-                "scenes/scene.json",
-                "--out",
-                "blocker/model.json"
-            ]
+            &["compile", "scene", "--out", "blocker/model.json"]
         )),
         5
     );
@@ -254,14 +296,7 @@ fn export_svg_writes_a_valid_document_and_exits_zero() {
     let dir = project_with("cli-svg", VALID_SCENE);
     let output = run_vectr(
         dir.path(),
-        &[
-            "export",
-            "scenes/scene.json",
-            "--format",
-            "svg",
-            "--out",
-            "out.svg",
-        ],
+        &["export", "scene", "--format", "svg", "--out", "out.svg"],
     );
     assert_eq!(code(&output), 0, "{}", stderr(&output));
     let svg = std::fs::read_to_string(dir.path().join("out.svg")).expect("the svg");
@@ -273,14 +308,7 @@ fn export_png_writes_a_png_and_exits_zero() {
     let dir = project_with("cli-png", VALID_SCENE);
     let output = run_vectr(
         dir.path(),
-        &[
-            "export",
-            "scenes/scene.json",
-            "--format",
-            "png",
-            "--out",
-            "out.png",
-        ],
+        &["export", "scene", "--format", "png", "--out", "out.png"],
     );
     assert_eq!(code(&output), 0, "{}", stderr(&output));
     let bytes = std::fs::read(dir.path().join("out.png")).expect("the png");
@@ -293,10 +321,27 @@ fn init_scaffolds_a_project_and_is_idempotent() {
     let output = run_vectr(dir.path(), &["init", "habit"]);
     assert_eq!(code(&output), 0, "{}", stderr(&output));
 
-    let config = dir.path().join("habit/vectr.project.json");
+    let project = dir.path().join("habit");
+    let config = project.join("vectr.project.json");
     assert!(config.is_file(), "the project config is written");
-    let scene = dir.path().join("habit/scenes/example.json");
-    assert!(scene.is_file(), "the starter scene is written");
+
+    // The starter scene lives under `scenes/` and the project names it as the
+    // default; there is no scene document at the project root (FEAT-016, D-032).
+    let scene = project.join("scenes/example.json");
+    assert!(
+        scene.is_file(),
+        "the starter scene is written under scenes/"
+    );
+    assert!(
+        !project.join("scene.json").exists(),
+        "no scene document at the project root"
+    );
+    let config_value: Value =
+        serde_json::from_str(&std::fs::read_to_string(&config).expect("reads")).expect("JSON");
+    assert_eq!(
+        config_value["defaultSceneId"], "example",
+        "the project names the starter scene as its default"
+    );
 
     std::fs::write(&scene, "hand-edited").expect("the author edits the scene");
     let output = run_vectr(dir.path(), &["init", "habit"]);
@@ -314,25 +359,83 @@ fn init_scaffolds_a_project_and_is_idempotent() {
 }
 
 #[test]
+fn an_omitted_scene_uses_the_project_default() {
+    let dir = two_scene_project("cli-default", Some("blue"));
+    let output = run_vectr(dir.path(), &["compile", "--out", "model.json"]);
+    assert_eq!(code(&output), 0, "{}", stderr(&output));
+    assert_eq!(
+        first_fill(&dir.path().join("model.json")),
+        "#0000ff",
+        "the default scene's palette resolved"
+    );
+}
+
+#[test]
+fn a_project_that_names_no_default_reports_no_scene_selected() {
+    let dir = two_scene_project("cli-no-default", None);
+    let output = run_vectr(dir.path(), &["compile", "--out", "model.json"]);
+    assert_eq!(code(&output), 2, "{}", stderr(&output));
+    let err = stderr(&output);
+    assert!(
+        err.contains("no scene") && err.contains("default"),
+        "the error reports that no scene was selected: {err}"
+    );
+    assert!(
+        !dir.path().join("model.json").exists(),
+        "nothing is chosen or written when no scene is selected"
+    );
+}
+
+#[test]
+fn a_default_scene_that_resolves_to_no_document_names_the_missing_scene() {
+    let dir = two_scene_project("cli-default-missing", Some("absent"));
+    let output = run_vectr(dir.path(), &["validate"]);
+    assert_eq!(code(&output), 2, "{}", stderr(&output));
+    let err = stderr(&output);
+    assert!(
+        err.contains("absent"),
+        "the missing default scene is named: {err}"
+    );
+}
+
+#[test]
+fn a_named_scene_overrides_the_project_default() {
+    let dir = two_scene_project("cli-named-override", Some("red"));
+    let output = run_vectr(dir.path(), &["compile", "blue", "--out", "model.json"]);
+    assert_eq!(code(&output), 0, "{}", stderr(&output));
+    assert_eq!(
+        first_fill(&dir.path().join("model.json")),
+        "#0000ff",
+        "the named scene overrides the default"
+    );
+}
+
+#[test]
+fn a_named_scene_in_a_multi_scene_project_resolves_only_its_own_assets() {
+    let dir = two_scene_project("cli-multi-scene", Some("red"));
+
+    let red = run_vectr(dir.path(), &["compile", "red", "--out", "red.json"]);
+    assert_eq!(code(&red), 0, "{}", stderr(&red));
+    let blue = run_vectr(dir.path(), &["compile", "blue", "--out", "blue.json"]);
+    assert_eq!(code(&blue), 0, "{}", stderr(&blue));
+
+    assert_eq!(first_fill(&dir.path().join("red.json")), "#ff0000");
+    assert_eq!(first_fill(&dir.path().join("blue.json")), "#0000ff");
+}
+
+#[test]
 fn the_documented_key_commands_work_against_the_fixture() {
-    let root = workspace_root();
+    let fixtures = workspace_root().join("fixtures");
     let dir = TempDir::new("cli-fixture");
     let out = dir.path().join("scene.svg");
     let out_arg = out.to_str().expect("utf-8 path");
 
-    let validate = run_vectr(&root, &["validate", "fixtures/scene.json"]);
+    let validate = run_vectr(&fixtures, &["validate", "example"]);
     assert_eq!(code(&validate), 0, "{}", stderr(&validate));
 
     let export = run_vectr(
-        &root,
-        &[
-            "export",
-            "fixtures/scene.json",
-            "--format",
-            "svg",
-            "--out",
-            out_arg,
-        ],
+        &fixtures,
+        &["export", "example", "--format", "svg", "--out", out_arg],
     );
     assert_eq!(code(&export), 0, "{}", stderr(&export));
     let svg = std::fs::read_to_string(&out).expect("the svg");
@@ -344,9 +447,22 @@ fn the_documented_key_commands_work_against_the_fixture() {
 }
 
 #[test]
+fn the_fixture_project_names_its_default_scene_and_addresses_another() {
+    // The fixture project is a two-scene project laid out per D-032: scenes live
+    // under `scenes/` and the project names one as its default.
+    let fixtures = workspace_root().join("fixtures");
+
+    let default = run_vectr(&fixtures, &["validate"]);
+    assert_eq!(code(&default), 0, "{}", stderr(&default));
+
+    let named = run_vectr(&fixtures, &["validate", "mark"]);
+    assert_eq!(code(&named), 0, "{}", stderr(&named));
+}
+
+#[test]
 fn the_default_output_path_is_under_dist() {
     let dir = project_with("cli-default-out", VALID_SCENE);
-    let output = run_vectr(dir.path(), &["compile", "scenes/scene.json"]);
+    let output = run_vectr(dir.path(), &["compile", "scene"]);
     assert_eq!(code(&output), 0, "{}", stderr(&output));
     assert!(
         dir.path().join("dist/scene.json").is_file(),
@@ -362,14 +478,7 @@ fn a_density_flag_on_svg_is_a_usage_error() {
     let dir = project_with("cli-density", VALID_SCENE);
     let output = run_vectr(
         dir.path(),
-        &[
-            "export",
-            "scenes/scene.json",
-            "--format",
-            "svg",
-            "--density",
-            "2",
-        ],
+        &["export", "scene", "--format", "svg", "--density", "2"],
     );
     assert_eq!(code(&output), 2);
 }
