@@ -17,7 +17,7 @@ docs/Vectr/ — git submodule, pinned at f026ecf, remote https://github.com/vang
 Scratch: scratch/<task>/ — gitignored, private to the task's owner.
 
 ## Stack
-Rust (stable, pinned by rust-toolchain.toml), cargo workspace. serde + schemars for the scene model and the generated JSON Schema; lyon + i_overlay for path geometry, boolean and offset; rustybuzz + ttf-parser for text and outlining; resvg/tiny-skia as the rasterizer behind the export layer; an in-crate vector PDF emitter. Evaluation harness: multiple pinned providers (OpenAI, Anthropic, Google) plus an OpenCode adapter. Distributed as crates.io packages and signed GitHub Release binaries with checksums for macOS, Linux and Windows.
+Rust (stable, pinned by rust-toolchain.toml), cargo workspace. serde + schemars for the scene model and the generated JSON Schema; lyon + i_overlay for path geometry, boolean and offset; harfrust + skrifa for text and outlining; resvg/tiny-skia as the rasterizer behind the export layer; an in-crate vector PDF emitter. Evaluation harness: multiple pinned providers (OpenAI, Anthropic, Google) plus an OpenCode adapter. Distributed as crates.io packages and signed GitHub Release binaries with checksums for macOS, Linux and Windows.
 
 ## Structure
 - Cargo.toml, Cargo.lock, rust-toolchain.toml
@@ -77,10 +77,14 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | T-007 | FEAT-011 | backend-engineer | Done | C-002, C-003 |
 | T-008 | FEAT-012 | backend-engineer | Done | C-002 |
 | T-009 | FEAT-013 | backend-engineer | Done | C-002 |
-| T-010 | FEAT-024 | backend-engineer | Blocked | C-002 |
+| T-010 | FEAT-024 | backend-engineer | Done | C-002 |
 | T-011 | FEAT-016 | backend-engineer | Done | C-004 |
-| T-020 | FEAT-002, FEAT-011 | backend-engineer | In Progress | C-001, C-003 |
-| T-022 | FEAT-016, FEAT-024 | backend-engineer | Backlog | C-004 |
+| T-020 | FEAT-002, FEAT-011 | backend-engineer | Done | C-001, C-003 |
+| T-021 | FEAT-024 | backend-engineer | Done | C-002, C-003 |
+| T-022 | FEAT-016, FEAT-024 | backend-engineer | Done | C-004 |
+| T-023 | FEAT-024 | backend-engineer | Done | C-002 |
+| T-024 | — (foundation) | infra-engineer | Done | — |
+| T-025 | — (foundation) | backend-engineer | Done | — |
 | T-012 | — (foundation) | infra-engineer | Done | — |
 | T-013 | FEAT-002, FEAT-003 | product-shaper | Done | C-001 |
 | T-014 | FEAT-002, FEAT-003 | backend-engineer | Done | C-001, C-003 |
@@ -109,6 +113,10 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | D-014 | The render model is serializable to camelCase JSON, and `vectr compile --out` writes it. | C-004 reserves `compile --out`, user-flow's compile stage yields a render model, and the MCP compile tool returns it; the model must cross the process/tool boundary as data. | lead |
 | D-015 | A stroke's colour is a palette token the element names (`strokeToken`), parallel to fill; `StrokeProfile` carries geometry only, and a stroke needs both a profile and a colour token. | The docs settled no stroke-colour source, so the user directed the gap to product-shaper; the spec now keeps every colour in the palette (FEAT-007) with no silent fallback. | user |
 | D-016 | The render model retains element names and group nesting: each node carries its ancestor group chain, and the SVG exporter emits nested named groups. | FEAT-011 and FEAT-012 require named-group preservation in Phase 1; the flat paint-order node list keeps the seam simple while carrying the structure the exporter needs. FEAT-026 is the accessible-metadata layer above it. | lead |
+| D-017 | A text element that names no font resolves to the caller-supplied font asset with id `default`, loaded from the bundled open-licensed font. | The docs say text with no font uses the default open-licensed font but name no id; the convention gives the compiler and the font manager a stable key, and the caller decides which font fills it. | lead |
+| D-018 | A font asset with id `fallback` supplies the fallback font for glyphs the resolved font lacks, and the compiler carries it into the render model's font table. | FEAT-024 requires a missing glyph to be substituted from a fallback font rather than drawn as a blank box, but the docs name no fallback id and no text node references it; the convention makes the fallback reachable. | lead |
+| D-019 | Migrate the text stack from rustybuzz + ttf-parser to harfrust + skrifa. | RustSec flags rustybuzz (RUSTSEC-2026-0206) and ttf-parser (RUSTSEC-2026-0192) unmaintained with no safe upgrade; harfrust and skrifa are the named maintained successors, keeping NFR-020's dependency gate green without ignores. Supersedes the text portion of D-007. | user |
+| D-020 | The project layout includes an `assets/` store of Asset documents (id, kind, path, license) for user-supplied fonts, scaffolded by `vectr init`. | D-009 named no home for a user-supplied font, which FEAT-024 requires; the Asset entity already models a font by path and licence. Extends D-009. | lead |
 
 ## Definition of Done
 - Every acceptance criterion in the task's FEAT file is met, including its edge cases and failure states.
