@@ -10,7 +10,9 @@ mod common;
 
 use common::*;
 use serde_json::json;
-use vectr_core::style::{validate_gradient, GRADIENT, UNDEFINED_TOKEN, UNUSED_GRADIENT};
+use vectr_core::style::{
+    validate_gradient, GRADIENT, UNDEFINED_GRADIENT, UNDEFINED_TOKEN, UNUSED_GRADIENT,
+};
 use vectr_core::{Gradient, StyleContext};
 
 /// A gradient document with the given stops, as `(offset, token)` pairs.
@@ -142,6 +144,36 @@ fn a_gradient_stop_naming_a_missing_token_is_an_error_naming_the_token() {
 }
 
 #[test]
+fn an_element_referencing_an_undefined_gradient_is_an_error_naming_it() {
+    let mut card = rect("card", 0, 0.0, 0.0, 10.0, 10.0);
+    card["fill"] = gradient_paint("ghost");
+    let document = scene_with(vec![card], None, Some("brand"));
+
+    // The project supplies a different gradient, so `ghost` is a missing
+    // reference rather than a gradient merely left unresolved (C-002).
+    let palette = brand();
+    let gradients = [parse_gradient(
+        "fade",
+        "linear",
+        &[(0.0, "accent"), (1.0, "ink")],
+    )];
+    let style = StyleContext {
+        palette: Some(&palette),
+        strokes: &[],
+        gradients: &gradients,
+        fonts: &[],
+        recipe: None,
+    };
+
+    let diagnostics = compile_with(&document, &style).expect_err("refused");
+    let error = diagnostics
+        .errors()
+        .find(|error| error.code == UNDEFINED_GRADIENT)
+        .expect("an undefined-gradient error");
+    assert!(error.message.contains("ghost"), "{}", error.message);
+}
+
+#[test]
 fn changing_a_token_restyles_every_element_using_the_gradient_in_one_recompile() {
     let mut first = rect("first", 0, 0.0, 0.0, 10.0, 10.0);
     first["fill"] = gradient_paint("fade");
@@ -193,6 +225,64 @@ fn changing_a_token_restyles_every_element_using_the_gradient_in_one_recompile()
         };
         assert_eq!(gradient.stops[0].color, "#0000ff");
     }
+}
+
+#[test]
+fn a_gradient_fill_rasterizes_its_stop_colours_in_png() {
+    let mut card = rect("card", 0, 0.0, 0.0, 100.0, 100.0);
+    card["fill"] = gradient_paint("fade");
+    let document = scene_with(vec![card], None, Some("brand"));
+
+    let palette = brand();
+    let gradients = [parse_gradient(
+        "fade",
+        "linear",
+        &[(0.0, "accent"), (1.0, "ink")],
+    )];
+    let style = StyleContext {
+        palette: Some(&palette),
+        strokes: &[],
+        gradients: &gradients,
+        fonts: &[],
+        recipe: None,
+    };
+    let model = compile_with(&document, &style).expect("compiles");
+
+    let bytes =
+        vectr_core::export_png(&model, &vectr_core::RasterOptions::default()).expect("exports");
+    let image = tiny_skia::Pixmap::decode_png(&bytes).expect("a PNG");
+    assert_eq!((image.width(), image.height()), (400, 400));
+
+    // The default linear gradient runs left to right across the rect's bounding
+    // box (0..100 in x), so sampling inside the rect shows the two ends differ:
+    // the left approaches the `accent` stop, the right the `ink` stop.
+    let left = image.pixel(10, 50).expect("in bounds").demultiply();
+    let right = image.pixel(90, 50).expect("in bounds").demultiply();
+    assert!(
+        left.red() > right.red(),
+        "the gradient shades between its stops: left {left:?}, right {right:?}"
+    );
+}
+
+#[test]
+fn a_gradient_type_that_is_neither_linear_nor_radial_is_not_expressible() {
+    let document = json!({
+        "id": "fade",
+        "projectId": "p",
+        "name": "Fade",
+        "type": "conic",
+        "stops": [
+            { "offset": 0, "token": "accent" },
+            { "offset": 1, "token": "ink" }
+        ]
+    })
+    .to_string();
+
+    let diagnostics = vectr_core::parse_gradient(&document).expect_err("refused");
+    assert!(
+        diagnostics.has_errors(),
+        "the language defines no conic or mesh gradient: {diagnostics:?}"
+    );
 }
 
 #[test]
