@@ -9,8 +9,9 @@
 //! (FEAT-005, FEAT-027),
 //! [`compiler`] compiles a validated scene into one [`render`] model shared by
 //! every exporter (FEAT-011), [`render`] defines that model (C-003), [`fonts`]
-//! finalizes a text node's glyph geometry (FEAT-024), and [`export`] writes that
-//! model to an output format (FEAT-012).
+//! finalizes a text node's glyph geometry (FEAT-024), [`schema`] publishes the
+//! language contract for discovery (FEAT-017), and [`export`] writes that model
+//! to an output format (FEAT-012).
 
 pub mod compiler;
 pub mod composition;
@@ -29,6 +30,7 @@ pub mod fonts;
 pub mod primitives;
 pub mod render;
 pub mod scene;
+pub mod schema;
 pub mod style;
 
 pub use compiler::{compile, compile_with_style, FontAsset, StyleContext, DEFAULT_FONT_ID};
@@ -49,6 +51,7 @@ pub use scene::{
     Element, ElementKind, Geometry, Location, PaintKind, ProjectionAxis, Scene, Severity,
     TextAlign, Transform, MAX_SCENE_BYTES,
 };
+pub use schema::{schema, schema_for, SchemaForm, SCHEMA_VERSION, UNKNOWN_SCHEMA_TYPE};
 pub use style::{
     parse_gradient, parse_palette, parse_stroke_profile, parse_style_recipe, resolve_fill,
     resolve_gradient, resolve_stroke, resolve_stroke_paint, validate_gradient,
