@@ -44,7 +44,7 @@ use vectr_core::{
 };
 
 /// The project configuration that marks a directory as a project root.
-const PROJECT_FILE: &str = "vectr.project.json";
+pub(crate) const PROJECT_FILE: &str = "vectr.project.json";
 
 /// The folder holding palette documents.
 const PALETTE_DIR: &str = "palettes";
@@ -295,14 +295,23 @@ pub fn project_root(scene_path: &Path) -> PathBuf {
         Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
         _ => PathBuf::from("."),
     };
-    let mut current: Option<&Path> = Some(start.as_path());
+    project_root_from(&start)
+}
+
+/// Finds the project root at or above `start`: the nearest ancestor holding the
+/// project configuration, or `start` itself when there is none.
+///
+/// A command that addresses a scene by identifier discovers its project from the
+/// working directory, so it walks up from there (FEAT-016, C-004).
+pub fn project_root_from(start: &Path) -> PathBuf {
+    let mut current: Option<&Path> = Some(start);
     while let Some(dir) = current {
         if dir.join(PROJECT_FILE).is_file() {
             return dir.to_path_buf();
         }
         current = dir.parent();
     }
-    start
+    start.to_path_buf()
 }
 
 /// Whether a scene draws any text, and so needs a font at all.
@@ -329,18 +338,27 @@ fn bundled_fonts() -> Vec<FontAsset> {
     ]
 }
 
-/// Refuses an identifier that is not a plain file stem, so a scene cannot name
-/// its way out of the asset directory (NFR-021, NFR-024).
-fn safe_id(id: &str) -> Result<(), Diagnostics> {
-    let plain = !id.is_empty()
+/// Whether an identifier is a plain file stem: non-empty, no path separators,
+/// and no `.`/`..` component.
+///
+/// Shared by every identifier-addressed document — palettes, recipes, scenes —
+/// so an id from an untrusted scene or command line cannot name its way out of
+/// its directory (NFR-021, NFR-024).
+pub(crate) fn is_plain_id(id: &str) -> bool {
+    !id.is_empty()
         && id != "."
         && id != ".."
         && !id.contains('/')
         && !id.contains('\\')
         && Path::new(id)
             .components()
-            .all(|component| matches!(component, std::path::Component::Normal(_)));
-    if plain {
+            .all(|component| matches!(component, std::path::Component::Normal(_)))
+}
+
+/// Refuses an identifier that is not a plain file stem, so a scene cannot name
+/// its way out of the asset directory (NFR-021, NFR-024).
+pub(crate) fn safe_id(id: &str) -> Result<(), Diagnostics> {
+    if is_plain_id(id) {
         Ok(())
     } else {
         Err(style_error(format!(
@@ -385,6 +403,19 @@ fn load_palette(root: &Path, id: &str) -> Result<Palette, Diagnostics> {
 /// ignored, so a mistyped `defaultRecipeId` cannot silently leave the project
 /// rendering without the recipe it meant to apply (NFR-011).
 fn load_default_recipe_id(root: &Path) -> Result<Option<String>, Diagnostics> {
+    project_string_field(root, "defaultRecipeId")
+}
+
+/// Reads a string field from the project configuration, if the configuration
+/// names it.
+///
+/// A project configuration that cannot be read or parsed is reported rather than
+/// ignored, so a mistyped `defaultRecipeId` or `defaultSceneId` cannot silently
+/// leave the project without the default it meant to name (NFR-011).
+pub(crate) fn project_string_field(
+    root: &Path,
+    field: &str,
+) -> Result<Option<String>, Diagnostics> {
     let path = root.join(PROJECT_FILE);
     if !path.is_file() {
         return Ok(None);
@@ -406,20 +437,20 @@ fn load_default_recipe_id(root: &Path) -> Result<Option<String>, Diagnostics> {
             path.display()
         ))
     })?;
-    let Some(field) = value.get("defaultRecipeId") else {
+    let Some(raw) = value.get(field) else {
         return Ok(None);
     };
-    if field.is_null() {
+    if raw.is_null() {
         return Ok(None);
     }
-    match field.as_str() {
+    match raw.as_str() {
         Some(id) if !id.is_empty() => Ok(Some(id.to_string())),
         Some(_) => Err(style_error(format!(
-            "project configuration `{}` has an empty `defaultRecipeId`",
+            "project configuration `{}` has an empty `{field}`",
             path.display()
         ))),
         None => Err(style_error(format!(
-            "project configuration `{}` has a non-string `defaultRecipeId`",
+            "project configuration `{}` has a non-string `{field}`",
             path.display()
         ))),
     }

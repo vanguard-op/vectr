@@ -12,9 +12,15 @@
 //! lives here too, embedded from the agent skill's reference. Both front ends
 //! can hand a coding agent the one procedure without shipping a second copy of
 //! it.
+//!
+//! A command addresses a scene by its identifier rather than by a file path;
+//! [`resolve_scene`] turns the identifier a command named — or the project's
+//! `defaultSceneId` — into the document at `scenes/<id>.json` (FEAT-016, D-032).
 
 mod assets;
 mod guide;
+mod scene;
 
-pub use assets::{project_root, ProjectAssets, STYLE_ASSET};
+pub use assets::{project_root, project_root_from, ProjectAssets, STYLE_ASSET};
 pub use guide::{authoring_guide, AUTHORING_GUIDE_FILE};
+pub use scene::{resolve_scene, ProjectScene, SCENE, SCENE_DIR};

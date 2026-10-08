@@ -16,9 +16,13 @@
 //! provides — its palette, stroke profiles, and fonts — and compile against
 //! them, so a scene's style and font references resolve to concrete values
 //! before anything is written (FEAT-005, FEAT-024).
+//!
+//! A scene is named by its identifier, resolved among the project's scene
+//! documents under `scenes/`, with the project discovered from the working
+//! directory. Omitting the scene uses the project's `defaultSceneId`; a project
+//! that names no default reports that no scene was selected (FEAT-016, D-032).
 
 use std::ffi::OsString;
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use vectr_core::compiler::FONT;
@@ -28,13 +32,13 @@ use vectr_core::scene::INVALID_COLOR;
 use vectr_core::{
     compile_with_style, export_png_reporting, export_svg_reporting, parse as parse_scene_source,
     schema, schema_for, validate as validate_scene_model, validate_gradient_usage,
-    validate_palette_usage, Diagnostic, DiagnosticCode, Diagnostics, RasterOptions, SchemaForm,
-    SvgOptions,
+    validate_palette_usage, Diagnostic, DiagnosticCode, Diagnostics, RasterOptions, Scene,
+    SchemaForm, SvgOptions,
 };
 
 use crate::init;
 use crate::output::write_atomic;
-use vectr_project::ProjectAssets;
+use vectr_project::{project_root_from, resolve_scene, ProjectAssets, ProjectScene};
 
 /// The command succeeded.
 pub const EXIT_SUCCESS: i32 = 0;
@@ -53,10 +57,14 @@ pub const EXIT_OUTPUT: i32 = 5;
 const USAGE: &str = "\
 Usage:
   vectr init [dir]
-  vectr validate <scene> [--json]
-  vectr compile <scene> [--out <file>] [--check]
-  vectr export <scene> --format svg|png [--out <file>] [--width <n>] [--height <n>] [--density <n>] [--background <color|transparent>]
-  vectr schema [--type <name>] [--compact]";
+  vectr validate [<scene>] [--json]
+  vectr compile [<scene>] [--out <file>] [--check]
+  vectr export [<scene>] --format svg|png [--out <file>] [--width <n>] [--height <n>] [--density <n>] [--background <color|transparent>]
+  vectr schema [--type <name>] [--compact]
+
+<scene> is a scene identifier resolved among the project's scenes; the project
+is found from the working directory. Omitting it uses the project's default
+scene.";
 
 /// One parsed command line.
 #[derive(Debug, Clone, PartialEq)]
@@ -72,15 +80,15 @@ pub enum Command {
     },
     /// Check a scene against the language contract.
     Validate {
-        /// The scene file to read.
-        scene: PathBuf,
+        /// The scene identifier to read; the project's default when absent.
+        scene: Option<String>,
         /// Emit the findings as JSON rather than as text.
         json: bool,
     },
     /// Compile a scene into its render model.
     Compile {
-        /// The scene file to read.
-        scene: PathBuf,
+        /// The scene identifier to read; the project's default when absent.
+        scene: Option<String>,
         /// Where to write the model; the default `dist/` path when absent.
         out: Option<PathBuf>,
         /// Compile without writing anything.
@@ -88,8 +96,8 @@ pub enum Command {
     },
     /// Export a scene to a raster or vector target.
     Export {
-        /// The scene file to read.
-        scene: PathBuf,
+        /// The scene identifier to read; the project's default when absent.
+        scene: Option<String>,
         /// The output format.
         format: Format,
         /// Where to write the output; the default `dist/` path when absent.
@@ -211,14 +219,39 @@ pub fn parse(args: Vec<OsString>) -> Result<Command, String> {
     }
 }
 
-/// Runs a parsed command.
+/// Runs a parsed command in the process's working directory.
 pub fn run(command: Command) -> Report {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    run_in(command, &cwd)
+}
+
+/// Runs a parsed command against `cwd`.
+///
+/// The project is discovered from `cwd`, scene identifiers resolve within it,
+/// and relative output paths are written under it. Splitting this from [`run`]
+/// keeps the working directory injectable, so the command logic is testable
+/// without changing the process's directory.
+pub fn run_in(command: Command, cwd: &Path) -> Report {
     match command {
         Command::Help => Report::success(help_text()),
         Command::Version => Report::success(format!("vectr {}\n", env!("CARGO_PKG_VERSION"))),
-        Command::Init { dir } => init::scaffold(&dir),
-        Command::Validate { scene, json } => validate_scene(&scene, json),
-        Command::Compile { scene, out, check } => compile_scene(&scene, out.as_deref(), check),
+        Command::Init { dir } => {
+            // The default target is the working directory itself, not `cwd/.`.
+            let dir = if dir.as_os_str() == "." {
+                cwd.to_path_buf()
+            } else {
+                absolute(cwd, &dir)
+            };
+            init::scaffold(&dir)
+        }
+        Command::Validate { scene, json } => match resolve(cwd, scene.as_deref()) {
+            Ok(scene) => validate_scene(&scene, json),
+            Err(report) => report,
+        },
+        Command::Compile { scene, out, check } => match resolve(cwd, scene.as_deref()) {
+            Ok(scene) => compile_scene(cwd, &scene, out.as_deref(), check),
+            Err(report) => report,
+        },
         Command::Export {
             scene,
             format,
@@ -227,16 +260,44 @@ pub fn run(command: Command) -> Report {
             height,
             density,
             background,
-        } => export_scene(
-            &scene,
-            format,
-            out.as_deref(),
-            width,
-            height,
-            density,
-            background.as_deref(),
-        ),
+        } => match resolve(cwd, scene.as_deref()) {
+            Ok(scene) => {
+                let target = out
+                    .as_deref()
+                    .map(|path| absolute(cwd, path))
+                    .unwrap_or_else(|| cwd.join(default_output(scene.id(), format.extension())));
+                export_scene(
+                    &scene,
+                    format,
+                    &target,
+                    width,
+                    height,
+                    density,
+                    background.as_deref(),
+                )
+            }
+            Err(report) => report,
+        },
         Command::Schema { type_name, compact } => schema_command(type_name.as_deref(), compact),
+    }
+}
+
+/// Resolves the scene a command named, or the project's default (FEAT-016).
+///
+/// A scene that cannot be resolved is missing input: exit 2 with a diagnostic
+/// naming the scene, never a silent choice among the project's scenes.
+fn resolve(cwd: &Path, requested: Option<&str>) -> Result<ProjectScene, Report> {
+    let root = project_root_from(cwd);
+    resolve_scene(&root, requested)
+        .map_err(|diagnostics| Report::failure(EXIT_USAGE, diagnostics_text(&diagnostics)))
+}
+
+/// Resolves a path against the working directory when it is relative.
+fn absolute(cwd: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        cwd.join(path)
     }
 }
 
@@ -253,7 +314,7 @@ fn parse_init(args: Vec<OsString>) -> Result<Command, String> {
                 _ => return Err(format!("unknown option `{text}` for `init`")),
             }
         }
-        set_scene(&mut dir, arg, "`init` accepts at most one directory")?;
+        set_dir(&mut dir, arg, "`init` accepts at most one directory")?;
     }
     Ok(Command::Init {
         dir: dir.unwrap_or_else(|| PathBuf::from(".")),
@@ -261,7 +322,7 @@ fn parse_init(args: Vec<OsString>) -> Result<Command, String> {
 }
 
 fn parse_validate(args: Vec<OsString>) -> Result<Command, String> {
-    let mut scene: Option<PathBuf> = None;
+    let mut scene: Option<String> = None;
     let mut json = false;
     for arg in args {
         let is_flag = arg
@@ -278,14 +339,13 @@ fn parse_validate(args: Vec<OsString>) -> Result<Command, String> {
                 _ => return Err(format!("unknown option `{text}` for `validate`")),
             }
         }
-        set_scene(&mut scene, arg, "`validate` accepts exactly one scene path")?;
+        set_scene_id(&mut scene, arg)?;
     }
-    let scene = scene.ok_or_else(|| "`validate` needs a scene path".to_string())?;
     Ok(Command::Validate { scene, json })
 }
 
 fn parse_compile(args: Vec<OsString>) -> Result<Command, String> {
-    let mut scene: Option<PathBuf> = None;
+    let mut scene: Option<String> = None;
     let mut out: Option<PathBuf> = None;
     let mut check = false;
     let mut i = 0;
@@ -293,7 +353,7 @@ fn parse_compile(args: Vec<OsString>) -> Result<Command, String> {
         let raw = args[i].clone();
         let text = raw.to_str().map(str::to_owned);
         match text.as_deref() {
-            None => set_scene(&mut scene, raw, "`compile` accepts exactly one scene path")?,
+            None => set_scene_id(&mut scene, raw)?,
             Some("-h") | Some("--help") => return Ok(Command::Help),
             Some("--check") => check = true,
             Some("--out") => out = Some(PathBuf::from(take_value(&args, &mut i, "--out")?)),
@@ -303,18 +363,17 @@ fn parse_compile(args: Vec<OsString>) -> Result<Command, String> {
                 } else if text.starts_with('-') && text != "-" {
                     return Err(format!("unknown option `{text}` for `compile`"));
                 } else {
-                    set_scene(&mut scene, raw, "`compile` accepts exactly one scene path")?;
+                    set_scene_id(&mut scene, raw)?;
                 }
             }
         }
         i += 1;
     }
-    let scene = scene.ok_or_else(|| "`compile` needs a scene path".to_string())?;
     Ok(Command::Compile { scene, out, check })
 }
 
 fn parse_export(args: Vec<OsString>) -> Result<Command, String> {
-    let mut scene: Option<PathBuf> = None;
+    let mut scene: Option<String> = None;
     let mut format: Option<Format> = None;
     let mut out: Option<PathBuf> = None;
     let mut width: Option<f64> = None;
@@ -327,7 +386,7 @@ fn parse_export(args: Vec<OsString>) -> Result<Command, String> {
         let raw = args[i].clone();
         let text = raw.to_str().map(str::to_owned);
         match text.as_deref() {
-            None => set_scene(&mut scene, raw, "`export` accepts exactly one scene path")?,
+            None => set_scene_id(&mut scene, raw)?,
             Some("-h") | Some("--help") => return Ok(Command::Help),
             Some(text) => {
                 if let Some(value) = text.strip_prefix("--format=") {
@@ -378,7 +437,7 @@ fn parse_export(args: Vec<OsString>) -> Result<Command, String> {
                         t if t.starts_with('-') && t != "-" => {
                             return Err(format!("unknown option `{t}` for `export`"))
                         }
-                        _ => set_scene(&mut scene, raw, "`export` accepts exactly one scene path")?,
+                        _ => set_scene_id(&mut scene, raw)?,
                     }
                 }
             }
@@ -386,7 +445,6 @@ fn parse_export(args: Vec<OsString>) -> Result<Command, String> {
         i += 1;
     }
 
-    let scene = scene.ok_or_else(|| "`export` needs a scene path".to_string())?;
     let format = format.ok_or_else(|| "`export` needs `--format svg|png`".to_string())?;
     Ok(Command::Export {
         scene,
@@ -450,12 +508,24 @@ fn take_value(args: &[OsString], index: &mut usize, flag: &str) -> Result<OsStri
         .ok_or_else(|| format!("`{flag}` needs a value"))
 }
 
-/// Records the single positional argument a subcommand accepts.
-fn set_scene(slot: &mut Option<PathBuf>, value: OsString, message: &str) -> Result<(), String> {
+/// Records the single directory `init` accepts.
+fn set_dir(slot: &mut Option<PathBuf>, value: OsString, message: &str) -> Result<(), String> {
     if slot.is_some() {
         return Err(message.to_string());
     }
     *slot = Some(PathBuf::from(value));
+    Ok(())
+}
+
+/// Records the single scene identifier a subcommand accepts.
+fn set_scene_id(slot: &mut Option<String>, value: OsString) -> Result<(), String> {
+    if slot.is_some() {
+        return Err("a command accepts at most one scene identifier".to_string());
+    }
+    let id = value
+        .into_string()
+        .map_err(|_| "the scene identifier is not valid UTF-8".to_string())?;
+    *slot = Some(id);
     Ok(())
 }
 
@@ -473,18 +543,13 @@ fn parse_number(value: &str, flag: &str) -> Result<f64, String> {
         .map_err(|_| format!("`--{flag}` needs a number, got `{value}`"))
 }
 
-fn validate_scene(scene: &Path, json: bool) -> Report {
-    let source = match read_scene(scene) {
-        Ok(source) => source,
-        Err(report) => return report,
-    };
-
-    let parsed = match parse_scene_source(&source) {
+fn validate_scene(scene: &ProjectScene, json: bool) -> Report {
+    let parsed = match parse_project_scene(scene) {
         Ok(parsed) => parsed,
-        Err(diagnostics) => return report_findings(EXIT_INVALID_SCENE, diagnostics, json),
+        Err((code, diagnostics)) => return report_findings(code, diagnostics, json),
     };
 
-    let assets = match ProjectAssets::load_for_scene(scene, &parsed) {
+    let assets = match ProjectAssets::load(scene.root(), &parsed) {
         Ok(assets) => assets,
         Err(diagnostics) => {
             return report_findings(asset_exit_code(&diagnostics), diagnostics, json)
@@ -510,18 +575,12 @@ fn validate_scene(scene: &Path, json: bool) -> Report {
     report_findings(code, findings, json)
 }
 
-fn compile_scene(scene: &Path, out: Option<&Path>, check: bool) -> Report {
-    let source = match read_scene(scene) {
-        Ok(source) => source,
-        Err(report) => return report,
-    };
-    let parsed = match parse_scene_source(&source) {
+fn compile_scene(cwd: &Path, scene: &ProjectScene, out: Option<&Path>, check: bool) -> Report {
+    let parsed = match parse_project_scene(scene) {
         Ok(parsed) => parsed,
-        Err(diagnostics) => {
-            return Report::failure(EXIT_INVALID_SCENE, diagnostics_text(&diagnostics))
-        }
+        Err((code, diagnostics)) => return Report::failure(code, diagnostics_text(&diagnostics)),
     };
-    let assets = match ProjectAssets::load_for_scene(scene, &parsed) {
+    let assets = match ProjectAssets::load(scene.root(), &parsed) {
         Ok(assets) => assets,
         Err(diagnostics) => {
             return Report::failure(
@@ -559,8 +618,8 @@ fn compile_scene(scene: &Path, out: Option<&Path>, check: bool) -> Report {
     }
 
     let target = out
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| default_output(scene, "json"));
+        .map(|path| absolute(cwd, path))
+        .unwrap_or_else(|| cwd.join(default_output(scene.id(), "json")));
     let text = match model.to_json_pretty() {
         Ok(text) => text,
         Err(diagnostics) => return Report::failure(EXIT_COMPILE, diagnostics_text(&diagnostics)),
@@ -569,9 +628,9 @@ fn compile_scene(scene: &Path, out: Option<&Path>, check: bool) -> Report {
 }
 
 fn export_scene(
-    scene: &Path,
+    scene: &ProjectScene,
     format: Format,
-    out: Option<&Path>,
+    target: &Path,
     width: Option<f64>,
     height: Option<f64>,
     density: Option<f64>,
@@ -597,17 +656,11 @@ fn export_scene(
         }
     }
 
-    let source = match read_scene(scene) {
-        Ok(source) => source,
-        Err(report) => return report,
-    };
-    let parsed = match parse_scene_source(&source) {
+    let parsed = match parse_project_scene(scene) {
         Ok(parsed) => parsed,
-        Err(diagnostics) => {
-            return Report::failure(EXIT_INVALID_SCENE, diagnostics_text(&diagnostics))
-        }
+        Err((code, diagnostics)) => return Report::failure(code, diagnostics_text(&diagnostics)),
     };
-    let assets = match ProjectAssets::load_for_scene(scene, &parsed) {
+    let assets = match ProjectAssets::load(scene.root(), &parsed) {
         Ok(assets) => assets,
         Err(diagnostics) => {
             return Report::failure(
@@ -678,10 +731,7 @@ fn export_scene(
         }
     };
 
-    let target = out
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| default_output(scene, format.extension()));
-    write_report(&target, &bytes, &warnings)
+    write_report(target, &bytes, &warnings)
 }
 
 /// Prints the language contract, or one type, mapping a bad request to exit 2.
@@ -739,26 +789,20 @@ fn write_report(target: &Path, bytes: &[u8], warnings: &str) -> Report {
     }
 }
 
-/// Reads a scene file, mapping a missing or unreadable file to exit 2.
-fn read_scene(scene: &Path) -> Result<String, Report> {
-    fs::read_to_string(scene).map_err(|error| {
-        Report::failure(
-            EXIT_USAGE,
-            format!("error: cannot read scene `{}`: {error}\n", scene.display()),
-        )
-    })
+/// Reads and parses a resolved scene document.
+///
+/// A document that cannot be read is missing input (exit 2); one that does not
+/// parse is an invalid scene (exit 1) (C-004).
+fn parse_project_scene(scene: &ProjectScene) -> Result<Scene, (i32, Diagnostics)> {
+    let source = scene
+        .source()
+        .map_err(|diagnostics| (EXIT_USAGE, diagnostics))?;
+    parse_scene_source(&source).map_err(|diagnostics| (EXIT_INVALID_SCENE, diagnostics))
 }
 
-/// The default output path for a scene: `dist/<stem>.<extension>`.
-fn default_output(scene: &Path, extension: &str) -> PathBuf {
-    let stem = scene
-        .file_stem()
-        .map(|stem| stem.to_os_string())
-        .unwrap_or_else(|| OsString::from("scene"));
-    let mut name = stem;
-    name.push(".");
-    name.push(extension);
-    Path::new("dist").join(name)
+/// The default output path for a scene: `dist/<id>.<extension>`.
+fn default_output(scene_id: &str, extension: &str) -> PathBuf {
+    Path::new("dist").join(format!("{scene_id}.{extension}"))
 }
 
 /// Classifies an export failure: a missing dependency outranks a usage error,
@@ -868,6 +912,18 @@ fn json_diagnostics(diagnostics: &Diagnostics) -> String {
 mod tests {
     use super::*;
     use crate::testing::TempDir;
+    use std::fs;
+
+    /// Writes a project whose `defaultSceneId` is `id`, holding one scene at
+    /// `scenes/<id>.json`.
+    fn project(dir: &TempDir, id: &str, text: &str) {
+        write_at(
+            dir,
+            "vectr.project.json",
+            &format!(r#"{{"defaultSceneId":"{id}"}}"#),
+        );
+        write_at(dir, &format!("scenes/{id}.json"), text);
+    }
 
     const VALID_SCENE: &str = r##"{
       "id": "scene-1",
@@ -951,12 +1007,6 @@ mod tests {
             render_diagnostic(&line),
             "error[E_PARSE]: syntax at line 2 column 5"
         );
-    }
-
-    fn write_scene(dir: &TempDir, name: &str, text: &str) -> PathBuf {
-        let path = dir.path().join(name);
-        fs::write(&path, text).expect("writes the scene");
-        path
     }
 
     #[test]
@@ -1069,16 +1119,24 @@ mod tests {
     #[test]
     fn validate_parses_the_scene_and_the_json_flag() {
         assert_eq!(
-            parse_args(&["validate", "scene.json"]).unwrap(),
+            parse_args(&["validate", "logo"]).unwrap(),
             Command::Validate {
-                scene: PathBuf::from("scene.json"),
+                scene: Some("logo".to_string()),
                 json: false
             }
         );
         assert_eq!(
-            parse_args(&["validate", "--json", "scene.json"]).unwrap(),
+            parse_args(&["validate", "--json", "logo"]).unwrap(),
             Command::Validate {
-                scene: PathBuf::from("scene.json"),
+                scene: Some("logo".to_string()),
+                json: true
+            }
+        );
+        // Omitting the scene is valid: the project's default is used.
+        assert_eq!(
+            parse_args(&["validate", "--json"]).unwrap(),
+            Command::Validate {
+                scene: None,
                 json: true
             }
         );
@@ -1087,16 +1145,16 @@ mod tests {
     #[test]
     fn compile_parses_out_and_check_in_both_flag_forms() {
         assert_eq!(
-            parse_args(&["compile", "scene.json", "--check"]).unwrap(),
+            parse_args(&["compile", "logo", "--check"]).unwrap(),
             Command::Compile {
-                scene: PathBuf::from("scene.json"),
+                scene: Some("logo".to_string()),
                 out: None,
                 check: true
             }
         );
         assert_eq!(
-            parse_args(&["compile", "scene.json", "--out", "dist/a.json"]).unwrap(),
-            parse_args(&["compile", "scene.json", "--out=dist/a.json"]).unwrap()
+            parse_args(&["compile", "logo", "--out", "dist/a.json"]).unwrap(),
+            parse_args(&["compile", "logo", "--out=dist/a.json"]).unwrap()
         );
     }
 
@@ -1104,7 +1162,7 @@ mod tests {
     fn export_parses_every_option() {
         let command = parse_args(&[
             "export",
-            "scene.json",
+            "logo",
             "--format",
             "png",
             "--out",
@@ -1122,7 +1180,7 @@ mod tests {
         assert_eq!(
             command,
             Command::Export {
-                scene: PathBuf::from("scene.json"),
+                scene: Some("logo".to_string()),
                 format: Format::Png,
                 out: Some(PathBuf::from("dist/a.png")),
                 width: Some(64.0),
@@ -1149,12 +1207,12 @@ mod tests {
     #[test]
     fn the_default_output_is_under_dist() {
         assert_eq!(
-            default_output(Path::new("scenes/logo.json"), "svg"),
+            default_output("logo", "svg"),
             PathBuf::from("dist").join("logo.svg")
         );
         assert_eq!(
-            default_output(Path::new("logo.json"), "json"),
-            PathBuf::from("dist").join("logo.json")
+            default_output("habit-logo", "json"),
+            PathBuf::from("dist").join("habit-logo.json")
         );
     }
 
@@ -1182,8 +1240,14 @@ mod tests {
     #[test]
     fn validate_reports_a_valid_scene_with_a_zero_exit() {
         let dir = TempDir::new("validate-valid");
-        let scene = write_scene(&dir, "scene.json", VALID_SCENE);
-        let report = run(Command::Validate { scene, json: false });
+        project(&dir, "scene-1", VALID_SCENE);
+        let report = run_in(
+            Command::Validate {
+                scene: None,
+                json: false,
+            },
+            dir.path(),
+        );
         assert_eq!(report.code, EXIT_SUCCESS);
         assert!(report.stderr.is_empty(), "{}", report.stderr);
     }
@@ -1191,28 +1255,41 @@ mod tests {
     #[test]
     fn validate_reports_an_invalid_scene_with_exit_one() {
         let dir = TempDir::new("validate-invalid");
-        let scene = write_scene(&dir, "scene.json", INVALID_SCENE);
-        let report = run(Command::Validate { scene, json: false });
+        project(&dir, "scene-1", INVALID_SCENE);
+        let report = run_in(
+            Command::Validate {
+                scene: None,
+                json: false,
+            },
+            dir.path(),
+        );
         assert_eq!(report.code, EXIT_INVALID_SCENE);
         assert!(report.stderr.contains("E_SCHEMA"), "{}", report.stderr);
     }
 
     #[test]
     fn validate_json_emits_a_machine_readable_array() {
-        let dir = TempDir::new("validate-json");
-        let valid = write_scene(&dir, "valid.json", VALID_SCENE);
-        let report = run(Command::Validate {
-            scene: valid,
-            json: true,
-        });
+        let valid = TempDir::new("validate-json-valid");
+        project(&valid, "scene-1", VALID_SCENE);
+        let report = run_in(
+            Command::Validate {
+                scene: None,
+                json: true,
+            },
+            valid.path(),
+        );
         assert_eq!(report.code, EXIT_SUCCESS);
         assert_eq!(report.stdout.trim(), "[]");
 
-        let invalid = write_scene(&dir, "invalid.json", INVALID_SCENE);
-        let report = run(Command::Validate {
-            scene: invalid,
-            json: true,
-        });
+        let invalid = TempDir::new("validate-json-invalid");
+        project(&invalid, "scene-1", INVALID_SCENE);
+        let report = run_in(
+            Command::Validate {
+                scene: None,
+                json: true,
+            },
+            invalid.path(),
+        );
         assert_eq!(report.code, EXIT_INVALID_SCENE);
         let parsed: serde_json::Value =
             serde_json::from_str(report.stdout.trim()).expect("valid JSON");
@@ -1220,26 +1297,90 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_scene_is_a_usage_error() {
-        let dir = TempDir::new("missing");
-        let report = run(Command::Compile {
-            scene: dir.path().join("absent.json"),
-            out: None,
-            check: false,
-        });
+    fn a_scene_identifier_no_document_provides_is_a_usage_error() {
+        let dir = TempDir::new("missing-named");
+        write_at(&dir, "vectr.project.json", "{}");
+        let report = run_in(
+            Command::Compile {
+                scene: Some("absent".to_string()),
+                out: None,
+                check: false,
+            },
+            dir.path(),
+        );
         assert_eq!(report.code, EXIT_USAGE);
+        assert!(report.stderr.contains("absent"), "{}", report.stderr);
+    }
+
+    #[test]
+    fn a_project_that_names_no_default_reports_no_scene_selected() {
+        let dir = TempDir::new("missing-default");
+        write_at(&dir, "vectr.project.json", "{}");
+        write_at(&dir, "scenes/one.json", VALID_SCENE);
+        write_at(&dir, "scenes/two.json", VALID_SCENE);
+
+        let report = run_in(
+            Command::Validate {
+                scene: None,
+                json: false,
+            },
+            dir.path(),
+        );
+        assert_eq!(report.code, EXIT_USAGE);
+        assert!(
+            report.stderr.contains("no default scene"),
+            "{}",
+            report.stderr
+        );
+    }
+
+    #[test]
+    fn a_default_scene_that_resolves_to_no_document_names_it() {
+        let dir = TempDir::new("default-missing");
+        write_at(&dir, "vectr.project.json", r#"{"defaultSceneId":"absent"}"#);
+
+        let report = run_in(
+            Command::Validate {
+                scene: None,
+                json: false,
+            },
+            dir.path(),
+        );
+        assert_eq!(report.code, EXIT_USAGE);
+        assert!(report.stderr.contains("absent"), "{}", report.stderr);
+    }
+
+    #[test]
+    fn a_named_scene_overrides_the_project_default() {
+        let dir = TempDir::new("named-override");
+        // The default is invalid; naming the valid scene must win.
+        write_at(&dir, "vectr.project.json", r#"{"defaultSceneId":"bad"}"#);
+        write_at(&dir, "scenes/bad.json", INVALID_SCENE);
+        write_at(&dir, "scenes/good.json", VALID_SCENE);
+
+        let report = run_in(
+            Command::Validate {
+                scene: Some("good".to_string()),
+                json: false,
+            },
+            dir.path(),
+        );
+        assert_eq!(report.code, EXIT_SUCCESS, "{}", report.stderr);
     }
 
     #[test]
     fn a_valid_scene_compiles_to_a_render_model() {
         let dir = TempDir::new("compile-valid");
-        let scene = write_scene(&dir, "scene.json", VALID_SCENE);
+        project(&dir, "scene-1", VALID_SCENE);
         let out = dir.path().join("model.json");
-        let report = run(Command::Compile {
-            scene,
-            out: Some(out.clone()),
-            check: false,
-        });
+        let report = run_in(
+            Command::Compile {
+                scene: None,
+                out: Some(out.clone()),
+                check: false,
+            },
+            dir.path(),
+        );
         assert_eq!(report.code, EXIT_SUCCESS);
         let text = fs::read_to_string(&out).expect("reads the model");
         vectr_core::render::parse(&text).expect("the output is a render model");
@@ -1248,12 +1389,15 @@ mod tests {
     #[test]
     fn a_compilation_failure_exits_three() {
         let dir = TempDir::new("compile-cycle");
-        let scene = write_scene(&dir, "scene.json", CYCLIC_SCENE);
-        let report = run(Command::Compile {
-            scene,
-            out: None,
-            check: true,
-        });
+        project(&dir, "scene-1", CYCLIC_SCENE);
+        let report = run_in(
+            Command::Compile {
+                scene: None,
+                out: None,
+                check: true,
+            },
+            dir.path(),
+        );
         assert_eq!(report.code, EXIT_COMPILE);
         assert!(report.stderr.contains("E_CYCLE"), "{}", report.stderr);
     }
@@ -1261,13 +1405,16 @@ mod tests {
     #[test]
     fn check_writes_nothing() {
         let dir = TempDir::new("compile-check");
-        let scene = write_scene(&dir, "scene.json", VALID_SCENE);
+        project(&dir, "scene-1", VALID_SCENE);
         let out = dir.path().join("model.json");
-        let report = run(Command::Compile {
-            scene,
-            out: Some(out.clone()),
-            check: true,
-        });
+        let report = run_in(
+            Command::Compile {
+                scene: None,
+                out: Some(out.clone()),
+                check: true,
+            },
+            dir.path(),
+        );
         assert_eq!(report.code, EXIT_SUCCESS);
         assert!(!out.exists(), "no output under --check");
     }
@@ -1275,14 +1422,17 @@ mod tests {
     #[test]
     fn a_failed_compile_leaves_an_existing_output_untouched() {
         let dir = TempDir::new("compile-untouched");
-        let scene = write_scene(&dir, "scene.json", INVALID_SCENE);
+        project(&dir, "scene-1", INVALID_SCENE);
         let out = dir.path().join("model.json");
         fs::write(&out, "previous").expect("seeds the output");
-        let report = run(Command::Compile {
-            scene,
-            out: Some(out.clone()),
-            check: false,
-        });
+        let report = run_in(
+            Command::Compile {
+                scene: None,
+                out: Some(out.clone()),
+                check: false,
+            },
+            dir.path(),
+        );
         assert_eq!(report.code, EXIT_INVALID_SCENE);
         assert_eq!(
             fs::read_to_string(&out).expect("reads"),
@@ -1294,31 +1444,37 @@ mod tests {
     #[test]
     fn an_unwritable_output_exits_five() {
         let dir = TempDir::new("compile-unwritable");
-        let scene = write_scene(&dir, "scene.json", VALID_SCENE);
+        project(&dir, "scene-1", VALID_SCENE);
         let blocker = dir.path().join("blocker");
         fs::write(&blocker, "not a directory").expect("seeds the blocker");
-        let report = run(Command::Compile {
-            scene,
-            out: Some(blocker.join("model.json")),
-            check: false,
-        });
+        let report = run_in(
+            Command::Compile {
+                scene: None,
+                out: Some(blocker.join("model.json")),
+                check: false,
+            },
+            dir.path(),
+        );
         assert_eq!(report.code, EXIT_OUTPUT);
     }
 
     #[test]
     fn a_valid_scene_exports_svg() {
         let dir = TempDir::new("export-svg");
-        let scene = write_scene(&dir, "scene.json", VALID_SCENE);
+        project(&dir, "scene-1", VALID_SCENE);
         let out = dir.path().join("out.svg");
-        let report = run(Command::Export {
-            scene,
-            format: Format::Svg,
-            out: Some(out.clone()),
-            width: None,
-            height: None,
-            density: None,
-            background: None,
-        });
+        let report = run_in(
+            Command::Export {
+                scene: None,
+                format: Format::Svg,
+                out: Some(out.clone()),
+                width: None,
+                height: None,
+                density: None,
+                background: None,
+            },
+            dir.path(),
+        );
         assert_eq!(report.code, EXIT_SUCCESS);
         let svg = fs::read_to_string(&out).expect("reads the svg");
         assert!(svg.contains("<svg"), "{svg}");
@@ -1328,17 +1484,20 @@ mod tests {
     #[test]
     fn a_valid_scene_exports_png() {
         let dir = TempDir::new("export-png");
-        let scene = write_scene(&dir, "scene.json", VALID_SCENE);
+        project(&dir, "scene-1", VALID_SCENE);
         let out = dir.path().join("out.png");
-        let report = run(Command::Export {
-            scene,
-            format: Format::Png,
-            out: Some(out.clone()),
-            width: None,
-            height: None,
-            density: None,
-            background: None,
-        });
+        let report = run_in(
+            Command::Export {
+                scene: None,
+                format: Format::Png,
+                out: Some(out.clone()),
+                width: None,
+                height: None,
+                density: None,
+                background: None,
+            },
+            dir.path(),
+        );
         assert_eq!(report.code, EXIT_SUCCESS);
         let bytes = fs::read(&out).expect("reads the png");
         assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n", "PNG signature");
@@ -1347,33 +1506,39 @@ mod tests {
     #[test]
     fn density_on_svg_is_a_usage_error() {
         let dir = TempDir::new("export-density");
-        let scene = write_scene(&dir, "scene.json", VALID_SCENE);
-        let report = run(Command::Export {
-            scene,
-            format: Format::Svg,
-            out: None,
-            width: None,
-            height: None,
-            density: Some(2.0),
-            background: None,
-        });
+        project(&dir, "scene-1", VALID_SCENE);
+        let report = run_in(
+            Command::Export {
+                scene: None,
+                format: Format::Svg,
+                out: None,
+                width: None,
+                height: None,
+                density: Some(2.0),
+                background: None,
+            },
+            dir.path(),
+        );
         assert_eq!(report.code, EXIT_USAGE);
     }
 
     #[test]
     fn an_export_background_that_is_not_a_colour_is_refused_before_any_output() {
         let dir = TempDir::new("export-background");
-        let scene = write_scene(&dir, "scene.json", VALID_SCENE);
+        project(&dir, "scene-1", VALID_SCENE);
         let out = dir.path().join("out.svg");
-        let report = run(Command::Export {
-            scene,
-            format: Format::Svg,
-            out: Some(out.clone()),
-            width: None,
-            height: None,
-            density: None,
-            background: Some("not-a-colour".to_string()),
-        });
+        let report = run_in(
+            Command::Export {
+                scene: None,
+                format: Format::Svg,
+                out: Some(out.clone()),
+                width: None,
+                height: None,
+                density: None,
+                background: Some("not-a-colour".to_string()),
+            },
+            dir.path(),
+        );
         assert_eq!(report.code, EXIT_USAGE);
         assert!(
             report.stderr.contains("E_INVALID_COLOR"),
@@ -1387,17 +1552,20 @@ mod tests {
     #[test]
     fn a_named_export_background_colour_is_honoured() {
         let dir = TempDir::new("export-background-named");
-        let scene = write_scene(&dir, "scene.json", VALID_SCENE);
+        project(&dir, "scene-1", VALID_SCENE);
         let out = dir.path().join("out.svg");
-        let report = run(Command::Export {
-            scene,
-            format: Format::Svg,
-            out: Some(out.clone()),
-            width: None,
-            height: None,
-            density: None,
-            background: Some("red".to_string()),
-        });
+        let report = run_in(
+            Command::Export {
+                scene: None,
+                format: Format::Svg,
+                out: Some(out.clone()),
+                width: None,
+                height: None,
+                density: None,
+                background: Some("red".to_string()),
+            },
+            dir.path(),
+        );
         assert_eq!(report.code, EXIT_SUCCESS, "{}", report.stderr);
         let svg = fs::read_to_string(&out).expect("reads the svg");
         assert!(svg.contains("fill=\"red\""), "{svg}");
@@ -1452,18 +1620,21 @@ mod tests {
     fn a_project_scene_exports_text_as_outlines() {
         let dir = TempDir::new("project-text");
         write_at(&dir, "vectr.project.json", "{}");
-        let scene = write_at(&dir, "scenes/logo.json", PROJECT_TEXT_SCENE);
+        write_at(&dir, "scenes/logo.json", PROJECT_TEXT_SCENE);
         let out = dir.path().join("logo.svg");
 
-        let report = run(Command::Export {
-            scene,
-            format: Format::Svg,
-            out: Some(out.clone()),
-            width: None,
-            height: None,
-            density: None,
-            background: None,
-        });
+        let report = run_in(
+            Command::Export {
+                scene: Some("logo".to_string()),
+                format: Format::Svg,
+                out: Some(out.clone()),
+                width: None,
+                height: None,
+                density: None,
+                background: None,
+            },
+            dir.path(),
+        );
         assert_eq!(report.code, EXIT_SUCCESS, "{}", report.stderr);
         let svg = fs::read_to_string(&out).expect("reads the svg");
         assert!(svg.contains("<desc>Hi</desc>"), "{svg}");
@@ -1482,13 +1653,16 @@ mod tests {
             r##""kind": "text","##,
             r##""kind": "text", "fontId": "absent","##,
         );
-        let scene = write_at(&dir, "scenes/logo.json", &scene_text);
+        write_at(&dir, "scenes/logo.json", &scene_text);
 
-        let report = run(Command::Compile {
-            scene,
-            out: None,
-            check: true,
-        });
+        let report = run_in(
+            Command::Compile {
+                scene: Some("logo".to_string()),
+                out: None,
+                check: true,
+            },
+            dir.path(),
+        );
         assert_eq!(report.code, EXIT_DEPENDENCY);
         assert!(report.stderr.contains("absent"), "{}", report.stderr);
     }
@@ -1498,14 +1672,17 @@ mod tests {
         let dir = TempDir::new("project-palette");
         write_at(&dir, "vectr.project.json", "{}");
         write_at(&dir, "palettes/brand.json", PALETTE);
-        let scene = write_at(&dir, "scenes/brand.json", PALETTE_SCENE);
+        write_at(&dir, "scenes/brand.json", PALETTE_SCENE);
         let out = dir.path().join("brand.json");
 
-        let report = run(Command::Compile {
-            scene,
-            out: Some(out.clone()),
-            check: false,
-        });
+        let report = run_in(
+            Command::Compile {
+                scene: Some("brand".to_string()),
+                out: Some(out.clone()),
+                check: false,
+            },
+            dir.path(),
+        );
         assert_eq!(report.code, EXIT_SUCCESS, "{}", report.stderr);
         let text = fs::read_to_string(&out).expect("reads the model");
         let model = vectr_core::render::parse(&text).expect("a render model");
@@ -1526,9 +1703,15 @@ mod tests {
             "palettes/brand.json",
             r##"{"id":"brand","projectId":"project","name":"Brand","tokens":[{"name":"other","value":"#ff0000"}]}"##,
         );
-        let scene = write_at(&dir, "scenes/brand.json", PALETTE_SCENE);
+        write_at(&dir, "scenes/brand.json", PALETTE_SCENE);
 
-        let report = run(Command::Validate { scene, json: false });
+        let report = run_in(
+            Command::Validate {
+                scene: Some("brand".to_string()),
+                json: false,
+            },
+            dir.path(),
+        );
         assert_eq!(report.code, EXIT_INVALID_SCENE);
         assert!(report.stderr.contains("accent"), "{}", report.stderr);
     }
@@ -1542,9 +1725,15 @@ mod tests {
             "palettes/brand.json",
             r##"{"id":"brand","projectId":"project","name":"Brand","tokens":[{"name":"accent","value":"not-a-colour"}]}"##,
         );
-        let scene = write_at(&dir, "scenes/brand.json", PALETTE_SCENE);
+        write_at(&dir, "scenes/brand.json", PALETTE_SCENE);
 
-        let report = run(Command::Validate { scene, json: false });
+        let report = run_in(
+            Command::Validate {
+                scene: Some("brand".to_string()),
+                json: false,
+            },
+            dir.path(),
+        );
         assert_eq!(report.code, EXIT_USAGE);
         assert!(
             report.stderr.contains("E_INVALID_COLOR"),
@@ -1559,9 +1748,15 @@ mod tests {
     fn a_missing_palette_is_missing_input() {
         let dir = TempDir::new("project-missing-palette");
         write_at(&dir, "vectr.project.json", "{}");
-        let scene = write_at(&dir, "scenes/brand.json", PALETTE_SCENE);
+        write_at(&dir, "scenes/brand.json", PALETTE_SCENE);
 
-        let report = run(Command::Validate { scene, json: false });
+        let report = run_in(
+            Command::Validate {
+                scene: Some("brand".to_string()),
+                json: false,
+            },
+            dir.path(),
+        );
         assert_eq!(report.code, EXIT_USAGE);
         assert!(report.stderr.contains("brand"), "{}", report.stderr);
     }
@@ -1579,14 +1774,17 @@ mod tests {
             r##""formatVersion": "0.2","##,
             r##""formatVersion": "0.2", "recipeId": "line","##,
         );
-        let scene = write_at(&dir, "scenes/logo.json", &scene_text);
+        write_at(&dir, "scenes/logo.json", &scene_text);
         let out = dir.path().join("model.json");
 
-        let report = run(Command::Compile {
-            scene,
-            out: Some(out.clone()),
-            check: false,
-        });
+        let report = run_in(
+            Command::Compile {
+                scene: Some("logo".to_string()),
+                out: Some(out.clone()),
+                check: false,
+            },
+            dir.path(),
+        );
         assert_eq!(report.code, EXIT_SUCCESS, "{}", report.stderr);
         let text = fs::read_to_string(&out).expect("reads the model");
         let model = vectr_core::render::parse(&text).expect("a render model");
@@ -1601,13 +1799,16 @@ mod tests {
             r##""formatVersion": "0.2","##,
             r##""formatVersion": "0.2", "recipeId": "absent","##,
         );
-        let scene = write_at(&dir, "scenes/logo.json", &scene_text);
+        write_at(&dir, "scenes/logo.json", &scene_text);
 
-        let report = run(Command::Compile {
-            scene,
-            out: None,
-            check: true,
-        });
+        let report = run_in(
+            Command::Compile {
+                scene: Some("logo".to_string()),
+                out: None,
+                check: true,
+            },
+            dir.path(),
+        );
         assert_eq!(report.code, EXIT_USAGE);
         assert!(report.stderr.contains("absent"), "{}", report.stderr);
     }
