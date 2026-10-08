@@ -1,7 +1,7 @@
 # Delivery
 
 ## Source of truth
-docs/Vectr/ — git submodule, remote https://github.com/vanguard-op/vectr-docs.git; working tree at 2fc3a64 (gradient fills, unified element paint model), the recorded pointer advancing with the Phase 2 rework. The docs are authoritative for what to build; this file tracks state only and never restates the spec.
+docs/Vectr/ — git submodule, remote https://github.com/vanguard-op/vectr-docs.git; working tree at 9fc7d1f (validated alpha colour model, single-layer shading scheduled as Phase 6), the recorded pointer advancing with the Phase 3 work. The docs are authoritative for what to build; this file tracks state only and never restates the spec.
 
 ## Team & file ownership
 | Member | Owns |
@@ -35,7 +35,7 @@ Rust (stable, pinned by rust-toolchain.toml), cargo workspace. serde + schemars 
 - scratch/ — per-task scratch (gitignored)
 
 ## Contracts
-CONTRACTS.md — C-001 scene document, C-002 library API, C-003 render model, C-004 CLI.
+CONTRACTS.md — C-001 scene document, C-002 library API, C-003 render model, C-004 CLI, C-005 MCP server.
 
 ## Token map
 Vectr has no product UI, so there are no product-level design tokens. Scene palettes (schema.md, "Palette") are project data authored by the user.
@@ -66,6 +66,15 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 |---|---|---|
 | Phase 1 — First Graphic | 2026-10-08 | FEAT-001, FEAT-002, FEAT-003, FEAT-004, FEAT-005, FEAT-011, FEAT-012, FEAT-013, FEAT-016, FEAT-024 shipped; C-001–C-004 implemented; A-001–A-004 sourced. |
 | Phase 2 — Style Core | 2026-10-08 | FEAT-027, FEAT-007, FEAT-008, FEAT-009, FEAT-010 shipped; the element paint model unified with linear/radial gradients; recipe selection wired through the CLI; C-001–C-003 re-implemented at revision 5. |
+
+### Active phase: Phase 3 — Any Model Can Author
+| Task | Feature | Owner | Status | Contract |
+|---|---|---|---|---|
+| T-037 | FEAT-007 | backend-engineer | Ready | C-002 |
+| T-038 | FEAT-018 | backend-engineer | Backlog | C-001, C-002, C-004 |
+| T-039 | FEAT-017 | backend-engineer | Backlog | C-002, C-004 |
+| T-040 | FEAT-019 | ai-engineer | Backlog | C-002, C-005 |
+| T-041 | FEAT-020 | ai-engineer | Backlog | C-004, C-005 |
 
 ## Decisions log
 | # | Decision | Rationale | By |
@@ -98,6 +107,8 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | D-026 | The minimum usable grid spacing is 0.05 scene units; a geometric recipe with a finer grid is reported as a performance warning and the grid is not applied. | FEAT-009 requires a performance warning for a grid finer than the renderable resolution but the docs name no figure; mirrors D-025. | lead |
 | D-027 | The isometric recipe snaps to the lattice its two 30-degree axes span and orders siblings back-to-front by isometric grid row, ties broken by document order; geometry is projected only through an explicit projection element. | FEAT-010 requires axis alignment and depth ordering but names no grid geometry or depth rule, and the schema has no flag to mark a billboard. | lead |
 | D-028 | A scene `recipeId` or project `defaultRecipeId` that does not resolve is a missing project asset (exit 2, `E_PROJECT_ASSET`), mirroring a missing palette. | The docs classify no error for an unresolved recipe reference; the project loader already treats other missing style documents this way. | lead |
+| D-029 | A colour value is a validated capability: any format SVG supports, optionally carrying alpha, so fill and stroke carry independent transparency; a value that is not such a colour is a located error and no output is produced. | The user decided alpha is worth having as a supported capability; the docs now define the colour model (FEAT-005, FEAT-018) where values were previously an unchecked pass-through. | user |
+| D-030 | Single-layer shading is a real feature (FEAT-028) scheduled in Phase 6; until it ships, a recipe that requests shading it does not apply reports a warning rather than rendering a silent flat result. | The user chose to build the look rather than retract it; the flat recipe's promise is reconciled to point at the new feature. | user |
 
 ## Definition of Done
 - Every acceptance criterion in the task's FEAT file is met, including its edge cases and failure states.
