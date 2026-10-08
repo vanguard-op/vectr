@@ -122,10 +122,11 @@ pub const UNRESOLVED_FONT: DiagnosticCode = DiagnosticCode::new("W_UNRESOLVED_FO
 /// caller with style assets always provides its default font explicitly.
 pub const DEFAULT_FONT_ID: &str = "default";
 
-/// A scene above the documented large-scene element count.
+/// A scene that resolves past the documented large-scene count.
 pub const LARGE_SCENE: DiagnosticCode = DiagnosticCode::new("W_LARGE_SCENE");
 
-/// The element count above which a scene is processed with a warning (NFR-002).
+/// The resolved-element count above which a scene is processed with a warning
+/// rather than silently (nfr.md, "Throughput & capacity").
 pub const LARGE_SCENE_ELEMENTS: usize = 50_000;
 
 /// The most render nodes one compilation may emit; beyond it the scene is
@@ -216,16 +217,6 @@ pub fn compile_with_style<'s>(
         return Err(diagnostics);
     }
 
-    if scene.elements.len() > LARGE_SCENE_ELEMENTS {
-        diagnostics.push(Diagnostic::warning(
-            LARGE_SCENE,
-            format!(
-                "scene has {} elements, above the {LARGE_SCENE_ELEMENTS}-element limit; compilation continues",
-                scene.elements.len()
-            ),
-        ));
-    }
-
     let resolution = match constraints::resolve(scene) {
         Ok(resolution) => resolution,
         Err(errors) => {
@@ -271,6 +262,13 @@ pub fn compile_with_style<'s>(
     compiler.plan_snap();
     compiler.run();
     compiler.carry_fallback();
+
+    // The complex-illustration class is measured by what the scene resolves to,
+    // not by how many elements it declares: a handful of nested composition
+    // elements can expand to tens of thousands of rendered elements (FEAT-003,
+    // FEAT-011). Above the documented count the scene is processed with a
+    // warning, never silently (nfr.md, "Scaling trigger", NFR-011).
+    compiler.check_large_scene();
 
     // A gradient no element references is a warning, not an error (FEAT-027).
     if !style.gradients.is_empty() {
@@ -414,6 +412,33 @@ impl Compiler<'_, '_> {
             }
             self.emit(root, Affine::IDENTITY, 1.0, true, None, &[]);
         }
+    }
+
+    /// Reports a scene that resolves past the documented large-scene count
+    /// (FEAT-011, nfr.md "Complex illustration").
+    ///
+    /// The count is what the scene resolves to — the render nodes the compiler
+    /// emitted — because a dense composition of nested groups and composition
+    /// elements expands a handful of authored elements into the large-scene
+    /// class. A scene that also declares more than the limit in its own right is
+    /// covered by the same finding, so it is never reported twice. A scene that
+    /// overflowed the render-node limit already carries a size-limit error, so
+    /// no warning is added on top of it.
+    fn check_large_scene(&mut self) {
+        if self.limit_hit {
+            return;
+        }
+        let declared = self.scene.elements.len();
+        let resolved = self.nodes.len();
+        if declared <= LARGE_SCENE_ELEMENTS && resolved <= LARGE_SCENE_ELEMENTS {
+            return;
+        }
+        self.diagnostics.push(Diagnostic::warning(
+            LARGE_SCENE,
+            format!(
+                "scene resolves to {resolved} elements from {declared} declared, above the {LARGE_SCENE_ELEMENTS}-element large-scene limit; compilation continues"
+            ),
+        ));
     }
 
     /// Emits the subtree rooted at one element.
@@ -1964,6 +1989,56 @@ mod tests {
             .map(|node| node.transform.apply([0.0, 0.0])[0])
             .collect();
         assert_eq!(positions, vec![0.0, 10.0, 20.0]);
+    }
+
+    /// A scene that declares a handful of elements but expands, through dense
+    /// composition, to `count` render nodes.
+    fn expanding_scene(count: usize) -> Scene {
+        let repeat = base(
+            "r1",
+            0,
+            "repeat",
+            json!({ "count": count as u32, "spacing": 0.1 }),
+        );
+        let mut child = rect("c1", 0, 1.0, 1.0);
+        child["parentId"] = json!("r1");
+        scene_of(json!([repeat, child]), None)
+    }
+
+    #[test]
+    fn a_dense_composition_above_the_large_scene_count_is_warned() {
+        // Two declared elements, more than the large-scene count of render
+        // nodes: the warning follows what the scene resolves to, not what it
+        // declares (FEAT-011, nfr.md "Scaling trigger").
+        let scene = expanding_scene(LARGE_SCENE_ELEMENTS + 1);
+        assert_eq!(scene.elements.len(), 2);
+        let model = compile(&scene).expect("the dense composition compiles");
+        assert_eq!(model.nodes.len(), LARGE_SCENE_ELEMENTS + 1);
+        assert!(
+            model
+                .diagnostics
+                .iter()
+                .any(|finding| finding.code == LARGE_SCENE),
+            "a scene above the large-scene count is processed with a warning: {:?}",
+            model.diagnostics
+        );
+    }
+
+    #[test]
+    fn a_scene_at_the_large_scene_count_is_not_warned() {
+        // The documented class reaches up to the count; only above it is the
+        // warning due, and nothing is dropped either way (FEAT-011).
+        let scene = expanding_scene(LARGE_SCENE_ELEMENTS);
+        let model = compile(&scene).expect("the large scene compiles");
+        assert_eq!(model.nodes.len(), LARGE_SCENE_ELEMENTS);
+        assert!(
+            !model
+                .diagnostics
+                .iter()
+                .any(|finding| finding.code == LARGE_SCENE),
+            "a scene at the large-scene count is within the class: {:?}",
+            model.diagnostics
+        );
     }
 
     #[test]
