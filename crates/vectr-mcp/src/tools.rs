@@ -6,8 +6,15 @@
 //! CLI's capabilities). A tool call carries no server state: it resolves the
 //! input under the server's [`Scope`], runs the engine, and returns a JSON
 //! value. That keeps concurrent calls independent (FEAT-021, FEAT-019).
+//!
+//! A tool addresses a scene exactly as the command line does: by the scene's
+//! identifier resolved among a project's scenes, or, when none is named, the
+//! project's default. The project is the one the caller names, or the server's
+//! project context. A tool also accepts a scene document sent inline as a
+//! draft, which is not a project scene: it never becomes or reads the default,
+//! and its assets resolve against the same project a project scene uses. A call
+//! naming both a scene identifier and a draft is malformed (C-005, FEAT-019).
 
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde_json::{json, Map, Value};
@@ -19,10 +26,14 @@ use vectr_core::{
     Diagnostics, Location, RasterOptions, RenderModel, Scene, SchemaForm, SvgOptions,
 };
 
-use vectr_project::{project_root, ProjectAssets};
+use vectr_project::{resolve_scene, ProjectAssets};
 
 use crate::output::write_atomic;
 use crate::scope::{Scope, ScopeError, SCOPE};
+
+/// The stable code a call that names both a scene identifier and an inline
+/// draft is reported under (C-005): the two are mutually exclusive.
+pub const MALFORMED: &str = "E_MALFORMED";
 
 /// A tool call the client asked for could not be carried out.
 #[derive(Debug)]
@@ -129,12 +140,8 @@ pub fn definitions() -> Value {
 
 fn validate_tool(scope: &Scope, arguments: &Map<String, Value>) -> Result<Value, CallError> {
     let args = Args::new(arguments);
-    args.allowed(&["scene", "project"])?;
-    let input = load_scene(
-        scope,
-        &args.required_string("scene")?,
-        args.string("project")?.as_deref(),
-    )?;
+    args.allowed(&["scene", "draft", "project"])?;
+    let input = load_scene(scope, arguments)?;
 
     let assets = ProjectAssets::load(&input.root, &input.scene).map_err(exec_diagnostics)?;
     let mut findings = validate_scene(&input.scene);
@@ -159,12 +166,8 @@ fn validate_tool(scope: &Scope, arguments: &Map<String, Value>) -> Result<Value,
 
 fn compile_tool(scope: &Scope, arguments: &Map<String, Value>) -> Result<Value, CallError> {
     let args = Args::new(arguments);
-    args.allowed(&["scene", "project"])?;
-    let input = load_scene(
-        scope,
-        &args.required_string("scene")?,
-        args.string("project")?.as_deref(),
-    )?;
+    args.allowed(&["scene", "draft", "project"])?;
+    let input = load_scene(scope, arguments)?;
 
     let (model, diagnostics) = compile_scene(&input)?;
     Ok(json!({
@@ -177,6 +180,7 @@ fn render_tool(scope: &Scope, arguments: &Map<String, Value>) -> Result<Value, C
     let args = Args::new(arguments);
     args.allowed(&[
         "scene",
+        "draft",
         "project",
         "format",
         "out",
@@ -185,11 +189,7 @@ fn render_tool(scope: &Scope, arguments: &Map<String, Value>) -> Result<Value, C
         "density",
         "background",
     ])?;
-    let input = load_scene(
-        scope,
-        &args.required_string("scene")?,
-        args.string("project")?.as_deref(),
-    )?;
+    let input = load_scene(scope, arguments)?;
 
     let format = args.required_string("format")?;
     if format != "svg" && format != "png" {
@@ -300,46 +300,93 @@ fn schema_tool(arguments: &Map<String, Value>) -> Result<Value, CallError> {
 struct SceneInput {
     scene: Scene,
     root: PathBuf,
-    /// The scene file's stem, for a default output name; absent for inline text.
+    /// The scene's identifier, for a default output name; absent for a draft.
     stem: Option<String>,
 }
 
-/// Reads the `scene` argument as inline JSON text or as a path, then finds the
-/// project root its assets live under.
-fn load_scene(scope: &Scope, scene: &str, project: Option<&str>) -> Result<SceneInput, CallError> {
-    if scene.trim_start().starts_with('{') {
-        let parsed = parse_scene(scene).map_err(exec_diagnostics)?;
-        let root = match project {
-            Some(path) => scope.read_dir(Path::new(path)).map_err(scope_error)?,
-            None => scope.base().to_path_buf(),
-        };
-        return Ok(SceneInput {
-            scene: parsed,
-            root,
-            stem: None,
-        });
+/// Resolves the `scene`, `draft` and `project` arguments into a parsed scene
+/// and the project root its assets resolve against (C-005, FEAT-019).
+///
+/// A call names at most one of `scene` (a project-scene identifier) and `draft`
+/// (an inline document); naming both is malformed, since the two are mutually
+/// exclusive. Omitting both applies the default-scene rule. The project is the
+/// one the caller names, or the server's project context otherwise; an inline
+/// draft resolves against the same project a project scene would.
+fn load_scene(scope: &Scope, arguments: &Map<String, Value>) -> Result<SceneInput, CallError> {
+    let args = Args::new(arguments);
+    let scene_id = args.string("scene")?;
+    let draft = args.value("draft")?;
+    let project = args.string("project")?;
+
+    if scene_id.is_some() && draft.is_some() {
+        return Err(exec(ToolError::new(
+            MALFORMED,
+            "a call names either a scene identifier or an inline draft, not both",
+        )));
     }
 
-    let path = scope.read_path(Path::new(scene)).map_err(scope_error)?;
-    let source = fs::read_to_string(&path).map_err(|error| {
-        exec(ToolError::new(
-            "E_INPUT",
-            format!("cannot read scene `{}`: {error}", path.display()),
-        ))
-    })?;
-    let parsed = parse_scene(&source).map_err(exec_diagnostics)?;
-    let root = match project {
-        Some(root) => scope.read_dir(Path::new(root)).map_err(scope_error)?,
-        None => project_root(&path),
-    };
-    let stem = path
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .map(str::to_string);
+    let root = resolve_project_root(scope, project.as_deref())?;
+
+    match (scene_id, draft) {
+        (Some(id), None) => project_scene(&root, Some(&id)),
+        (None, Some(document)) => draft_scene(&root, document),
+        (None, None) => project_scene(&root, None),
+        (Some(_), Some(_)) => unreachable!("naming both was refused above"),
+    }
+}
+
+/// Resolves the project a call's scenes and assets read from: the caller's
+/// `project`, or the server's project context (C-005, NFR-024).
+///
+/// The server's project context is its working directory, the root of its
+/// filesystem scope, so a call that names no project stays inside the scope. A
+/// caller naming another project names a directory inside the scope, or widens
+/// the scope with `--allow`.
+fn resolve_project_root(scope: &Scope, project: Option<&str>) -> Result<PathBuf, CallError> {
+    match project {
+        Some(path) => scope.read_dir(Path::new(path)).map_err(scope_error),
+        None => Ok(scope.base().to_path_buf()),
+    }
+}
+
+/// Resolves a project scene by identifier, or the project's default (FEAT-016).
+fn project_scene(root: &Path, requested: Option<&str>) -> Result<SceneInput, CallError> {
+    let resolved = resolve_scene(root, requested).map_err(exec_diagnostics)?;
+    let source = resolved.source().map_err(exec_diagnostics)?;
+    let scene = parse_scene(&source).map_err(exec_diagnostics)?;
     Ok(SceneInput {
-        scene: parsed,
-        root,
-        stem,
+        scene,
+        root: resolved.root().to_path_buf(),
+        stem: Some(resolved.id().to_string()),
+    })
+}
+
+/// Parses an inline draft document (C-005).
+///
+/// The draft is a scene document as a JSON object, or the same document as JSON
+/// text; either way it goes through the same strict parser a project scene does,
+/// so its diagnostics carry the same locations. A draft is never resolved as a
+/// project scene and never reads the project's default.
+fn draft_scene(root: &Path, document: &Value) -> Result<SceneInput, CallError> {
+    let source = match document {
+        Value::Object(_) => serde_json::to_string(document).map_err(|error| {
+            exec(ToolError::new(
+                MALFORMED,
+                format!("the inline draft could not be read: {error}"),
+            ))
+        })?,
+        Value::String(text) => text.clone(),
+        _ => {
+            return Err(CallError::InvalidParams(
+                "`draft` must be a scene document or JSON text".to_string(),
+            ))
+        }
+    };
+    let scene = parse_scene(&source).map_err(exec_diagnostics)?;
+    Ok(SceneInput {
+        scene,
+        root: root.to_path_buf(),
+        stem: None,
     })
 }
 
@@ -378,16 +425,20 @@ fn unsupported(message: impl Into<String>) -> CallError {
     exec(ToolError::new("E_UNSUPPORTED", message))
 }
 
-/// The shared `scene` / `project` input properties.
+/// The shared `scene` / `draft` / `project` input properties (C-005).
 fn scene_properties() -> Value {
     json!({
         "scene": {
             "type": "string",
-            "description": "The scene document as JSON text, or the path to a scene document."
+            "description": "A scene identifier resolved among the project's scenes (`scenes/<id>.json`). Omit it to use the project's default scene. Mutually exclusive with `draft`."
+        },
+        "draft": {
+            "type": ["object", "string"],
+            "description": "An inline scene document, as a JSON object or JSON text, used as a draft instead of a project scene. It is never the project's default; its assets resolve against `project` or the server's project context. Mutually exclusive with `scene`."
         },
         "project": {
             "type": "string",
-            "description": "Project root holding palettes/, strokes/, gradients/, recipes/ and assets/. Defaults to the scene file's project, or the server's working directory for an inline scene."
+            "description": "Project root holding scenes/, palettes/, strokes/, gradients/, recipes/ and assets/. Defaults to the server's project context."
         }
     })
 }
@@ -396,11 +447,10 @@ fn validate_definition() -> Value {
     json!({
         "name": "validate",
         "title": "Validate a scene",
-        "description": "Check a scene against the language contract and its project's style assets. Returns diagnostics with a location for each finding; nothing is written.",
+        "description": "Check a scene against the language contract and its project's style assets. Address a project scene by its identifier or send an inline draft; with neither, the project's default scene is used. Returns diagnostics with a location for each finding; nothing is written.",
         "inputSchema": {
             "type": "object",
             "properties": scene_properties(),
-            "required": ["scene"],
             "additionalProperties": false
         },
         "outputSchema": {
@@ -423,11 +473,10 @@ fn compile_definition() -> Value {
     json!({
         "name": "compile",
         "title": "Compile a scene",
-        "description": "Resolve a scene and its project's palette, strokes, gradients and fonts into the render model every exporter reads (C-003). Returns the model and any warnings.",
+        "description": "Resolve a scene and its project's palette, strokes, gradients and fonts into the render model every exporter reads (C-003). Address a project scene by its identifier or send an inline draft; with neither, the project's default scene is used. Returns the model and any warnings.",
         "inputSchema": {
             "type": "object",
             "properties": scene_properties(),
-            "required": ["scene"],
             "additionalProperties": false
         },
         "outputSchema": {
@@ -479,11 +528,11 @@ fn render_definition() -> Value {
     json!({
         "name": "render",
         "title": "Render a scene",
-        "description": "Compile a scene and write it as SVG or PNG. Returns the path it wrote; a failure writes nothing.",
+        "description": "Compile a scene and write it as SVG or PNG. Address a project scene by its identifier or send an inline draft; with neither, the project's default scene is used. Returns the path it wrote; a failure writes nothing.",
         "inputSchema": {
             "type": "object",
             "properties": properties,
-            "required": ["scene", "format"],
+            "required": ["format"],
             "additionalProperties": false
         },
         "outputSchema": {
@@ -574,6 +623,15 @@ impl<'a> Args<'a> {
             .ok_or_else(|| CallError::InvalidParams(format!("missing required argument `{name}`")))
     }
 
+    /// The raw value of an argument, or `None` when it is absent or null. Used
+    /// for `draft`, which is a scene document rather than a scalar.
+    fn value(&self, name: &str) -> Result<Option<&Value>, CallError> {
+        match self.map.get(name) {
+            None | Some(Value::Null) => Ok(None),
+            Some(value) => Ok(Some(value)),
+        }
+    }
+
     fn number(&self, name: &str) -> Result<Option<f64>, CallError> {
         match self.map.get(name) {
             None | Some(Value::Null) => Ok(None),
@@ -589,6 +647,8 @@ impl<'a> Args<'a> {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
 
     const RECT_SCENE: &str = r##"{
@@ -631,8 +691,24 @@ mod tests {
         dir
     }
 
+    /// Writes a project whose configuration is `config` and whose scene
+    /// documents are the given `(identifier, document)` pairs.
+    fn write_project(dir: &Path, config: &str, scenes: &[(&str, &str)]) {
+        fs::write(dir.join("vectr.project.json"), config).expect("writes the project config");
+        for (id, text) in scenes {
+            let path = dir.join("scenes").join(format!("{id}.json"));
+            fs::create_dir_all(path.parent().expect("scenes/")).expect("creates scenes/");
+            fs::write(path, text).expect("writes the scene document");
+        }
+    }
+
     fn args(value: Value) -> Map<String, Value> {
         value.as_object().expect("an object").clone()
+    }
+
+    /// A scene document parsed into a JSON object, for a `draft` argument.
+    fn draft_object(text: &str) -> Value {
+        serde_json::from_str(text).expect("a scene object")
     }
 
     fn scope(dir: &Path) -> Scope {
@@ -659,31 +735,244 @@ mod tests {
             assert!(tool.get("inputSchema").is_some(), "input schema: {tool}");
             assert!(tool.get("outputSchema").is_some(), "output schema: {tool}");
         }
+
+        // The scene-addressing arguments are discoverable: every scene tool
+        // publishes `scene`, `draft` and `project`, and neither `scene` nor
+        // `draft` is required, so omitting both applies the default rule.
+        for tool in list.iter().filter(|tool| tool["name"] != "schema") {
+            let properties = &tool["inputSchema"]["properties"];
+            for name in ["scene", "draft", "project"] {
+                assert!(
+                    properties.get(name).is_some(),
+                    "{} publishes `{name}`: {tool}",
+                    tool["name"]
+                );
+            }
+            let required = tool["inputSchema"]["required"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            assert!(!required
+                .iter()
+                .any(|name| name == "scene" || name == "draft"));
+        }
     }
 
     #[test]
-    fn validate_accepts_a_valid_scene() {
-        let dir = tempdir("validate-valid");
-        let result = call(
-            &scope(&dir),
-            "validate",
-            &args(json!({ "scene": RECT_SCENE })),
-        )
-        .expect("valid");
+    fn validate_accepts_a_project_scene_by_identifier() {
+        let dir = tempdir("validate-named");
+        write_project(&dir, "{}", &[("logo", RECT_SCENE)]);
+        let result =
+            call(&scope(&dir), "validate", &args(json!({ "scene": "logo" }))).expect("valid");
         assert_eq!(result["valid"], Value::Bool(true));
         assert_eq!(result["diagnostics"], json!([]));
     }
 
     #[test]
-    fn validate_reports_an_invalid_scene_as_a_structured_error() {
+    fn validate_accepts_an_inline_draft_as_an_object_and_as_text() {
+        let dir = tempdir("validate-draft");
+        let as_object = call(
+            &scope(&dir),
+            "validate",
+            &args(json!({ "draft": draft_object(RECT_SCENE) })),
+        )
+        .expect("valid");
+        assert_eq!(as_object["valid"], Value::Bool(true));
+
+        let as_text = call(
+            &scope(&dir),
+            "validate",
+            &args(json!({ "draft": RECT_SCENE })),
+        )
+        .expect("valid");
+        assert_eq!(as_text["valid"], Value::Bool(true));
+    }
+
+    #[test]
+    fn validate_reports_an_invalid_draft_as_a_structured_error() {
         let dir = tempdir("validate-invalid");
         let error = assert_exec(call(
             &scope(&dir),
             "validate",
-            &args(json!({ "scene": INVALID_SCENE })),
+            &args(json!({ "draft": INVALID_SCENE })),
         ));
         assert_eq!(error.code, "E_SCHEMA");
         assert!(!error.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn a_call_naming_both_a_scene_and_a_draft_is_malformed() {
+        let dir = tempdir("both");
+        write_project(&dir, "{}", &[("logo", RECT_SCENE)]);
+        let error = assert_exec(call(
+            &scope(&dir),
+            "compile",
+            &args(json!({ "scene": "logo", "draft": RECT_SCENE })),
+        ));
+        assert_eq!(error.code, MALFORMED);
+        assert!(!error.message.is_empty());
+    }
+
+    #[test]
+    fn an_omitted_scene_uses_the_project_default() {
+        let dir = tempdir("default");
+        write_project(
+            &dir,
+            r#"{"defaultSceneId":"logo"}"#,
+            &[("logo", RECT_SCENE)],
+        );
+        let result = call(&scope(&dir), "compile", &Map::new()).expect("compiles");
+        assert_eq!(result["model"]["nodes"].as_array().map(Vec::len), Some(1));
+    }
+
+    #[test]
+    fn a_project_that_names_no_default_reports_no_scene_selected() {
+        let dir = tempdir("no-default");
+        write_project(&dir, "{}", &[("one", RECT_SCENE), ("two", RECT_SCENE)]);
+        let error = assert_exec(call(&scope(&dir), "validate", &Map::new()));
+        assert_eq!(error.code, "E_SCENE");
+        assert!(
+            error.message.contains("no default scene"),
+            "{}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn a_named_scene_overrides_the_project_default() {
+        let dir = tempdir("override");
+        // The default is invalid; naming the valid scene must win.
+        write_project(
+            &dir,
+            r#"{"defaultSceneId":"bad"}"#,
+            &[("bad", INVALID_SCENE), ("good", RECT_SCENE)],
+        );
+        let result =
+            call(&scope(&dir), "validate", &args(json!({ "scene": "good" }))).expect("valid");
+        assert_eq!(result["valid"], Value::Bool(true));
+    }
+
+    #[test]
+    fn a_scene_identifier_no_document_provides_is_a_structured_error() {
+        let dir = tempdir("missing-named");
+        write_project(&dir, "{}", &[]);
+        let error = assert_exec(call(
+            &scope(&dir),
+            "compile",
+            &args(json!({ "scene": "absent" })),
+        ));
+        assert_eq!(error.code, "E_SCENE");
+        assert!(error.message.contains("absent"), "{}", error.message);
+    }
+
+    #[test]
+    fn a_default_that_resolves_to_no_document_names_it() {
+        let dir = tempdir("missing-default");
+        write_project(&dir, r#"{"defaultSceneId":"absent"}"#, &[]);
+        let error = assert_exec(call(&scope(&dir), "compile", &Map::new()));
+        assert_eq!(error.code, "E_SCENE");
+        assert!(error.message.contains("absent"), "{}", error.message);
+    }
+
+    #[test]
+    fn an_inline_draft_is_used_without_reading_or_writing_the_default() {
+        let dir = tempdir("draft-default");
+        write_project(
+            &dir,
+            r#"{"defaultSceneId":"logo"}"#,
+            &[("logo", RECT_SCENE)],
+        );
+
+        // The draft compiles even though the project's default is a different
+        // scene, and the draft's own document is never written into the project.
+        let result = call(
+            &scope(&dir),
+            "compile",
+            &args(json!({ "draft": RECT_SCENE })),
+        )
+        .expect("compiles");
+        assert_eq!(result["model"]["nodes"].as_array().map(Vec::len), Some(1));
+        assert!(
+            !dir.join("scenes").join("s.json").exists(),
+            "a draft never becomes a project scene"
+        );
+
+        // The project configuration is untouched, and the default still resolves.
+        let config = fs::read_to_string(dir.join("vectr.project.json")).expect("reads the config");
+        assert_eq!(config, r#"{"defaultSceneId":"logo"}"#);
+        let default = call(&scope(&dir), "compile", &Map::new()).expect("compiles");
+        assert_eq!(default["model"]["nodes"].as_array().map(Vec::len), Some(1));
+    }
+
+    #[test]
+    fn an_inline_draft_resolves_its_assets_against_the_project() {
+        let dir = tempdir("draft-assets");
+        write_project(&dir, "{}", &[]);
+        fs::create_dir_all(dir.join("palettes")).expect("creates palettes/");
+        fs::write(
+            dir.join("palettes").join("brand.json"),
+            r##"{"id":"brand","projectId":"p","name":"Brand","tokens":[{"name":"accent","value":"#4f46e5"}]}"##,
+        )
+        .expect("writes the palette");
+        let draft = RECT_SCENE
+            .replace(
+                r##""elements": ["##,
+                r##""paletteId": "brand", "elements": ["##,
+            )
+            .replace(
+                r##""kind": "rect","##,
+                r##""kind": "rect", "fill": {"kind": "token", "ref": "accent"},"##,
+            );
+
+        let result =
+            call(&scope(&dir), "compile", &args(json!({ "draft": draft }))).expect("compiles");
+        assert_eq!(
+            result["model"]["nodes"][0]["paint"]["fill"]["value"], "#4f46e5",
+            "the draft resolves the project's palette: {result}"
+        );
+    }
+
+    #[test]
+    fn an_inline_draft_whose_asset_reference_resolves_nowhere_is_a_structured_error() {
+        let dir = tempdir("draft-missing-asset");
+        write_project(&dir, "{}", &[]);
+        // The draft names a palette the project does not provide.
+        let draft = RECT_SCENE.replace(
+            r##""elements": ["##,
+            r##""paletteId": "brand", "elements": ["##,
+        );
+        let error = assert_exec(call(
+            &scope(&dir),
+            "validate",
+            &args(json!({ "draft": draft })),
+        ));
+        assert_eq!(error.code, "E_PROJECT_ASSET");
+        assert!(error.message.contains("brand"), "{}", error.message);
+    }
+
+    #[test]
+    fn an_inline_draft_with_an_undefined_element_reference_names_its_location() {
+        let dir = tempdir("draft-undefined-ref");
+        write_project(&dir, "{}", &[]);
+        let draft = RECT_SCENE.replace(
+            r##""kind": "rect","##,
+            r##""kind": "rect", "stroke": {"profileId": "outline", "paint": {"kind": "token", "ref": "accent"}},"##,
+        );
+        let error = assert_exec(call(
+            &scope(&dir),
+            "compile",
+            &args(json!({ "draft": draft })),
+        ));
+        assert_eq!(error.code, "E_UNDEFINED_STROKE");
+        let location = error.location.expect("the reference is located");
+        assert_eq!(location.element_id.as_deref(), Some("r1"));
+    }
+
+    #[test]
+    fn a_draft_of_the_wrong_type_is_invalid_params() {
+        let dir = tempdir("draft-type");
+        let result = call(&scope(&dir), "compile", &args(json!({ "draft": 5 })));
+        assert!(matches!(result, Err(CallError::InvalidParams(_))));
     }
 
     #[test]
@@ -692,7 +981,7 @@ mod tests {
         let result = call(
             &scope(&dir),
             "compile",
-            &args(json!({ "scene": RECT_SCENE })),
+            &args(json!({ "draft": RECT_SCENE })),
         )
         .expect("compiles");
         assert!(result["model"]["nodes"]
@@ -711,7 +1000,7 @@ mod tests {
         let error = assert_exec(call(
             &scope(&dir),
             "compile",
-            &args(json!({ "scene": cyclic })),
+            &args(json!({ "draft": cyclic })),
         ));
         assert!(!error.diagnostics.is_empty());
     }
@@ -723,7 +1012,7 @@ mod tests {
         let result = call(
             &scope(&dir),
             "render",
-            &args(json!({ "scene": RECT_SCENE, "format": "svg", "out": out })),
+            &args(json!({ "draft": RECT_SCENE, "format": "svg", "out": out })),
         )
         .expect("renders");
         let path = result["path"].as_str().expect("a path");
@@ -740,7 +1029,7 @@ mod tests {
         let result = call(
             &scope(&dir),
             "render",
-            &args(json!({ "scene": RECT_SCENE, "format": "png", "out": out })),
+            &args(json!({ "draft": RECT_SCENE, "format": "png", "out": out })),
         )
         .expect("renders");
         let bytes = fs::read(result["path"].as_str().expect("a path")).expect("reads the png");
@@ -748,16 +1037,30 @@ mod tests {
     }
 
     #[test]
-    fn render_defaults_to_dist_under_the_project() {
+    fn a_draft_render_defaults_to_dist_scene() {
         let dir = tempdir("render-default");
         let result = call(
             &scope(&dir),
             "render",
-            &args(json!({ "scene": RECT_SCENE, "format": "svg" })),
+            &args(json!({ "draft": RECT_SCENE, "format": "svg" })),
         )
         .expect("renders");
         let path = result["path"].as_str().expect("a path");
         assert!(path.ends_with("dist/scene.svg"), "{path}");
+    }
+
+    #[test]
+    fn a_project_scene_render_defaults_to_its_identifier() {
+        let dir = tempdir("render-project-default");
+        write_project(&dir, "{}", &[("logo", RECT_SCENE)]);
+        let result = call(
+            &scope(&dir),
+            "render",
+            &args(json!({ "scene": "logo", "format": "svg" })),
+        )
+        .expect("renders");
+        let path = result["path"].as_str().expect("a path");
+        assert!(path.ends_with("dist/logo.svg"), "{path}");
     }
 
     #[test]
@@ -767,7 +1070,7 @@ mod tests {
         let error = assert_exec(call(
             &scope(&dir),
             "render",
-            &args(json!({ "scene": RECT_SCENE, "format": "pdf", "out": out })),
+            &args(json!({ "draft": RECT_SCENE, "format": "pdf", "out": out })),
         ));
         assert_eq!(error.code, "E_UNSUPPORTED");
         assert!(!dir.join("out.pdf").exists());
@@ -780,7 +1083,7 @@ mod tests {
         let error = assert_exec(call(
             &scope(&dir),
             "render",
-            &args(json!({ "scene": RECT_SCENE, "format": "svg", "out": outside.join("out.svg") })),
+            &args(json!({ "draft": RECT_SCENE, "format": "svg", "out": outside.join("out.svg") })),
         ));
         assert_eq!(error.code, SCOPE);
     }
@@ -791,7 +1094,7 @@ mod tests {
         let result = call(
             &scope(&dir),
             "compile",
-            &args(json!({ "scene": RECT_SCENE, "nope": 1 })),
+            &args(json!({ "draft": RECT_SCENE, "nope": 1 })),
         );
         assert!(matches!(result, Err(CallError::InvalidParams(_))));
     }
@@ -799,7 +1102,14 @@ mod tests {
     #[test]
     fn a_missing_required_argument_is_invalid_params() {
         let dir = tempdir("missing-arg");
-        let result = call(&scope(&dir), "compile", &args(json!({})));
+        // The project provides a default scene, so the missing `format` is the
+        // first failure, not an unresolved scene.
+        write_project(
+            &dir,
+            r#"{"defaultSceneId":"logo"}"#,
+            &[("logo", RECT_SCENE)],
+        );
+        let result = call(&scope(&dir), "render", &args(json!({})));
         assert!(matches!(result, Err(CallError::InvalidParams(_))));
     }
 
@@ -821,7 +1131,7 @@ mod tests {
             let mut handles = Vec::new();
             for _ in 0..8 {
                 handles.push(threads.spawn(|| {
-                    let result = call(&scope, "compile", &args(json!({ "scene": RECT_SCENE })))
+                    let result = call(&scope, "compile", &args(json!({ "draft": RECT_SCENE })))
                         .expect("compiles");
                     result["model"]["nodes"].as_array().map(Vec::len)
                 }));
