@@ -7,11 +7,21 @@
 //! relationships into concrete placements (FEAT-004), [`style`] holds the
 //! palettes, stroke profiles and recipes applied to elements (FEAT-005),
 //! [`compiler`] compiles a validated scene into one [`render`] model shared by
-//! every exporter (FEAT-011), and [`render`] defines that model (C-003).
+//! every exporter (FEAT-011), [`render`] defines that model (C-003), and
+//! [`export`] writes that model to an output format (FEAT-012).
 
 pub mod compiler;
 pub mod composition;
 pub mod constraints;
+
+/// The export layer: a compiled model rendered to an output format.
+///
+/// Declared inline so the SVG subtree is addressed by its own path
+/// (`export/svg/`); later exporters add sibling modules here.
+pub mod export {
+    pub mod svg;
+}
+
 pub mod primitives;
 pub mod render;
 pub mod scene;
@@ -20,6 +30,7 @@ pub mod style;
 pub use compiler::{compile, compile_with_style, StyleContext};
 pub use composition::{flatten_shape, is_composition, projection_for, resolve_transform, Affine};
 pub use constraints::{resolve as resolve_constraints, Attachment, Frame, Placement, Resolution};
+pub use export::svg::{export_svg, export_svg_reporting, SvgExport, SvgOptions};
 pub use primitives::{Ellipse, Line, Polygon, Rect, Shape};
 pub use render::{NodeStroke, Paint, RenderCanvas, RenderMeta, RenderModel, ResolvedNode};
 pub use scene::{

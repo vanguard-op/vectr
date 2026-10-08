@@ -1,0 +1,552 @@
+//! SVG export: the render model as a portable, inert SVG document (FEAT-012).
+//!
+//! [`export_svg`] is the library entry point (C-002). It walks the model's flat
+//! node list in paint order and emits one group per node, carrying the node's
+//! stable identifier and, when the scene named it, its human-readable name; the
+//! concrete geometry becomes a native SVG shape and the resolved paint becomes
+//! fill and stroke attributes. The document carries no script, event handler, or
+//! foreign content, so it is inert when opened (NFR-023), and identical input
+//! yields byte-identical output (NFR-010).
+//!
+//! # Unsupported content
+//!
+//! A node the SVG target cannot represent — a raster layer, or geometry whose
+//! coordinates are not finite — is omitted rather than emitted corrupted, and
+//! the omission is reported as a warning naming the node (C-003). The frozen
+//! [`export_svg`] signature has no channel for those warnings, so
+//! [`export_svg_reporting`] returns them alongside the document; the CLI and
+//! other callers that surface warnings use it, while [`export_svg`] remains the
+//! frozen shape.
+
+use crate::render::RenderModel;
+use crate::scene::{Diagnostic, DiagnosticCode, Diagnostics};
+
+mod emit;
+
+/// A node the SVG target cannot represent, omitted with a warning.
+pub const UNSUPPORTED: DiagnosticCode = DiagnosticCode::new("W_UNSUPPORTED_SVG");
+
+/// The requested output size is not a usable dimension.
+pub const OPTIONS: DiagnosticCode = DiagnosticCode::new("E_SVG_OPTIONS");
+
+/// Options controlling SVG output.
+///
+/// The defaults reproduce the canvas exactly: no size override and the canvas's
+/// own background. A width or height alone scales the other dimension to keep
+/// the canvas aspect ratio, while the view box stays in canvas coordinates.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SvgOptions {
+    /// Output width in user units; the canvas width when absent.
+    pub width: Option<f64>,
+    /// Output height in user units; the canvas height when absent.
+    pub height: Option<f64>,
+    /// Background override; the canvas background when absent. `transparent`
+    /// (or `none`, or empty) omits the background entirely.
+    pub background: Option<String>,
+}
+
+/// An exported SVG document and the findings recorded while writing it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SvgExport {
+    /// The SVG text.
+    pub svg: String,
+    /// Warnings for content the target could not represent; errors never reach
+    /// this type, because an export that cannot proceed returns `Err` instead.
+    pub diagnostics: Diagnostics,
+}
+
+/// Exports a render model as SVG (C-002).
+///
+/// The document is returned as text; a request the exporter cannot satisfy is a
+/// located diagnostic and no partial document. Content the SVG target cannot
+/// represent is omitted; use [`export_svg_reporting`] to observe those warnings.
+pub fn export_svg(model: &RenderModel, options: &SvgOptions) -> Result<String, Diagnostics> {
+    export_svg_reporting(model, options).map(|export| export.svg)
+}
+
+/// Exports a render model as SVG, returning the warnings alongside the document.
+///
+/// This is the same emission as [`export_svg`]; it exists because the frozen
+/// signature returns only the document and would otherwise drop the warnings an
+/// exporter records when it omits content the target cannot represent (C-003).
+pub fn export_svg_reporting(
+    model: &RenderModel,
+    options: &SvgOptions,
+) -> Result<SvgExport, Diagnostics> {
+    let size = resolve_size(model, options)?;
+    let background = options
+        .background
+        .as_deref()
+        .unwrap_or(model.canvas.background.as_str());
+
+    let mut diagnostics = Diagnostics::new();
+    let svg = emit::document(model, &size, background, &mut diagnostics);
+    if diagnostics.has_errors() {
+        return Err(diagnostics);
+    }
+
+    Ok(SvgExport { svg, diagnostics })
+}
+
+/// Resolves the rendered size, refusing a dimension that is not finite and
+/// positive (FEAT-013's rule for an invalid size, applied to vector output too).
+fn resolve_size(model: &RenderModel, options: &SvgOptions) -> Result<emit::Size, Diagnostics> {
+    let mut diagnostics = Diagnostics::new();
+    if let Some(width) = options.width {
+        validate_dimension(&mut diagnostics, width, "width");
+    }
+    if let Some(height) = options.height {
+        validate_dimension(&mut diagnostics, height, "height");
+    }
+    if diagnostics.has_errors() {
+        return Err(diagnostics);
+    }
+
+    let canvas = &model.canvas;
+    let width = options.width.unwrap_or(canvas.width);
+    let height = options.height.unwrap_or(canvas.height);
+
+    // A single dimension scales the other to preserve the canvas aspect ratio.
+    let scalable = canvas.width > 0.0 && canvas.height > 0.0;
+    let (width, height) = match (options.width, options.height) {
+        (Some(width), None) if scalable => (width, width * canvas.height / canvas.width),
+        (None, Some(height)) if scalable => (height * canvas.width / canvas.height, height),
+        _ => (width, height),
+    };
+
+    Ok(emit::Size { width, height })
+}
+
+fn validate_dimension(diagnostics: &mut Diagnostics, value: f64, field: &str) {
+    if !value.is_finite() || value <= 0.0 {
+        diagnostics.push(Diagnostic::error(
+            OPTIONS,
+            format!("`{field}` must be a finite number greater than zero"),
+        ));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::composition::Affine;
+    use crate::primitives::{
+        Ellipse, Line, Path as PathGeometry, Polygon, Rect, Segment, Shape, SubPath,
+    };
+    use crate::render::{NodeStroke, Paint, RenderCanvas, RenderMeta, ResolvedNode};
+    use crate::style::{StrokeCap, StrokeJoin};
+
+    fn rect(x: f64, y: f64, width: f64, height: f64) -> Shape {
+        Shape::Rect(Rect {
+            x,
+            y,
+            width,
+            height,
+            rx: 0.0,
+            ry: 0.0,
+        })
+    }
+
+    fn node(id: &str, name: Option<&str>, geometry: Shape) -> ResolvedNode {
+        ResolvedNode {
+            id: id.to_string(),
+            name: name.map(str::to_string),
+            order: 0,
+            kind: geometry.kind().to_string(),
+            geometry,
+            transform: Affine::IDENTITY,
+            paint: Paint::default(),
+            opacity: 1.0,
+            visible: true,
+        }
+    }
+
+    fn model(nodes: Vec<ResolvedNode>) -> RenderModel {
+        RenderModel {
+            canvas: RenderCanvas {
+                width: 100.0,
+                height: 50.0,
+                background: "#ffffff".to_string(),
+            },
+            nodes,
+            meta: RenderMeta::default(),
+            diagnostics: Diagnostics::new(),
+        }
+    }
+
+    fn export(model: &RenderModel) -> String {
+        export_svg(model, &SvgOptions::default()).expect("exports")
+    }
+
+    #[test]
+    fn a_compiled_scene_exports_its_resolved_paint_and_geometry() {
+        use crate::compiler::{compile_with_style, StyleContext};
+        use crate::scene::parse as parse_scene;
+        use crate::style::{parse_palette, parse_stroke_profile};
+        use serde_json::json;
+
+        let scene = parse_scene(
+            &json!({
+                "id": "s",
+                "projectId": "p",
+                "name": "S",
+                "formatVersion": "0.1",
+                "canvas": { "width": 200.0, "height": 200.0, "background": "#ffffff" },
+                "elements": [
+                    {
+                        "id": "e1", "sceneId": "s", "order": 0, "kind": "rect", "name": "Box",
+                        "geometry": { "x": 0.0, "y": 0.0, "width": 30.0, "height": 40.0 },
+                        "transform": { "translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0 },
+                        "fillToken": "accent", "strokeProfileId": "stroke-1", "strokeToken": "accent",
+                        "opacity": 1.0, "visible": true
+                    },
+                    {
+                        "id": "p1", "sceneId": "s", "order": 1, "kind": "path",
+                        "geometry": { "pathData": "M0 0 A5 5 0 0 1 10 0" },
+                        "transform": { "translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0 },
+                        "opacity": 1.0, "visible": true
+                    }
+                ]
+            })
+            .to_string(),
+        )
+        .expect("a valid scene");
+        let palette = parse_palette(
+            r##"{"id":"pal","projectId":"p","name":"P","tokens":[{"name":"accent","value":"#ff0000"}]}"##,
+        )
+        .expect("a palette");
+        let profile = parse_stroke_profile(
+            r#"{"id":"stroke-1","projectId":"p","name":"O","width":3,"cap":"butt","join":"miter"}"#,
+        )
+        .expect("a profile");
+        let style = StyleContext {
+            palette: Some(&palette),
+            strokes: std::slice::from_ref(&profile),
+        };
+
+        let compiled = compile_with_style(&scene, &style).expect("compiles");
+        let svg = export(&compiled);
+        assert!(svg.contains("viewBox=\"0 0 200 200\""), "{svg}");
+        assert!(svg.contains("fill=\"#ff0000\""), "{svg}");
+        assert!(svg.contains("stroke=\"#ff0000\""), "{svg}");
+        assert!(svg.contains("<g id=\"e1\" data-name=\"Box\">"), "{svg}");
+        assert!(svg.contains("<path d=\"M 0 0 A 5 5 0 0 1 10 0\""), "{svg}");
+        assert!(svg.contains("</svg>"));
+    }
+
+    #[test]
+    fn an_exported_document_is_well_formed_with_the_canvas_view_box() {
+        let svg = export(&model(Vec::new()));
+        assert!(svg.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"));
+        assert!(svg.contains(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"50\" viewBox=\"0 0 100 50\">"
+        ));
+        assert!(svg.trim_end().ends_with("</svg>"));
+    }
+
+    #[test]
+    fn a_filled_and_stroked_rect_matches_the_render_model() {
+        let mut shape = node("e1", Some("Box"), rect(1.0, 2.0, 30.0, 40.0));
+        shape.paint = Paint {
+            fill: Some("#ff0000".to_string()),
+            stroke: Some(NodeStroke {
+                value: "#0000ff".to_string(),
+                width: 2.5,
+                cap: StrokeCap::Round,
+                join: StrokeJoin::Bevel,
+            }),
+        };
+        let svg = export(&model(vec![shape]));
+        assert!(
+            svg.contains("<rect x=\"1\" y=\"2\" width=\"30\" height=\"40\""),
+            "{svg}"
+        );
+        assert!(svg.contains("fill=\"#ff0000\""), "{svg}");
+        assert!(svg.contains("stroke=\"#0000ff\""), "{svg}");
+        assert!(svg.contains("stroke-width=\"2.5\""), "{svg}");
+        assert!(svg.contains("stroke-linecap=\"round\""), "{svg}");
+        assert!(svg.contains("stroke-linejoin=\"bevel\""), "{svg}");
+        assert!(svg.contains("<g id=\"e1\" data-name=\"Box\">"), "{svg}");
+        assert!(svg.contains("<title>Box</title>"), "{svg}");
+    }
+
+    #[test]
+    fn a_shape_without_a_fill_is_not_filled() {
+        let svg = export(&model(vec![node("e1", None, rect(0.0, 0.0, 1.0, 1.0))]));
+        assert!(svg.contains("fill=\"none\""), "{svg}");
+    }
+
+    #[test]
+    fn a_resolved_transform_becomes_a_matrix() {
+        let mut shape = node("e1", None, rect(0.0, 0.0, 10.0, 10.0));
+        shape.transform = Affine {
+            a: 1.0,
+            b: 0.0,
+            c: 0.0,
+            d: 1.0,
+            e: 5.0,
+            f: 6.0,
+        };
+        let svg = export(&model(vec![shape]));
+        assert!(svg.contains("transform=\"matrix(1 0 0 1 5 6)\""), "{svg}");
+    }
+
+    #[test]
+    fn an_identity_transform_is_omitted() {
+        let svg = export(&model(vec![node("e1", None, rect(0.0, 0.0, 1.0, 1.0))]));
+        assert!(!svg.contains("transform="), "{svg}");
+    }
+
+    #[test]
+    fn each_primitive_becomes_a_native_svg_shape() {
+        let shapes = [
+            (
+                Shape::Ellipse(Ellipse {
+                    cx: 5.0,
+                    cy: 6.0,
+                    rx: 7.0,
+                    ry: 8.0,
+                }),
+                "<ellipse cx=\"5\" cy=\"6\" rx=\"7\" ry=\"8\"",
+            ),
+            (
+                Shape::Polygon(Polygon {
+                    points: vec![[0.0, 0.0], [10.0, 0.0], [5.0, 8.0]],
+                }),
+                "<polygon points=\"0,0 10,0 5,8\"",
+            ),
+            (
+                Shape::Line(Line {
+                    points: vec![[0.0, 0.0], [10.0, 10.0]],
+                }),
+                "<polyline points=\"0,0 10,10\"",
+            ),
+        ];
+        for (shape, expected) in shapes {
+            let svg = export(&model(vec![node("e1", None, shape)]));
+            assert!(svg.contains(expected), "expected {expected} in {svg}");
+        }
+    }
+
+    #[test]
+    fn a_path_becomes_path_data_with_every_segment_kind() {
+        let path = PathGeometry {
+            subpaths: vec![SubPath {
+                start: [0.0, 0.0],
+                segments: vec![
+                    Segment::Line { to: [10.0, 0.0] },
+                    Segment::Cubic {
+                        ctrl1: [1.0, 1.0],
+                        ctrl2: [2.0, 2.0],
+                        to: [3.0, 3.0],
+                    },
+                    Segment::Quadratic {
+                        ctrl: [4.0, 4.0],
+                        to: [5.0, 5.0],
+                    },
+                    Segment::Arc {
+                        rx: 6.0,
+                        ry: 7.0,
+                        x_rotation: 0.0,
+                        large_arc: false,
+                        sweep: true,
+                        to: [8.0, 8.0],
+                    },
+                ],
+                closed: true,
+            }],
+        };
+        let svg = export(&model(vec![node("e1", None, Shape::Path(path))]));
+        assert!(
+            svg.contains("d=\"M 0 0 L 10 0 C 1 1 2 2 3 3 Q 4 4 5 5 A 6 7 0 0 1 8 8 Z\""),
+            "{svg}"
+        );
+    }
+
+    #[test]
+    fn a_path_with_no_segments_draws_nothing() {
+        let path = PathGeometry {
+            subpaths: vec![SubPath {
+                start: [1.0, 2.0],
+                segments: Vec::new(),
+                closed: false,
+            }],
+        };
+        let svg = export(&model(vec![node("e1", None, Shape::Path(path))]));
+        assert!(!svg.contains("<path"), "{svg}");
+    }
+
+    #[test]
+    fn a_negative_extent_is_normalised_rather_than_emitted_invalid() {
+        let svg = export(&model(vec![node("e1", None, rect(10.0, 10.0, -4.0, -5.0))]));
+        assert!(
+            svg.contains("<rect x=\"6\" y=\"5\" width=\"4\" height=\"5\""),
+            "{svg}"
+        );
+    }
+
+    #[test]
+    fn an_extreme_coordinate_still_produces_a_valid_document() {
+        let svg = export(&model(vec![node(
+            "e1",
+            None,
+            rect(1e300, -1e300, 1e300, 1e300),
+        )]));
+        assert!(svg.contains("1e300"), "{svg}");
+        assert!(!svg.contains("inf") && !svg.contains("NaN"), "{svg}");
+    }
+
+    #[test]
+    fn an_invisible_node_is_preserved_but_not_drawn() {
+        let mut shape = node("e1", None, rect(0.0, 0.0, 1.0, 1.0));
+        shape.visible = false;
+        let svg = export(&model(vec![shape]));
+        assert!(svg.contains("display=\"none\""), "{svg}");
+    }
+
+    #[test]
+    fn node_opacity_is_carried_to_the_group() {
+        let mut shape = node("e1", None, rect(0.0, 0.0, 1.0, 1.0));
+        shape.opacity = 0.5;
+        let svg = export(&model(vec![shape]));
+        assert!(svg.contains("opacity=\"0.5\""), "{svg}");
+    }
+
+    #[test]
+    fn repeated_exports_are_identical() {
+        let document = model(vec![
+            node("e1", Some("A"), rect(1.0, 2.0, 3.0, 4.0)),
+            node("e2", None, rect(5.0, 6.0, 7.0, 8.0)),
+        ]);
+        assert_eq!(export(&document), export(&document));
+    }
+
+    #[test]
+    fn names_and_colours_are_escaped_so_the_output_stays_inert() {
+        let mut shape = node(
+            "e1",
+            Some("<script>alert(1)</script>"),
+            rect(0.0, 0.0, 1.0, 1.0),
+        );
+        shape.paint.fill = Some("\"><script>".to_string());
+        let svg = export(&model(vec![shape]));
+        assert!(!svg.contains("<script>"), "{svg}");
+        assert!(svg.contains("&lt;script&gt;"), "{svg}");
+        assert!(svg.contains("&quot;&gt;&lt;script&gt;"), "{svg}");
+    }
+
+    #[test]
+    fn a_raster_node_is_omitted_with_a_warning() {
+        let mut shape = node("r1", None, rect(0.0, 0.0, 1.0, 1.0));
+        shape.kind = "raster".to_string();
+        let export =
+            export_svg_reporting(&model(vec![shape]), &SvgOptions::default()).expect("exports");
+        assert!(!export.svg.contains("r1"), "{}", export.svg);
+        assert_eq!(
+            export.diagnostics.warnings().next().map(|w| w.code.clone()),
+            Some(UNSUPPORTED)
+        );
+    }
+
+    #[test]
+    fn non_finite_geometry_is_omitted_with_a_warning() {
+        let shape = node("e1", None, rect(f64::NAN, 0.0, 1.0, 1.0));
+        let export =
+            export_svg_reporting(&model(vec![shape]), &SvgOptions::default()).expect("exports");
+        assert!(!export.svg.contains("<g id=\"e1\""), "{}", export.svg);
+        assert!(export.diagnostics.warnings().any(|w| w.code == UNSUPPORTED));
+    }
+
+    #[test]
+    fn the_frozen_entry_point_still_returns_a_document() {
+        let mut shape = node("r1", None, rect(0.0, 0.0, 1.0, 1.0));
+        shape.kind = "raster".to_string();
+        let svg = export_svg(&model(vec![shape]), &SvgOptions::default()).expect("exports");
+        assert!(svg.contains("</svg>"), "{svg}");
+    }
+
+    #[test]
+    fn an_invalid_output_size_is_refused() {
+        let document = model(Vec::new());
+        for width in [0.0, -1.0, f64::NAN] {
+            let diagnostics = export_svg(
+                &document,
+                &SvgOptions {
+                    width: Some(width),
+                    ..SvgOptions::default()
+                },
+            )
+            .expect_err("refused");
+            assert_eq!(
+                diagnostics.errors().next().map(|e| e.code.clone()),
+                Some(OPTIONS)
+            );
+        }
+    }
+
+    #[test]
+    fn the_background_is_drawn_unless_transparent() {
+        let document = model(Vec::new());
+        assert!(export(&document)
+            .contains("<rect x=\"0\" y=\"0\" width=\"100\" height=\"50\" fill=\"#ffffff\"/>"));
+
+        let transparent = export_svg(
+            &document,
+            &SvgOptions {
+                background: Some("transparent".to_string()),
+                ..SvgOptions::default()
+            },
+        )
+        .expect("exports");
+        assert!(!transparent.contains("fill=\"#ffffff\""), "{transparent}");
+
+        let overridden = export_svg(
+            &document,
+            &SvgOptions {
+                background: Some("#000000".to_string()),
+                ..SvgOptions::default()
+            },
+        )
+        .expect("exports");
+        assert!(overridden.contains("fill=\"#000000\""), "{overridden}");
+    }
+
+    #[test]
+    fn a_single_output_dimension_preserves_the_aspect_ratio() {
+        let document = model(Vec::new());
+        let svg = export_svg(
+            &document,
+            &SvgOptions {
+                width: Some(200.0),
+                ..SvgOptions::default()
+            },
+        )
+        .expect("exports");
+        assert!(
+            svg.contains("width=\"200\" height=\"100\" viewBox=\"0 0 100 50\""),
+            "{svg}"
+        );
+    }
+
+    #[test]
+    fn accessible_metadata_reaches_the_document() {
+        let mut document = model(Vec::new());
+        document.meta = RenderMeta {
+            title: Some("Logo".to_string()),
+            description: Some("A mark".to_string()),
+        };
+        let svg = export(&document);
+        assert!(svg.contains("<title>Logo</title>"), "{svg}");
+        assert!(svg.contains("<desc>A mark</desc>"), "{svg}");
+    }
+
+    #[test]
+    fn identifiers_are_made_valid_and_unique() {
+        let svg = export(&model(vec![
+            node("1 bad", None, rect(0.0, 0.0, 1.0, 1.0)),
+            node("1-bad", None, rect(0.0, 0.0, 1.0, 1.0)),
+        ]));
+        assert!(svg.contains("id=\"vectr-1-bad\""), "{svg}");
+        assert!(svg.contains("id=\"vectr-1-bad-2\""), "{svg}");
+    }
+}
