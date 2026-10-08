@@ -64,35 +64,11 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 ### Completed phases
 | Phase | Closed | Notes |
 |---|---|---|
+| Phase 1 — First Graphic | 2026-10-08 | FEAT-001, FEAT-002, FEAT-003, FEAT-004, FEAT-005, FEAT-011, FEAT-012, FEAT-013, FEAT-016, FEAT-024 shipped; C-001–C-004 implemented; A-001–A-004 sourced. |
 
-### Active phase: Phase 1 — First Graphic
+### Active phase: Phase 2 — Style Core
 | Task | Feature | Owner | Status | Contract |
 |---|---|---|---|---|
-| T-001 | — (foundation) | infra-engineer | Done | — |
-| T-002 | FEAT-001 | backend-engineer | Done | C-001 |
-| T-003 | FEAT-002 | backend-engineer | Done | C-003 |
-| T-004 | FEAT-003 | backend-engineer | Done | C-003 |
-| T-005 | FEAT-005 | backend-engineer | Done | C-001 |
-| T-006 | FEAT-004 | backend-engineer | Done | C-003 |
-| T-007 | FEAT-011 | backend-engineer | Done | C-002, C-003 |
-| T-008 | FEAT-012 | backend-engineer | Done | C-002 |
-| T-009 | FEAT-013 | backend-engineer | Done | C-002 |
-| T-010 | FEAT-024 | backend-engineer | Done | C-002 |
-| T-011 | FEAT-016 | backend-engineer | Done | C-004 |
-| T-020 | FEAT-002, FEAT-011 | backend-engineer | Done | C-001, C-003 |
-| T-021 | FEAT-024 | backend-engineer | Done | C-002, C-003 |
-| T-022 | FEAT-016, FEAT-024 | backend-engineer | Done | C-004 |
-| T-023 | FEAT-024 | backend-engineer | Done | C-002 |
-| T-024 | — (foundation) | infra-engineer | Done | — |
-| T-025 | — (foundation) | backend-engineer | Done | — |
-| T-012 | — (foundation) | infra-engineer | Done | — |
-| T-013 | FEAT-002, FEAT-003 | product-shaper | Done | C-001 |
-| T-014 | FEAT-002, FEAT-003 | backend-engineer | Done | C-001, C-003 |
-| T-015 | — (foundation) | backend-engineer | Done | — |
-| T-016 | FEAT-011 | backend-engineer | Done | C-003 |
-| T-017 | FEAT-011 | backend-engineer | Done | C-001, C-002, C-003 |
-| T-018 | FEAT-011 | backend-engineer | Done | C-003 |
-| T-019 | — (foundation) | infra-engineer | Done | — |
 
 ## Decisions log
 | # | Decision | Rationale | By |
@@ -120,7 +96,7 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 
 ## Definition of Done
 - Every acceptance criterion in the task's FEAT file is met, including its edge cases and failure states.
-- Unit tests for the unit pass; cargo test --workspace, cargo fmt --check, and cargo clippy -D warnings are clean.
+- Unit tests for the unit pass; `scripts/check.sh` (cargo fmt --check, clippy -D warnings, workspace build, workspace tests, and the acceptance suite) is clean.
 - Determinism holds: repeated runs on the same input produce byte-identical output (NFR-010).
 - Every failure is reported with a location and a non-zero exit, with no partial output (NFR-011).
 - The task's contract is implemented and marked Implemented in CONTRACTS.md.
@@ -130,6 +106,7 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 ## Key commands
 - cargo build --workspace
 - cargo test --workspace
+- cargo test --manifest-path tests/acceptance/Cargo.toml --locked
 - cargo fmt --all -- --check
 - cargo clippy --workspace --all-targets -- -D warnings
 - cargo run -p vectr-cli -- validate fixtures/scene.json
