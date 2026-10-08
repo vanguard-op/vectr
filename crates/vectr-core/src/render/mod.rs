@@ -11,7 +11,9 @@
 //! layers already produce, and [`Affine`] carries the resolved world transform.
 //! A node's `kind` names the scene element that produced it; where a composition
 //! expands one element into several nodes (a repeat), each node carries a stable
-//! identifier derived from the element it came from.
+//! identifier derived from the element it came from. A node's `groups` carry its
+//! ancestor group chain, outermost first, so an exporter can rebuild the
+//! named-group nesting the scene declared (FEAT-011, FEAT-012).
 
 use serde::{Deserialize, Serialize};
 
@@ -120,6 +122,22 @@ pub struct RenderMeta {
     pub description: Option<String>,
 }
 
+/// One ancestor group in a node's chain (C-003).
+///
+/// A group element is a container: it produces no node of its own, but its
+/// identity and name travel on every descendant node so an exporter can rebuild
+/// the named-group nesting (FEAT-011, FEAT-012). An unnamed group is still
+/// carried, with no name, so an exporter may collapse it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeGroup {
+    /// The group element's stable identifier.
+    pub id: String,
+    /// The group's name, when it declares one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
 /// One concrete drawing node.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -133,6 +151,10 @@ pub struct ResolvedNode {
     pub order: usize,
     /// The scene-language kind that produced the node.
     pub kind: String,
+    /// The node's ancestor group chain, outermost first; empty for a root
+    /// element. Reading a model without the field yields an empty chain.
+    #[serde(default)]
+    pub groups: Vec<NodeGroup>,
     /// The node's concrete geometry, in its own local coordinates.
     pub geometry: Shape,
     /// The resolved world transform applied to the geometry.
@@ -222,6 +244,45 @@ mod tests {
         assert!(text.contains("\"kind\":\"arc\""), "{text}");
         assert!(text.contains("\"xRotation\""), "{text}");
         assert!(text.contains("\"elementId\":\"e1\""), "{text}");
+    }
+
+    #[test]
+    fn a_node_serializes_its_ancestor_group_chain() {
+        const GROUPED: &str = r##"{
+          "id": "s",
+          "projectId": "p",
+          "name": "S",
+          "formatVersion": "0.1",
+          "canvas": { "width": 100, "height": 100, "background": "#ffffff" },
+          "elements": [
+            {
+              "id": "g1", "sceneId": "s", "order": 0, "kind": "group", "name": "Outer",
+              "geometry": {},
+              "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
+              "opacity": 1, "visible": true
+            },
+            {
+              "id": "e1", "sceneId": "s", "order": 0, "kind": "rect", "parentId": "g1",
+              "geometry": { "x": 0, "y": 0, "width": 10, "height": 10 },
+              "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
+              "opacity": 1, "visible": true
+            }
+          ]
+        }"##;
+        let compiled = compile(&parse_scene(GROUPED).expect("a valid scene")).expect("compiles");
+        let text = compiled.to_json_string().expect("serializable");
+        assert!(
+            text.contains("\"groups\":[{\"id\":\"g1\",\"name\":\"Outer\"}]"),
+            "{text}"
+        );
+        let reparsed = parse(&text).expect("deserializable");
+        assert_eq!(
+            reparsed.nodes[0].groups,
+            vec![NodeGroup {
+                id: "g1".to_string(),
+                name: Some("Outer".to_string()),
+            }]
+        );
     }
 
     #[test]

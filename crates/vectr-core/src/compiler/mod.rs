@@ -19,7 +19,10 @@
 //! `repeat` emits one subtree per copy, an `alongPath` places its children along
 //! a guide, a `projection` maps its children onto an axis, a `boolean` combines
 //! its children, and an `offset` grows or shrinks its children. Every other
-//! element contributes one node. The one feature the compiler does not yet
+//! element contributes one node. A `group` is a container that contributes no
+//! node of its own: its identity and name travel on every descendant node as an
+//! ancestor chain, outermost first, so an exporter can rebuild the named-group
+//! nesting (FEAT-011, FEAT-012). The one feature the compiler does not yet
 //! accept — a plain `raster` layer, which ships behind the raster-layers flag
 //! (FEAT-015) — is refused by name.
 //!
@@ -44,7 +47,9 @@ use crate::constraints::{self, Point, Resolution};
 use crate::primitives::{
     self, parse as parse_path, Line, Path as PathGeometry, Segment, Shape, SubPath,
 };
-use crate::render::{NodeStroke, Paint, RenderCanvas, RenderMeta, RenderModel, ResolvedNode};
+use crate::render::{
+    NodeGroup, NodeStroke, Paint, RenderCanvas, RenderMeta, RenderModel, ResolvedNode,
+};
 use crate::scene::{
     validate, BooleanOperation, Diagnostic, DiagnosticCode, Diagnostics, ElementKind, Location,
     Scene,
@@ -249,11 +254,15 @@ impl Compiler<'_, '_> {
             if self.limit_hit {
                 break;
             }
-            self.emit(root, Affine::IDENTITY, 1.0, true, None);
+            self.emit(root, Affine::IDENTITY, 1.0, true, None, &[]);
         }
     }
 
     /// Emits the subtree rooted at one element.
+    ///
+    /// `groups` is the ancestor group chain of the element being emitted,
+    /// outermost first; a `group` element extends it for its own descendants so
+    /// every node below it carries the group's identity (C-003, FEAT-011).
     fn emit(
         &mut self,
         index: usize,
@@ -261,6 +270,7 @@ impl Compiler<'_, '_> {
         parent_opacity: f64,
         parent_visible: bool,
         copy: Option<&CopyTag>,
+        groups: &[NodeGroup],
     ) {
         if self.limit_hit {
             return;
@@ -274,6 +284,17 @@ impl Compiler<'_, '_> {
         let opacity = parent_opacity * self.scene.elements[index].opacity;
         let visible = parent_visible && self.scene.elements[index].visible;
 
+        // A group contributes no node; it only deepens the chain its descendants
+        // carry. Every other kind passes the chain through unchanged.
+        let mut descendant_groups = groups.to_vec();
+        if kind == ElementKind::Group {
+            let element = &self.scene.elements[index];
+            descendant_groups.push(NodeGroup {
+                id: element.id.clone(),
+                name: element.name.clone(),
+            });
+        }
+
         match kind {
             ElementKind::Raster => self.reject_unsupported(index, "raster"),
             ElementKind::Rect
@@ -285,7 +306,15 @@ impl Compiler<'_, '_> {
                     let geometry = Shape::Line(Line {
                         points: vec![from, to],
                     });
-                    self.push_node(index, geometry, Affine::IDENTITY, opacity, visible, copy);
+                    self.push_node(
+                        index,
+                        geometry,
+                        Affine::IDENTITY,
+                        opacity,
+                        visible,
+                        copy,
+                        groups,
+                    );
                     return;
                 }
                 let mut findings = Diagnostics::new();
@@ -294,12 +323,14 @@ impl Compiler<'_, '_> {
                 self.diagnostics.extend(findings);
                 if !failed {
                     if let Some(shape) = shape {
-                        self.push_node(index, shape, world, opacity, visible, copy);
+                        self.push_node(index, shape, world, opacity, visible, copy, groups);
                     }
                 }
-                self.emit_children(index, world, opacity, visible, copy);
+                self.emit_children(index, world, opacity, visible, copy, &descendant_groups);
             }
-            ElementKind::Group => self.emit_children(index, world, opacity, visible, copy),
+            ElementKind::Group => {
+                self.emit_children(index, world, opacity, visible, copy, &descendant_groups)
+            }
             ElementKind::Repeat => {
                 let mut findings = Diagnostics::new();
                 let count = self.scene.elements[index].geometry.count.unwrap_or(0);
@@ -314,7 +345,14 @@ impl Compiler<'_, '_> {
                         break;
                     }
                     let tag = CopyTag::child(copy, &owner, copy_index);
-                    self.emit_children(index, world.then(*placement), opacity, visible, Some(&tag));
+                    self.emit_children(
+                        index,
+                        world.then(*placement),
+                        opacity,
+                        visible,
+                        Some(&tag),
+                        &descendant_groups,
+                    );
                 }
             }
             ElementKind::AlongPath => {
@@ -339,7 +377,14 @@ impl Compiler<'_, '_> {
                         break;
                     }
                     let tag = CopyTag::child(copy, &owner, copy_index);
-                    self.emit_children(index, world.then(*placement), opacity, visible, Some(&tag));
+                    self.emit_children(
+                        index,
+                        world.then(*placement),
+                        opacity,
+                        visible,
+                        Some(&tag),
+                        &descendant_groups,
+                    );
                 }
             }
             ElementKind::Projection => {
@@ -348,7 +393,7 @@ impl Compiler<'_, '_> {
                     return;
                 };
                 let projected = world.then(composition::projection_for(axis));
-                self.emit_children(index, projected, opacity, visible, copy);
+                self.emit_children(index, projected, opacity, visible, copy, &descendant_groups);
             }
             ElementKind::Boolean => {
                 let Some(operation) = self.scene.elements[index].geometry.operation else {
@@ -365,7 +410,7 @@ impl Compiler<'_, '_> {
                 );
                 self.diagnostics.extend(findings);
                 if let Some(shape) = combined {
-                    self.push_node(index, shape, world, opacity, visible, copy);
+                    self.push_node(index, shape, world, opacity, visible, copy, groups);
                 }
             }
             ElementKind::Offset => {
@@ -383,7 +428,7 @@ impl Compiler<'_, '_> {
                         offset_shape(&shape, distance, &self.scene.elements[index], &mut findings);
                     self.diagnostics.extend(findings);
                     if let Some(shape) = offset {
-                        self.push_node(index, shape, world, opacity, visible, copy);
+                        self.push_node(index, shape, world, opacity, visible, copy, groups);
                     }
                 }
             }
@@ -530,13 +575,14 @@ impl Compiler<'_, '_> {
         opacity: f64,
         visible: bool,
         copy: Option<&CopyTag>,
+        groups: &[NodeGroup],
     ) {
         let children = self.children[index].clone();
         for child in children {
             if self.limit_hit {
                 break;
             }
-            self.emit(child, world, opacity, visible, copy);
+            self.emit(child, world, opacity, visible, copy, groups);
         }
     }
 
@@ -668,6 +714,7 @@ impl Compiler<'_, '_> {
         opacity: f64,
         visible: bool,
         copy: Option<&CopyTag>,
+        groups: &[NodeGroup],
     ) {
         if self.limit_hit {
             return;
@@ -706,6 +753,7 @@ impl Compiler<'_, '_> {
             name,
             order,
             kind,
+            groups: groups.to_vec(),
             geometry,
             transform,
             paint,
@@ -1256,6 +1304,84 @@ mod tests {
         let origin = node.transform.apply([0.0, 0.0]);
         assert!((origin[0] - 100.0).abs() < 1e-9, "{origin:?}");
         assert!((origin[1] - 10.0).abs() < 1e-9, "{origin:?}");
+    }
+
+    #[test]
+    fn a_root_element_carries_no_group_chain() {
+        let model = compiled(json!([rect("e1", 0, 10.0, 10.0)]));
+        assert!(model.nodes[0].groups.is_empty());
+    }
+
+    #[test]
+    fn a_named_group_chain_is_carried_by_its_descendants() {
+        let mut group = base("g1", 0, "group", json!({}));
+        group["name"] = json!("Outer");
+        let mut child = rect("c1", 0, 5.0, 5.0);
+        child["parentId"] = json!("g1");
+        let model = compiled(json!([group, child]));
+        assert_eq!(
+            model.node("c1").expect("the child").groups,
+            vec![NodeGroup {
+                id: "g1".to_string(),
+                name: Some("Outer".to_string()),
+            }]
+        );
+    }
+
+    #[test]
+    fn nested_group_chains_run_outermost_first() {
+        let mut outer = base("outer", 0, "group", json!({}));
+        outer["name"] = json!("Outer");
+        let mut inner = base("inner", 1, "group", json!({}));
+        inner["name"] = json!("Inner");
+        inner["parentId"] = json!("outer");
+        let mut child = rect("c1", 0, 5.0, 5.0);
+        child["parentId"] = json!("inner");
+        let model = compiled(json!([outer, inner, child]));
+        let groups = &model.node("c1").expect("the child").groups;
+        assert_eq!(
+            groups
+                .iter()
+                .map(|group| group.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["outer", "inner"]
+        );
+        assert_eq!(groups[0].name.as_deref(), Some("Outer"));
+        assert_eq!(groups[1].name.as_deref(), Some("Inner"));
+    }
+
+    #[test]
+    fn an_unnamed_group_is_still_carried_in_the_chain() {
+        let group = base("g1", 0, "group", json!({}));
+        let mut child = rect("c1", 0, 5.0, 5.0);
+        child["parentId"] = json!("g1");
+        let model = compiled(json!([group, child]));
+        assert_eq!(
+            model.node("c1").expect("the child").groups,
+            vec![NodeGroup {
+                id: "g1".to_string(),
+                name: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_composition_inside_a_group_keeps_the_group_chain() {
+        let mut group = base("g1", 0, "group", json!({}));
+        group["name"] = json!("Outer");
+        let mut repeat = base("r1", 1, "repeat", json!({ "count": 2, "spacing": 10.0 }));
+        repeat["parentId"] = json!("g1");
+        let mut child = rect("c1", 0, 5.0, 5.0);
+        child["parentId"] = json!("r1");
+        let model = compiled(json!([group, repeat, child]));
+        assert_eq!(model.nodes.len(), 2);
+        let expected = vec![NodeGroup {
+            id: "g1".to_string(),
+            name: Some("Outer".to_string()),
+        }];
+        for node in &model.nodes {
+            assert_eq!(node.groups, expected);
+        }
     }
 
     #[test]

@@ -242,6 +242,7 @@ mod tests {
             name: None,
             order: 0,
             kind: geometry.kind().to_string(),
+            groups: Vec::new(),
             geometry,
             transform: Affine::IDENTITY,
             paint: Paint::default(),

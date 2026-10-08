@@ -153,6 +153,7 @@ mod tests {
             name: name.map(str::to_string),
             order: 0,
             kind: geometry.kind().to_string(),
+            groups: Vec::new(),
             geometry,
             transform: Affine::IDENTITY,
             paint: Paint::default(),
