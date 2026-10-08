@@ -1,7 +1,7 @@
 # Delivery
 
 ## Source of truth
-docs/Vectr/ — git submodule, pinned at b428725, remote https://github.com/vanguard-op/vectr-docs.git. The docs are authoritative for what to build; this file tracks state only and never restates the spec.
+docs/Vectr/ — git submodule, remote https://github.com/vanguard-op/vectr-docs.git; working tree at 2fc3a64 (gradient fills, unified element paint model), the recorded pointer advancing with the Phase 2 rework. The docs are authoritative for what to build; this file tracks state only and never restates the spec.
 
 ## Team & file ownership
 | Member | Owns |
@@ -69,6 +69,7 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 ### Active phase: Phase 2 — Style Core
 | Task | Feature | Owner | Status | Contract |
 |---|---|---|---|---|
+| T-032 | FEAT-027 | backend-engineer | Ready | C-001, C-002, C-003 |
 | T-028 | FEAT-007 | backend-engineer | Backlog | C-002, C-003 |
 | T-029 | FEAT-008 | backend-engineer | Backlog | C-002, C-003 |
 | T-030 | FEAT-009 | backend-engineer | Backlog | C-002, C-003 |
@@ -97,6 +98,9 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | D-018 | A font asset with id `fallback` supplies the fallback font for glyphs the resolved font lacks, and the compiler carries it into the render model's font table. | FEAT-024 requires a missing glyph to be substituted from a fallback font rather than drawn as a blank box, but the docs name no fallback id and no text node references it; the convention makes the fallback reachable. | lead |
 | D-019 | Migrate the text stack from rustybuzz + ttf-parser to harfrust + skrifa. | RustSec flags rustybuzz (RUSTSEC-2026-0206) and ttf-parser (RUSTSEC-2026-0192) unmaintained with no safe upgrade; harfrust and skrifa are the named maintained successors, keeping NFR-020's dependency gate green without ignores. Supersedes the text portion of D-007. | user |
 | D-020 | The project layout includes an `assets/` store of Asset documents (id, kind, path, license) for user-supplied fonts, scaffolded by `vectr init`. | D-009 named no home for a user-supplied font, which FEAT-024 requires; the Asset entity already models a font by path and licence. Extends D-009. | lead |
+| D-021 | Element paint is unified: `fill` and `stroke` each carry a `{kind, ref}` paint, and a new Gradient entity (linear or radial, palette-token stops) supplies gradient paints; texture is deferred to raster-assisted layers (FEAT-015). | The flat recipe's gradient and texture edge cases had no expressible trigger, so the user directed the gap to product-shaper, which made a gradient request expressible and removed the ambiguity of separate fill and stroke fields. Extends D-013 and D-015. | user |
+| D-022 | The scene format version moves to 0.2. | The paint-model change is a breaking change to the scene document; the pre-1.0 version signals it. Supersedes D-011's 0.1. | lead |
+| D-023 | The project layout gains a `gradients/` directory of Gradient documents, scaffolded by `vectr init`. | Gradients are project documents referenced by paint, parallel to palettes and strokes; the docs name no on-disk layout. Extends D-009. | lead |
 
 ## Definition of Done
 - Every acceptance criterion in the task's FEAT file is met, including its edge cases and failure states.
