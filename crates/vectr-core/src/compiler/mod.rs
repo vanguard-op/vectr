@@ -44,6 +44,11 @@
 //! The flat recipe (FEAT-007) draws even, solid palette fills and no texture,
 //! honoring an element's explicit gradient; a recipe that asks for a look the
 //! language cannot express is reported rather than silently approximated.
+//! The line-art recipe (FEAT-008) fixes a consistent stroke weight — its
+//! declared `strokeWeight` fills a stroke whose profile leaves the weight
+//! unset, while a profile that states a width is honored as an explicit varying
+//! weight — takes each stroke's paint from the palette, clamps a weight below
+//! the minimum renderable unit, and reports a scene that draws no strokes.
 //!
 //! # Fonts
 //!
@@ -263,6 +268,15 @@ pub fn compile_with_style<'s>(
         compiler
             .diagnostics
             .extend(style::check_recipe_expressible(recipe));
+        // A line-art scene with no stroke has no line work in it; the emptiness
+        // is reported rather than passed off as a successful render (FEAT-008).
+        let has_strokes = compiler
+            .nodes
+            .iter()
+            .any(|node| node.paint.stroke.is_some());
+        compiler
+            .diagnostics
+            .extend(style::check_recipe_line_art(recipe, has_strokes));
     }
 
     let model = compiler.into_model();
@@ -1104,12 +1118,41 @@ impl Compiler<'_, '_> {
             let element = &self.scene.elements[index];
             style::resolve_stroke_paint(element, palette, gradients, &mut self.diagnostics)
         }?;
+        let width = self.apply_stroke_weight(&element_id, geometry.width);
         Some(NodeStroke {
             paint,
-            width: geometry.width,
+            width,
             cap: geometry.cap,
             join: geometry.join,
         })
+    }
+
+    /// The stroke's effective width under the scene's recipe (FEAT-008).
+    ///
+    /// A line-art recipe fixes a consistent weight: its declared `strokeWeight`
+    /// fills a stroke whose profile leaves the weight unset, while a profile
+    /// that states a positive width is honored as an explicit varying weight. A
+    /// weight below the minimum renderable unit is clamped up and reported,
+    /// since a thinner line does not survive rasterization. Every other recipe,
+    /// and the no-recipe path, leaves the profile's width untouched.
+    fn apply_stroke_weight(&mut self, element_id: &str, profile_width: f64) -> f64 {
+        let Some(recipe) = self.style.recipe else {
+            return profile_width;
+        };
+        let (width, clamped) = recipe.resolve_stroke_weight(profile_width);
+        if clamped {
+            self.diagnostics.push(
+                Diagnostic::warning(
+                    style::STROKE_WEIGHT_CLAMPED,
+                    format!(
+                        "stroke weight {profile_width} for element `{element_id}` is below the minimum renderable unit {}; it was clamped",
+                        style::MIN_STROKE_WEIGHT
+                    ),
+                )
+                .with_location(Location::element_at(element_id, "/stroke/profileId")),
+            );
+        }
+        width
     }
 
     /// A node identifier unique across the model.
@@ -1268,8 +1311,8 @@ mod tests {
     use super::*;
     use crate::primitives::{Ellipse, Rect as PrimRect};
     use crate::style::{
-        parse_gradient, parse_palette, parse_stroke_profile, parse_style_recipe,
-        TEXTURE_UNSUPPORTED, UNDEFINED_TOKEN,
+        parse_gradient, parse_palette, parse_stroke_profile, parse_style_recipe, LINE_ART_EMPTY,
+        MIN_STROKE_WEIGHT, STROKE_WEIGHT_CLAMPED, TEXTURE_UNSUPPORTED, UNDEFINED_TOKEN,
     };
     use serde_json::{json, Value};
 
@@ -1856,6 +1899,209 @@ mod tests {
     fn compiling_without_a_recipe_names_none_in_the_model() {
         let model = compiled(json!([rect("e1", 0, 10.0, 10.0)]));
         assert_eq!(model.meta.recipe, None);
+    }
+
+    /// A line-art recipe with the given default stroke weight.
+    fn line_art_recipe(weight: Option<f64>) -> crate::style::StyleRecipe {
+        let parameters = match weight {
+            Some(weight) => format!(r#"{{"strokeWeight":{weight}}}"#),
+            None => "{}".to_string(),
+        };
+        parse_style_recipe(&format!(
+            r#"{{"id":"recipe-l","projectId":"p","name":"line-art","parameters":{parameters}}}"#
+        ))
+        .expect("a line-art recipe")
+    }
+
+    /// A stroke profile with the given identifier and width.
+    fn profile(id: &str, width: f64) -> crate::style::StrokeProfile {
+        parse_stroke_profile(&format!(
+            r#"{{"id":"{id}","projectId":"p","name":"O","width":{width},"cap":"round","join":"miter"}}"#
+        ))
+        .expect("a stroke profile")
+    }
+
+    #[test]
+    fn a_line_art_recipe_fixes_the_stroke_weight_and_paint() {
+        let mut element = rect("e1", 0, 20.0, 20.0);
+        element["stroke"] = stroke_json("outline", "accent");
+        let scene = scene_of(json!([element]), None);
+
+        let palette = flat_palette();
+        let outline = profile("outline", 0.0);
+        let recipe = line_art_recipe(Some(2.5));
+        let style = StyleContext {
+            palette: Some(&palette),
+            strokes: std::slice::from_ref(&outline),
+            gradients: &[],
+            fonts: &[],
+            recipe: Some(&recipe),
+        };
+
+        let model = compile_with_style(&scene, &style).expect("compiles");
+        assert_eq!(model.meta.recipe.as_deref(), Some("line-art"));
+        let stroke = model
+            .node("e1")
+            .expect("the node")
+            .paint
+            .stroke
+            .as_ref()
+            .expect("a resolved stroke");
+        assert_eq!(
+            stroke.width, 2.5,
+            "the recipe's weight fills a profile that leaves the weight unset"
+        );
+        assert_eq!(
+            color(&stroke.paint),
+            Some("#ff0000"),
+            "the stroke takes its paint from the palette"
+        );
+    }
+
+    #[test]
+    fn varying_stroke_weights_are_honored_under_line_art() {
+        let mut thin = rect("thin", 0, 10.0, 10.0);
+        thin["stroke"] = stroke_json("hairline", "accent");
+        let mut bold = rect("bold", 1, 10.0, 10.0);
+        bold["stroke"] = stroke_json("heavy", "accent");
+        let scene = scene_of(json!([thin, bold]), None);
+
+        let palette = flat_palette();
+        let profiles = [profile("hairline", 1.0), profile("heavy", 6.0)];
+        let recipe = line_art_recipe(Some(2.5));
+        let style = StyleContext {
+            palette: Some(&palette),
+            strokes: &profiles,
+            gradients: &[],
+            fonts: &[],
+            recipe: Some(&recipe),
+        };
+
+        let model = compile_with_style(&scene, &style).expect("compiles");
+        let width = |id: &str| model.node(id).unwrap().paint.stroke.as_ref().unwrap().width;
+        assert_eq!(width("thin"), 1.0, "an explicit light weight is honored");
+        assert_eq!(width("bold"), 6.0, "an explicit heavy weight is honored");
+        assert!(
+            !model
+                .diagnostics
+                .warnings()
+                .any(|warning| warning.code == STROKE_WEIGHT_CLAMPED),
+            "neither weight is below the minimum"
+        );
+    }
+
+    #[test]
+    fn a_fill_disabled_shape_renders_only_its_outline() {
+        let mut element = rect("e1", 0, 20.0, 20.0);
+        element["fill"] = json!(null);
+        element["stroke"] = stroke_json("outline", "accent");
+        let scene = scene_of(json!([element]), None);
+
+        let palette = flat_palette();
+        let outline = profile("outline", 2.0);
+        let recipe = line_art_recipe(Some(2.0));
+        let style = StyleContext {
+            palette: Some(&palette),
+            strokes: std::slice::from_ref(&outline),
+            gradients: &[],
+            fonts: &[],
+            recipe: Some(&recipe),
+        };
+
+        let model = compile_with_style(&scene, &style).expect("compiles");
+        let node = model.node("e1").expect("the node");
+        assert!(node.paint.fill.is_none(), "no fill is drawn");
+        assert!(node.paint.stroke.is_some(), "the outline is drawn");
+    }
+
+    #[test]
+    fn a_sub_minimum_stroke_weight_is_clamped_and_reported() {
+        let mut element = rect("e1", 0, 20.0, 20.0);
+        element["stroke"] = stroke_json("hairline", "accent");
+        let scene = scene_of(json!([element]), None);
+
+        let palette = flat_palette();
+        let outline = profile("hairline", 0.001);
+        let recipe = line_art_recipe(Some(2.5));
+        let style = StyleContext {
+            palette: Some(&palette),
+            strokes: std::slice::from_ref(&outline),
+            gradients: &[],
+            fonts: &[],
+            recipe: Some(&recipe),
+        };
+
+        let model = compile_with_style(&scene, &style).expect("compiles");
+        let stroke = model
+            .node("e1")
+            .expect("the node")
+            .paint
+            .stroke
+            .as_ref()
+            .expect("a resolved stroke");
+        assert_eq!(stroke.width, MIN_STROKE_WEIGHT, "the weight is clamped up");
+        let warning = model
+            .diagnostics
+            .warnings()
+            .find(|warning| warning.code == STROKE_WEIGHT_CLAMPED)
+            .expect("a clamp warning");
+        assert!(warning.message.contains("0.001"), "{}", warning.message);
+    }
+
+    #[test]
+    fn a_line_art_scene_with_no_strokes_reports_empty_output() {
+        let mut element = rect("e1", 0, 10.0, 10.0);
+        element["fill"] = token_paint("accent");
+        let scene = scene_of(json!([element]), None);
+
+        let palette = flat_palette();
+        let recipe = line_art_recipe(Some(2.5));
+        let style = StyleContext {
+            palette: Some(&palette),
+            strokes: &[],
+            gradients: &[],
+            fonts: &[],
+            recipe: Some(&recipe),
+        };
+
+        let model = compile_with_style(&scene, &style).expect("compiles");
+        assert!(
+            model
+                .diagnostics
+                .warnings()
+                .any(|warning| warning.code == LINE_ART_EMPTY),
+            "a line-art scene with no strokes reports empty line work: {:?}",
+            model.diagnostics
+        );
+    }
+
+    #[test]
+    fn a_self_intersecting_stroke_path_renders_without_failing() {
+        let mut path = base(
+            "p1",
+            0,
+            "path",
+            json!({ "pathData": "M0 0 L10 10 L10 0 L0 10 Z" }),
+        );
+        path["stroke"] = stroke_json("outline", "accent");
+        let scene = scene_of(json!([path]), None);
+
+        let palette = flat_palette();
+        let outline = profile("outline", 2.0);
+        let recipe = line_art_recipe(Some(2.0));
+        let style = StyleContext {
+            palette: Some(&palette),
+            strokes: std::slice::from_ref(&outline),
+            gradients: &[],
+            fonts: &[],
+            recipe: Some(&recipe),
+        };
+
+        let model =
+            compile_with_style(&scene, &style).expect("a self-intersecting stroke compiles");
+        let node = model.node("p1").expect("the node");
+        assert!(node.paint.stroke.is_some(), "the stroke rule draws it");
+        assert!(!model.diagnostics.has_errors());
     }
 
     #[test]

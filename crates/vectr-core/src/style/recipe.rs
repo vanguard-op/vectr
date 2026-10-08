@@ -93,6 +93,21 @@ pub enum Shading {
 /// The flat recipe renders even fills and no texture (FEAT-007).
 pub const TEXTURE_UNSUPPORTED: DiagnosticCode = DiagnosticCode::new("W_TEXTURE_UNSUPPORTED");
 
+/// The smallest stroke weight a line-art scene renders: a thinner line does not
+/// survive rasterization, so it is clamped up and reported rather than drawn
+/// invisibly (FEAT-008).
+///
+/// The docs name no figure for the minimum renderable unit; this is the
+/// product's, in scene units.
+pub const MIN_STROKE_WEIGHT: f64 = 0.05;
+
+/// A line-art stroke weight below the minimum renderable unit was clamped up
+/// (FEAT-008).
+pub const STROKE_WEIGHT_CLAMPED: DiagnosticCode = DiagnosticCode::new("W_STROKE_WEIGHT_CLAMPED");
+
+/// A line-art scene draws no strokes, so its line-art output is empty (FEAT-008).
+pub const LINE_ART_EMPTY: DiagnosticCode = DiagnosticCode::new("W_LINE_ART_EMPTY");
+
 impl StyleRecipe {
     /// The recipe name as it appears in the scene language.
     pub fn name_str(&self) -> &'static str {
@@ -102,6 +117,41 @@ impl StyleRecipe {
     /// Whether this is the flat recipe.
     pub fn is_flat(&self) -> bool {
         self.name == RecipeName::Flat
+    }
+
+    /// Whether this is the line-art recipe.
+    pub fn is_line_art(&self) -> bool {
+        self.name == RecipeName::LineArt
+    }
+
+    /// The recipe's default stroke weight, when it declares one (FEAT-008).
+    pub fn stroke_weight(&self) -> Option<f64> {
+        self.parameters.stroke_weight
+    }
+
+    /// The effective stroke weight under this recipe, and whether it was
+    /// clamped up.
+    ///
+    /// The line-art recipe fixes a consistent weight (FEAT-008): its declared
+    /// `strokeWeight` fills a stroke whose profile leaves the weight unset (a
+    /// width of zero), while a profile that states a positive width is an
+    /// explicit request for a varying weight and is honored. Either way a
+    /// weight below the minimum renderable unit is clamped up, since a thinner
+    /// line does not survive rasterization. Every other recipe, and the
+    /// no-recipe path, leaves the profile's width untouched.
+    pub fn resolve_stroke_weight(&self, profile_width: f64) -> (f64, bool) {
+        if !self.is_line_art() {
+            return (profile_width, false);
+        }
+        let width = match self.stroke_weight() {
+            Some(default) if profile_width == 0.0 => default,
+            _ => profile_width,
+        };
+        if width < MIN_STROKE_WEIGHT {
+            (MIN_STROKE_WEIGHT, true)
+        } else {
+            (width, false)
+        }
     }
 
     /// Serializes the recipe to compact JSON.
@@ -163,6 +213,25 @@ pub fn check_expressible(recipe: &StyleRecipe) -> Diagnostics {
             )
             .at_path("/parameters/shading"),
         );
+    }
+    diagnostics
+}
+
+/// Reports a line-art scene that draws no stroke.
+///
+/// The recipe is stroke-based, so a scene whose compiled output carries no
+/// stroke has no line work in it; the emptiness is reported rather than passed
+/// off as a successful line-art render (FEAT-008).
+pub fn check_line_art(recipe: &StyleRecipe, has_strokes: bool) -> Diagnostics {
+    let mut diagnostics = Diagnostics::new();
+    if recipe.is_line_art() && !has_strokes {
+        diagnostics.push(Diagnostic::warning(
+            LINE_ART_EMPTY,
+            format!(
+                "line-art recipe `{}` draws no strokes: the line-art output is empty",
+                recipe.id
+            ),
+        ));
     }
     diagnostics
 }
@@ -259,5 +328,72 @@ mod tests {
         assert!(!recipe.is_flat());
         assert!(!check_expressible(&recipe).has_errors());
         assert!(check_expressible(&recipe).warnings().next().is_none());
+    }
+
+    fn line_art(stroke_weight: Option<f64>) -> StyleRecipe {
+        let parameters = match stroke_weight {
+            Some(weight) => format!(r#"{{"strokeWeight":{weight}}}"#),
+            None => "{}".to_string(),
+        };
+        parse(&format!(
+            r#"{{"id":"r","projectId":"p","name":"line-art","parameters":{parameters}}}"#
+        ))
+        .expect("a line-art recipe")
+    }
+
+    #[test]
+    fn a_line_art_recipe_fills_a_stroke_weight_left_unset() {
+        let recipe = line_art(Some(2.5));
+        assert!(recipe.is_line_art());
+        assert_eq!(recipe.stroke_weight(), Some(2.5));
+
+        // A profile of width zero leaves the weight to the recipe.
+        assert_eq!(recipe.resolve_stroke_weight(0.0), (2.5, false));
+    }
+
+    #[test]
+    fn a_line_art_recipe_honors_an_explicit_varying_weight() {
+        let recipe = line_art(Some(2.5));
+        // A positive profile width is an explicit request and wins.
+        assert_eq!(recipe.resolve_stroke_weight(6.0), (6.0, false));
+    }
+
+    #[test]
+    fn a_line_art_recipe_clamps_a_sub_minimum_weight() {
+        let recipe = line_art(Some(2.5));
+        let (width, clamped) = recipe.resolve_stroke_weight(0.001);
+        assert!(clamped, "a weight below the minimum is reported");
+        assert_eq!(width, MIN_STROKE_WEIGHT);
+
+        // The recipe's own default is clamped the same way.
+        let thin = line_art(Some(0.001));
+        assert_eq!(thin.resolve_stroke_weight(0.0), (MIN_STROKE_WEIGHT, true));
+    }
+
+    #[test]
+    fn a_non_line_art_recipe_leaves_the_weight_untouched() {
+        let flat =
+            parse(r#"{"id":"r","projectId":"p","name":"flat","parameters":{"strokeWeight":2.5}}"#)
+                .unwrap();
+        assert_eq!(flat.resolve_stroke_weight(0.0), (0.0, false));
+        assert_eq!(flat.resolve_stroke_weight(7.0), (7.0, false));
+    }
+
+    #[test]
+    fn a_line_art_scene_with_no_strokes_is_reported_empty() {
+        let recipe = line_art(Some(2.0));
+        let diagnostics = check_line_art(&recipe, false);
+        let warning = diagnostics.warnings().next().expect("a warning");
+        assert_eq!(warning.code, LINE_ART_EMPTY);
+        assert!(warning.message.contains("empty"), "{}", warning.message);
+        assert!(
+            !diagnostics.has_errors(),
+            "emptiness is reported, not fatal"
+        );
+
+        assert!(check_line_art(&recipe, true).warnings().next().is_none());
+        // Another recipe is not a line-art scene and is not checked.
+        let flat = parse(r#"{"id":"r","projectId":"p","name":"flat","parameters":{}}"#).unwrap();
+        assert!(check_line_art(&flat, false).warnings().next().is_none());
     }
 }
