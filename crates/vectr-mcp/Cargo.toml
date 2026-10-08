@@ -14,3 +14,12 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
+# The engine the server drives: parse, validate, compile, export and the schema
+# contract (C-002). The explicit version keeps the path dependency from
+# registering as a `*` wildcard in the dependency graph (NFR-020); it must track
+# vectr-core's package version in the workspace manifest.
+vectr-core = { version = "0.1.0", path = "../vectr-core" }
+
+# The MCP wire format is JSON-RPC 2.0; messages and the tool schemas are built
+# as JSON values (C-005).
+serde_json = { workspace = true }

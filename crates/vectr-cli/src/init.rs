@@ -3,9 +3,10 @@
 //! A project is a directory holding `vectr.project.json` and the entity folders
 //! the scene model refers to: `scenes/`, `palettes/`, `strokes/`, `recipes/`,
 //! with `assets/` for the fonts a scene may name and `dist/` for output.
-//! Initializing writes the project configuration and a starter scene; running
-//! it again reports the project as already initialized and leaves every file
-//! untouched.
+//! Initializing writes the project configuration, a starter scene, and the
+//! authoring guide a coding agent loads from the project root (FEAT-020);
+//! running it again reports the project as already initialized and leaves every
+//! file untouched.
 
 use std::fs;
 use std::path::Path;
@@ -14,6 +15,7 @@ use serde_json::json;
 use vectr_core::scene::CURRENT_FORMAT_VERSION;
 use vectr_core::{parse_style_recipe, validate_style_recipe, Canvas, Scene};
 
+use crate::authoring::{authoring_guide, AUTHORING_GUIDE_FILE};
 use crate::cli::{diagnostics_text, Report, EXIT_OUTPUT, EXIT_SUCCESS};
 use crate::output::write_atomic;
 
@@ -123,6 +125,16 @@ pub fn scaffold(dir: &Path) -> Report {
         }
     }
 
+    // The authoring guide a coding agent loads from the project root. An
+    // existing file is left alone: a project the user already runs has its own
+    // agent instructions, and the scaffold never clobbers them (FEAT-020).
+    let guide_path = dir.join(AUTHORING_GUIDE_FILE);
+    if !guide_path.exists() {
+        if let Err(error) = write_atomic(&guide_path, authoring_guide().as_bytes()) {
+            return write_failure(&guide_path, &error.to_string());
+        }
+    }
+
     Report {
         code: EXIT_SUCCESS,
         stdout: format!("initialized project at {}\n", dir.display()),
@@ -225,6 +237,37 @@ mod tests {
         for sub in PROJECT_DIRS {
             assert!(target.join(sub).is_dir(), "{sub} is created");
         }
+    }
+
+    #[test]
+    fn writes_an_authoring_guide_a_coding_agent_loads() {
+        let dir = TempDir::new("init-guide");
+        let target = dir.path().join("habit-tracker");
+        assert_eq!(scaffold(&target).code, EXIT_SUCCESS);
+
+        // The guide the scaffold writes is the workflow an agent follows from
+        // the project root, and it names the tool's own format version so a
+        // mismatch is caught before authoring (FEAT-020).
+        let guide = fs::read_to_string(target.join(AUTHORING_GUIDE_FILE)).expect("guide");
+        assert!(guide.contains("vectr validate"), "{guide}");
+        assert!(guide.contains(CURRENT_FORMAT_VERSION), "{guide}");
+        assert!(guide.contains(env!("CARGO_PKG_VERSION")), "{guide}");
+    }
+
+    #[test]
+    fn an_existing_authoring_guide_is_left_untouched() {
+        let dir = TempDir::new("init-guide-existing");
+        let target = dir.path().join("habit-tracker");
+        fs::create_dir_all(&target).expect("creates the target");
+        let guide_path = target.join(AUTHORING_GUIDE_FILE);
+        fs::write(&guide_path, "hand-written instructions").expect("seeds the guide");
+
+        assert_eq!(scaffold(&target).code, EXIT_SUCCESS);
+        assert_eq!(
+            fs::read_to_string(&guide_path).expect("reads"),
+            "hand-written instructions",
+            "a project's own agent guide is not overwritten"
+        );
     }
 
     #[test]

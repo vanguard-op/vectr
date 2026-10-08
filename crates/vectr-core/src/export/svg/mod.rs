@@ -10,6 +10,15 @@
 //! no script, event handler, or foreign content, so it is inert when opened
 //! (NFR-023), and identical input yields byte-identical output (NFR-010).
 //!
+//! # Background
+//!
+//! The one background the document draws is validated before emission: the
+//! override from [`SvgOptions`] when present, otherwise the canvas's own. A
+//! value that is neither a colour SVG supports nor one of the transparent
+//! sentinels the options document is a located error and no document, so an
+//! unusable colour is refused at validation rather than handed to a rasterizer
+//! to reject (FEAT-018).
+//!
 //! # Unsupported content
 //!
 //! A node the SVG target cannot represent — a raster layer, or geometry whose
@@ -21,7 +30,7 @@
 //! frozen shape.
 
 use crate::render::RenderModel;
-use crate::scene::{Diagnostic, DiagnosticCode, Diagnostics};
+use crate::scene::{validate_color, Diagnostic, DiagnosticCode, Diagnostics};
 
 mod emit;
 
@@ -76,18 +85,41 @@ pub fn export_svg_reporting(
     options: &SvgOptions,
 ) -> Result<SvgExport, Diagnostics> {
     let size = resolve_size(model, options)?;
-    let background = options
-        .background
-        .as_deref()
-        .unwrap_or(model.canvas.background.as_str());
+    let (background, from_options) = match options.background.as_deref() {
+        Some(value) => (value, true),
+        None => (model.canvas.background.as_str(), false),
+    };
 
     let mut diagnostics = Diagnostics::new();
+    validate_background(&mut diagnostics, background, from_options);
+    if diagnostics.has_errors() {
+        return Err(diagnostics);
+    }
+
     let svg = emit::document(model, &size, background, &mut diagnostics);
     if diagnostics.has_errors() {
         return Err(diagnostics);
     }
 
     Ok(SvgExport { svg, diagnostics })
+}
+
+/// Validates the one background the document is about to draw.
+///
+/// A value that is neither a colour SVG supports nor a transparent sentinel is
+/// a located error, so no invalid colour reaches the output (FEAT-018).
+/// `from_options` selects the name and location, distinguishing an export
+/// override from the canvas's own background.
+fn validate_background(diagnostics: &mut Diagnostics, value: &str, from_options: bool) {
+    if emit::is_transparent(value) {
+        return;
+    }
+    let (what, path) = if from_options {
+        ("export background", "/background")
+    } else {
+        ("canvas background", "/canvas/background")
+    };
+    validate_color(diagnostics, value, what, path);
 }
 
 /// Resolves the rendered size, refusing a dimension that is not finite and
@@ -690,6 +722,70 @@ mod tests {
         )
         .expect("exports");
         assert!(overridden.contains("fill=\"#000000\""), "{overridden}");
+    }
+
+    #[test]
+    fn an_invalid_export_background_is_refused_with_its_location() {
+        let diagnostics = export_svg(
+            &model(Vec::new()),
+            &SvgOptions {
+                background: Some("not-a-colour".to_string()),
+                ..SvgOptions::default()
+            },
+        )
+        .expect_err("refused");
+        let error = diagnostics.errors().next().expect("an error");
+        assert_eq!(error.code, crate::scene::INVALID_COLOR);
+        assert!(
+            error.message.contains("export background"),
+            "{}",
+            error.message
+        );
+        assert!(error.message.contains("not-a-colour"), "{}", error.message);
+        assert_eq!(
+            error
+                .location
+                .as_ref()
+                .and_then(|location| location.json_path.as_deref()),
+            Some("/background")
+        );
+    }
+
+    #[test]
+    fn a_canvas_background_that_is_not_a_colour_is_refused_by_the_exporter() {
+        let mut document = model(Vec::new());
+        document.canvas.background = "not-a-colour".to_string();
+        let diagnostics = export_svg(&document, &SvgOptions::default()).expect_err("refused");
+        let error = diagnostics.errors().next().expect("an error");
+        assert_eq!(error.code, crate::scene::INVALID_COLOR);
+        assert!(
+            error.message.contains("canvas background"),
+            "{}",
+            error.message
+        );
+        assert_eq!(
+            error
+                .location
+                .as_ref()
+                .and_then(|location| location.json_path.as_deref()),
+            Some("/canvas/background")
+        );
+    }
+
+    #[test]
+    fn the_transparent_background_sentinels_remain_accepted() {
+        let document = model(Vec::new());
+        for background in ["transparent", "none", ""] {
+            let svg = export_svg(
+                &document,
+                &SvgOptions {
+                    background: Some(background.to_string()),
+                    ..SvgOptions::default()
+                },
+            )
+            .unwrap_or_else(|diagnostics| panic!("{background:?} should export: {diagnostics}"));
+            assert!(!svg.contains("fill=\"#ffffff\""), "{background:?}: {svg}");
+        }
     }
 
     #[test]

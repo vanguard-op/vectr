@@ -1,0 +1,37 @@
+{
+  "id": "scene",
+  "projectId": "project",
+  "name": "Scene",
+  "formatVersion": "0.2",
+  "canvas": {
+    "width": 512,
+    "height": 512,
+    "background": "transparent"
+  },
+  "elements": [
+    {
+      "id": "shape",
+      "sceneId": "scene",
+      "order": 0,
+      "kind": "rect",
+      "name": "Shape",
+      "geometry": {
+        "x": 96,
+        "y": 96,
+        "width": 320,
+        "height": 320,
+        "rx": 48,
+        "ry": 48
+      },
+      "transform": {
+        "translateX": 0,
+        "translateY": 0,
+        "rotate": 0,
+        "scaleX": 1,
+        "scaleY": 1
+      },
+      "opacity": 1,
+      "visible": true
+    }
+  ]
+}

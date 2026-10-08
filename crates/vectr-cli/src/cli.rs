@@ -24,10 +24,12 @@ use std::path::{Path, PathBuf};
 use vectr_core::compiler::FONT;
 use vectr_core::export::png as png_export;
 use vectr_core::export::svg as svg_export;
+use vectr_core::scene::INVALID_COLOR;
 use vectr_core::{
     compile_with_style, export_png_reporting, export_svg_reporting, parse as parse_scene_source,
-    validate as validate_scene_model, validate_gradient_usage, validate_palette_usage, Diagnostic,
-    Diagnostics, RasterOptions, SvgOptions,
+    schema, schema_for, validate as validate_scene_model, validate_gradient_usage,
+    validate_palette_usage, Diagnostic, DiagnosticCode, Diagnostics, RasterOptions, SchemaForm,
+    SvgOptions,
 };
 
 use crate::init;
@@ -53,7 +55,8 @@ Usage:
   vectr init [dir]
   vectr validate <scene> [--json]
   vectr compile <scene> [--out <file>] [--check]
-  vectr export <scene> --format svg|png [--out <file>] [--width <n>] [--height <n>] [--density <n>] [--background <color|transparent>]";
+  vectr export <scene> --format svg|png [--out <file>] [--width <n>] [--height <n>] [--density <n>] [--background <color|transparent>]
+  vectr schema [--type <name>] [--compact]";
 
 /// One parsed command line.
 #[derive(Debug, Clone, PartialEq)]
@@ -99,6 +102,13 @@ pub enum Command {
         density: Option<f64>,
         /// Background override, or `transparent`.
         background: Option<String>,
+    },
+    /// Print the language contract, or one of its types.
+    Schema {
+        /// The type to print; the whole contract when absent.
+        type_name: Option<String>,
+        /// Emit minified JSON for machine consumption.
+        compact: bool,
     },
 }
 
@@ -159,7 +169,8 @@ pub fn help_text() -> String {
          \x20 init      Create a project scaffold in a directory.\n\
          \x20 validate  Check a scene against the language contract.\n\
          \x20 compile   Compile a scene into its render model.\n\
-         \x20 export    Export a scene as SVG or PNG.\n\n\
+         \x20 export    Export a scene as SVG or PNG.\n\
+         \x20 schema    Print the language contract.\n\n\
          Exit codes:\n\
          \x20 0 success   1 invalid scene   2 usage or unreadable input\n\
          \x20 3 compilation failure   4 export dependency missing   5 output I/O failure\n"
@@ -193,8 +204,8 @@ pub fn parse(args: Vec<OsString>) -> Result<Command, String> {
         "validate" => parse_validate(rest),
         "compile" => parse_compile(rest),
         "export" => parse_export(rest),
+        "schema" => parse_schema(rest),
         "render" | "inspect" => Err(format!("`{name}` is reserved for a later release")),
-        "schema" => Err("`schema` is reserved for a later release".to_string()),
         _ if name.starts_with('-') => Err(format!("unknown option `{name}`")),
         _ => Err(format!("unknown command `{name}`")),
     }
@@ -225,6 +236,7 @@ pub fn run(command: Command) -> Report {
             density,
             background.as_deref(),
         ),
+        Command::Schema { type_name, compact } => schema_command(type_name.as_deref(), compact),
     }
 }
 
@@ -387,6 +399,49 @@ fn parse_export(args: Vec<OsString>) -> Result<Command, String> {
     })
 }
 
+/// Parses the `schema` command's `--type` and `--compact` flags.
+fn parse_schema(args: Vec<OsString>) -> Result<Command, String> {
+    let mut type_name: Option<String> = None;
+    let mut compact = false;
+    let mut i = 0;
+    while i < args.len() {
+        let raw = args[i].clone();
+        let text = raw.to_str().map(str::to_owned);
+        match text.as_deref() {
+            None => return Err("`schema` accepts no positional arguments".to_string()),
+            Some("-h") | Some("--help") => return Ok(Command::Help),
+            Some("--compact") => compact = true,
+            Some(text) => {
+                if let Some(value) = text.strip_prefix("--type=") {
+                    type_name = Some(require_type(value)?);
+                } else {
+                    match text {
+                        "--type" => {
+                            let value = take_value(&args, &mut i, "--type")?;
+                            type_name = Some(require_type(&value.to_string_lossy())?);
+                        }
+                        t if t.starts_with('-') && t != "-" => {
+                            return Err(format!("unknown option `{t}` for `schema`"))
+                        }
+                        _ => return Err(format!("unexpected argument `{text}` for `schema`")),
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+    Ok(Command::Schema { type_name, compact })
+}
+
+/// A `--type` value must name something.
+fn require_type(value: &str) -> Result<String, String> {
+    if value.is_empty() {
+        Err("`--type` needs a type name".to_string())
+    } else {
+        Ok(value.to_string())
+    }
+}
+
 /// Consumes the next argument as a flag's value.
 fn take_value(args: &[OsString], index: &mut usize, flag: &str) -> Result<OsString, String> {
     *index += 1;
@@ -529,6 +584,19 @@ fn export_scene(
         );
     }
 
+    // An export background override is a colour value like any other; a value
+    // the target cannot render is refused before the scene is even read, so no
+    // partial output can be produced (FEAT-005, FEAT-018).
+    if let Some(background) = background {
+        if !vectr_core::scene::is_color(background) {
+            let diagnostics = Diagnostics::from(Diagnostic::error(
+                INVALID_COLOR,
+                format!("`--background` is not a colour SVG supports: `{background}`"),
+            ));
+            return Report::failure(EXIT_USAGE, diagnostics_text(&diagnostics));
+        }
+    }
+
     let source = match read_scene(scene) {
         Ok(source) => source,
         Err(report) => return report,
@@ -614,6 +682,43 @@ fn export_scene(
         .map(Path::to_path_buf)
         .unwrap_or_else(|| default_output(scene, format.extension()));
     write_report(&target, &bytes, &warnings)
+}
+
+/// Prints the language contract, or one type, mapping a bad request to exit 2.
+///
+/// An unknown type or a published schema that does not match the tool is a
+/// usage-class failure (FEAT-017, C-004).
+fn schema_command(type_name: Option<&str>, compact: bool) -> Report {
+    let rendered = match type_name {
+        Some(name) => {
+            schema_for(name).and_then(|text| if compact { minify(text) } else { Ok(text) })
+        }
+        None => schema(if compact {
+            SchemaForm::Compact
+        } else {
+            SchemaForm::Full
+        }),
+    };
+    match rendered {
+        Ok(text) => Report::success(format!("{text}\n")),
+        Err(diagnostics) => Report::failure(EXIT_USAGE, diagnostics_text(&diagnostics)),
+    }
+}
+
+/// Compacts an already-valid schema document for machine consumption.
+fn minify(schema: String) -> Result<String, Diagnostics> {
+    let value: serde_json::Value = serde_json::from_str(&schema).map_err(|error| {
+        Diagnostics::from(Diagnostic::error(
+            DiagnosticCode::SCHEMA,
+            format!("the schema is not valid JSON: {error}"),
+        ))
+    })?;
+    serde_json::to_string(&value).map_err(|error| {
+        Diagnostics::from(Diagnostic::error(
+            DiagnosticCode::SCHEMA,
+            format!("could not compact the schema: {error}"),
+        ))
+    })
 }
 
 /// Writes a completed result, mapping an I/O failure to exit 5.
@@ -867,10 +972,82 @@ mod tests {
 
     #[test]
     fn a_reserved_command_is_reported() {
-        for command in ["render", "inspect", "schema"] {
+        for command in ["render", "inspect"] {
             let error = parse_args(&[command]).expect_err("reserved");
             assert!(error.contains("reserved"), "{error}");
         }
+    }
+
+    #[test]
+    fn schema_parses_its_type_and_compact_flags() {
+        assert_eq!(
+            parse_args(&["schema"]).unwrap(),
+            Command::Schema {
+                type_name: None,
+                compact: false
+            }
+        );
+        assert_eq!(
+            parse_args(&["schema", "--compact"]).unwrap(),
+            Command::Schema {
+                type_name: None,
+                compact: true
+            }
+        );
+        assert_eq!(
+            parse_args(&["schema", "--type", "Element"]).unwrap(),
+            parse_args(&["schema", "--type=Element"]).unwrap()
+        );
+        assert_eq!(
+            parse_args(&["schema", "--type", "Element", "--compact"]).unwrap(),
+            Command::Schema {
+                type_name: Some("Element".to_string()),
+                compact: true
+            }
+        );
+    }
+
+    #[test]
+    fn schema_refuses_a_missing_type_and_unknown_options() {
+        assert!(parse_args(&["schema", "--type"]).is_err());
+        assert!(parse_args(&["schema", "--type="]).is_err());
+        assert!(parse_args(&["schema", "--nope"]).is_err());
+        assert!(parse_args(&["schema", "Element"]).is_err());
+    }
+
+    #[test]
+    fn schema_prints_the_contract_and_reports_an_unknown_type() {
+        let report = run(Command::Schema {
+            type_name: None,
+            compact: false,
+        });
+        assert_eq!(report.code, EXIT_SUCCESS);
+        serde_json::from_str::<serde_json::Value>(&report.stdout).expect("valid JSON");
+
+        let compact = run(Command::Schema {
+            type_name: None,
+            compact: true,
+        });
+        assert_eq!(compact.code, EXIT_SUCCESS);
+        assert!(!compact.stdout.trim().contains('\n'));
+
+        let element = run(Command::Schema {
+            type_name: Some("Element".to_string()),
+            compact: false,
+        });
+        assert_eq!(element.code, EXIT_SUCCESS);
+        assert!(
+            element.stdout.contains("\"ElementKind\""),
+            "{}",
+            element.stdout
+        );
+
+        let unknown = run(Command::Schema {
+            type_name: Some("Palete".to_string()),
+            compact: false,
+        });
+        assert_eq!(unknown.code, EXIT_USAGE);
+        assert!(unknown.stderr.contains("Palette"), "{}", unknown.stderr);
     }
 
     #[test]
@@ -1183,6 +1360,49 @@ mod tests {
         assert_eq!(report.code, EXIT_USAGE);
     }
 
+    #[test]
+    fn an_export_background_that_is_not_a_colour_is_refused_before_any_output() {
+        let dir = TempDir::new("export-background");
+        let scene = write_scene(&dir, "scene.json", VALID_SCENE);
+        let out = dir.path().join("out.svg");
+        let report = run(Command::Export {
+            scene,
+            format: Format::Svg,
+            out: Some(out.clone()),
+            width: None,
+            height: None,
+            density: None,
+            background: Some("not-a-colour".to_string()),
+        });
+        assert_eq!(report.code, EXIT_USAGE);
+        assert!(
+            report.stderr.contains("E_INVALID_COLOR"),
+            "{}",
+            report.stderr
+        );
+        assert!(report.stderr.contains("not-a-colour"), "{}", report.stderr);
+        assert!(!out.exists(), "no output is written for an invalid colour");
+    }
+
+    #[test]
+    fn a_named_export_background_colour_is_honoured() {
+        let dir = TempDir::new("export-background-named");
+        let scene = write_scene(&dir, "scene.json", VALID_SCENE);
+        let out = dir.path().join("out.svg");
+        let report = run(Command::Export {
+            scene,
+            format: Format::Svg,
+            out: Some(out.clone()),
+            width: None,
+            height: None,
+            density: None,
+            background: Some("red".to_string()),
+        });
+        assert_eq!(report.code, EXIT_SUCCESS, "{}", report.stderr);
+        let svg = fs::read_to_string(&out).expect("reads the svg");
+        assert!(svg.contains("fill=\"red\""), "{svg}");
+    }
+
     const PROJECT_TEXT_SCENE: &str = r##"{
       "id": "s",
       "projectId": "project",
@@ -1311,6 +1531,28 @@ mod tests {
         let report = run(Command::Validate { scene, json: false });
         assert_eq!(report.code, EXIT_INVALID_SCENE);
         assert!(report.stderr.contains("accent"), "{}", report.stderr);
+    }
+
+    #[test]
+    fn validate_reports_a_palette_token_that_is_not_a_colour() {
+        let dir = TempDir::new("project-invalid-colour");
+        write_at(&dir, "vectr.project.json", "{}");
+        write_at(
+            &dir,
+            "palettes/brand.json",
+            r##"{"id":"brand","projectId":"project","name":"Brand","tokens":[{"name":"accent","value":"not-a-colour"}]}"##,
+        );
+        let scene = write_at(&dir, "scenes/brand.json", PALETTE_SCENE);
+
+        let report = run(Command::Validate { scene, json: false });
+        assert_eq!(report.code, EXIT_USAGE);
+        assert!(
+            report.stderr.contains("E_INVALID_COLOR"),
+            "{}",
+            report.stderr
+        );
+        assert!(report.stderr.contains("accent"), "{}", report.stderr);
+        assert!(report.stderr.contains("not-a-colour"), "{}", report.stderr);
     }
 
     #[test]

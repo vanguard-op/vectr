@@ -1,0 +1,130 @@
+---
+name: vectr
+description: >
+  Author Vectr vector graphics from a natural-language request: logos, icons,
+  wordmarks, badges, diagrams, and simple illustrations built as Vectr scene
+  documents and rendered to SVG or PNG. Use this skill whenever the user asks
+  for a vector graphic, logo, or icon set and Vectr is the target toolchain,
+  including when they only describe the picture and never say "Vectr": read the
+  scene schema, author the scene, validate it, render a preview, and refine the
+  result. Also use it to edit, restyle, or debug an existing Vectr scene, or to
+  wire the Vectr tools into an agent. Do not use it for photographic or bitmap
+  image generation, for hand-writing raw SVG or HTML/CSS, or for graphics in
+  another tool's format.
+version: 0.1.0
+license: MIT OR Apache-2.0
+compatibility: Requires the Vectr toolchain — the `vectr` CLI or the `vectr-mcp` server — available to the agent.
+---
+
+# Vectr
+
+Turn a described graphic into a Vectr scene: a JSON document that compiles to a
+render model and exports as SVG or PNG. Read the schema, author the scene,
+validate, render, look at the render, and fix what is wrong. The schema and the
+tools are the source of truth; this skill is the workflow around them.
+
+Read `references/authoring-guide.md` before authoring your first scene. It holds
+the end-to-end walkthrough, a worked example, the default set for ambiguous
+requests, and the inspect-and-correct loop.
+
+## Workflow
+
+Progress:
+- [ ] 1. Compare the skill and tool versions (see **Version compatibility**).
+- [ ] 2. Scaffold a project if there is none: `vectr init`.
+- [ ] 3. Read the schema for the types you will write.
+- [ ] 4. Author the scene document.
+- [ ] 5. Validate. Correct and re-validate until it passes.
+- [ ] 6. Compile with `--check` to confirm references resolve.
+- [ ] 7. Render a PNG preview and look at it against the request.
+- [ ] 8. Correct the scene and re-render if it does not match, then export the final SVG and PNG.
+
+Never render before validation passes, and never export from a scene that failed
+to compile. A failed step stops the pipeline; there is no partial output.
+
+## Tool surface
+
+Prefer the MCP tools when the host exposes them; otherwise use the CLI. Both
+produce identical results.
+
+| Step | MCP tool | CLI |
+|---|---|---|
+| Read the contract | `schema` `{form?, type?}` | `vectr schema [--compact] [--type <name>]` |
+| Validate | `validate` `{scene, project?}` | `vectr validate <scene> [--json]` |
+| Compile | `compile` `{scene, project?}` | `vectr compile <scene> [--check] [--out <file>]` |
+| Render | `render` `{scene, format, out?, width?, height?, density?, background?}` | `vectr export <scene> --format svg\|png [--out <file>] [--width <n>] [--height <n>] [--density <n>] [--background <color\|transparent>]` |
+| Scaffold | — | `vectr init [dir]` |
+
+An MCP tool failure is a result with `isError: true` and a body
+`{code, message, location, diagnostics}`; read the whole `diagnostics` list, not
+just `message`. A CLI failure exits non-zero, prints a diagnostic with its
+location, and writes nothing: `1` invalid scene, `2` usage or unreadable input,
+`3` compilation failure, `4` export dependency missing, `5` output I/O failure.
+The `scene` argument to an MCP tool is either the scene document as JSON text or
+a path to one.
+
+## Output contract
+
+Deliver one Vectr scene document that conforms to the published schema, with
+`formatVersion` `"0.2"`. Validate it before compiling and render only on
+success. Exports default to `dist/<scene-stem>.<ext>`; `--out`/`out` chooses
+another path.
+
+## When authoring fails
+
+Validation and compilation return diagnostics that name each problem and its
+location — severity, code, message, and a JSON path or element id. Read them,
+correct the scene, and re-validate.
+
+Retry authoring once. If the scene still fails after that correction, report the
+failure with its diagnostics and produce no output; do not export a partial or
+guessed result. If the authoring model itself is unavailable, report that
+authoring cannot proceed and produce no output. See the guide for the common
+findings and their fixes.
+
+## Ambiguous requests
+
+Pick the documented default and state it briefly; do not stall on a question.
+Defaults: a 512×512 canvas with a `transparent` background, a simple mark (one
+shape plus an optional wordmark), the project's default recipe, the bundled
+open-licensed sans for text, and a small named palette (`accent`, `ink`,
+`paper`) so the graphic can be restyled. The full set is in the guide.
+
+## Version compatibility
+
+This skill targets Vectr `0.1.0` and scene `formatVersion` `0.2`. Before
+authoring, compare the installed tool's version with the skill's: run
+`vectr --version` (which prints `vectr 0.1.0`), or read `serverInfo.version` from
+the MCP `initialize` response. If they differ, report the mismatch and name both
+versions instead of authoring against a tool the skill was not written for. If
+`vectr schema` reports `E_SCHEMA_VERSION`, the published contract and the
+installed tool disagree; report that the same way.
+
+## Gotchas
+
+- Every element requires the full `transform` object — `translateX`,
+  `translateY`, `rotate`, `scaleX`, `scaleY` — even for an identity transform,
+  and a `geometry` object even when the kind ignores it (a `group` uses `{}`).
+  The published `required` lists are shorter than what the parser enforces;
+  author against `vectr schema --type Element`.
+- A `fill` or `stroke` paint is `{kind, ref}` where `kind` is `token` (a name in
+  the scene's `paletteId` palette) or `gradient` (a gradient document id). There
+  are no inline colours on elements; the canvas `background` is the one raw
+  colour field.
+- A `stroke` needs both `profileId` (a document under `strokes/`) and `paint`. A
+  profile carries width, cap, and join only — never colour.
+- `order` is paint order among siblings, lowest first, and `parentId` builds the
+  tree. Parent decorative children to a `group` element, not to a shape.
+- A text element needs `geometry.text` and `geometry.fontSize`; `x` and `y`
+  anchor the baseline of its first line. `fontId` applies to text only — omit it
+  to use the bundled default sans.
+- Project references resolve by `id`, not by file name: palettes under
+  `palettes/`, strokes under `strokes/`, recipes under `recipes/`, gradients
+  under `gradients/`. Run the tools from inside the project so the root is found.
+
+## References
+
+| File | Read it when |
+|---|---|
+| `references/authoring-guide.md` | Before authoring your first scene; the end-to-end walkthrough, worked example, default set, and inspect-and-correct loop. |
+| `assets/scene.template.json` | As the starting point for a new scene. |

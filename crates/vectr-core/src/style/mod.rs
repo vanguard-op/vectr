@@ -23,7 +23,10 @@ pub use gradient::{
     GRADIENT, UNDEFINED_GRADIENT, UNUSED_GRADIENT,
 };
 pub use palette::{Palette, PaletteToken};
-pub use recipe::{RecipeName, RecipeParameters, Shading, StyleRecipe, TEXTURE_UNSUPPORTED};
+pub use recipe::{
+    LightDirection, RecipeName, RecipeParameters, Shading, StyleRecipe, SHADING_UNSUPPORTED,
+    TEXTURE_UNSUPPORTED,
+};
 pub use recipe::{FREEFORM_CURVE, GRID_SNAPPED, GRID_TOO_FINE, ISOMETRIC_OFF_AXIS, MIN_GRID_SIZE};
 pub use recipe::{LINE_ART_EMPTY, MIN_STROKE_WEIGHT, STROKE_WEIGHT_CLAMPED};
 pub use stroke::{ResolvedStroke, StrokeCap, StrokeJoin, StrokeProfile};
