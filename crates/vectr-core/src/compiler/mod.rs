@@ -36,6 +36,16 @@
 //! and to report a token or profile that does not resolve. Every colour a stroke
 //! carries comes from a palette token the element names, so no unresolved colour
 //! reference survives compilation (C-003, D-015).
+//!
+//! # Fonts
+//!
+//! A text element's font reference resolves against the caller's font assets and
+//! travels in the model's font table, so an exporter shapes glyphs with no
+//! external state (FEAT-024). A text element that names no font resolves to
+//! [`DEFAULT_FONT_ID`]; a font the context does not carry is a located error
+//! naming it. The caller's fallback asset, supplied under `fallback`, is carried
+//! into the table too, so the font manager substitutes a glyph the resolved font
+//! lacks rather than drawing a blank box (D-018, FEAT-024).
 
 use std::collections::{HashMap, HashSet};
 
@@ -44,6 +54,7 @@ use crate::composition::{
     placements as repeat_placements, Affine,
 };
 use crate::constraints::{self, Point, Resolution};
+use crate::fonts::FALLBACK_FONT_ID;
 use crate::primitives::{
     self, parse as parse_path, Line, Path as PathGeometry, Segment, Shape, SubPath,
 };
@@ -222,6 +233,7 @@ pub fn compile_with_style<'s>(
         return Err(compiler.diagnostics);
     }
     compiler.run();
+    compiler.carry_fallback();
 
     let model = compiler.into_model();
     if model.diagnostics.has_errors() {
@@ -965,6 +977,24 @@ impl Compiler<'_, '_> {
         if self.font_ids.insert(font.id.clone()) {
             self.fonts.push(font);
         }
+    }
+
+    /// Carries the caller's fallback font into the model's font table when one
+    /// is supplied (D-018, FEAT-024).
+    ///
+    /// The fallback is appended after the fonts the text nodes name and recorded
+    /// once, so a glyph the resolved font lacks can be substituted by the font
+    /// manager while the table stays deterministic and duplicate-free.
+    fn carry_fallback(&mut self) {
+        let Some(font) = self
+            .style
+            .fonts
+            .iter()
+            .find(|font| font.id == FALLBACK_FONT_ID)
+        else {
+            return;
+        };
+        self.add_font(font.resolved());
     }
 
     /// Emits a text element's node, baking its anchor into the transform.
@@ -1934,6 +1964,86 @@ mod tests {
                 .and_then(|location| location.json_path.as_deref()),
             Some("/fontId")
         );
+    }
+
+    /// Reads a bundled open-licensed font so a test can shape real glyphs.
+    fn bundled_font(file: &str) -> Vec<u8> {
+        let path = format!("{}/../../assets/fonts/{file}", env!("CARGO_MANIFEST_DIR"));
+        std::fs::read(&path).unwrap_or_else(|error| panic!("could not read {path}: {error}"))
+    }
+
+    #[test]
+    fn the_fallback_font_is_carried_into_the_model() {
+        let scene = scene_of(
+            json!([text_element(json!({ "text": "Hi", "fontSize": 12.0 }))]),
+            None,
+        );
+        let fonts = [
+            FontAsset::new(DEFAULT_FONT_ID, "Inter", vec![1, 2]),
+            FontAsset::new(FALLBACK_FONT_ID, "Noto Sans", vec![3, 4]),
+        ];
+        let style = StyleContext {
+            palette: None,
+            strokes: &[],
+            fonts: &fonts,
+        };
+
+        let model = compile_with_style(&scene, &style).expect("compiles");
+        let ids: Vec<&str> = model.fonts.iter().map(|font| font.id.as_str()).collect();
+        assert_eq!(ids, vec![DEFAULT_FONT_ID, FALLBACK_FONT_ID]);
+        assert_eq!(model.fonts[1].name, "Noto Sans");
+        assert_eq!(model.fonts[1].data, vec![3, 4]);
+    }
+
+    #[test]
+    fn the_carried_fallback_covers_a_glyph_the_named_font_lacks() {
+        // U+0149 is carried by Noto Sans but not by Inter, so only the fallback
+        // can draw it (FEAT-024).
+        let scene = scene_of(
+            json!([text_element(
+                json!({ "text": "\u{149}", "fontSize": 100.0 })
+            )]),
+            None,
+        );
+        let fonts = [
+            FontAsset::new(DEFAULT_FONT_ID, "Inter", bundled_font("Inter.ttf")),
+            FontAsset::new(FALLBACK_FONT_ID, "Noto Sans", bundled_font("NotoSans.ttf")),
+        ];
+        let style = StyleContext {
+            palette: None,
+            strokes: &[],
+            fonts: &fonts,
+        };
+
+        let model = compile_with_style(&scene, &style).expect("compiles");
+        let run = model.nodes[0].text.as_ref().expect("a text run");
+        let outlined = crate::fonts::outline_text(run, "t1", &model.fonts);
+        assert!(!outlined.path.is_empty(), "the fallback draws the glyph");
+        assert!(
+            !outlined
+                .diagnostics
+                .warnings()
+                .any(|warning| warning.code == crate::fonts::MISSING_GLYPH),
+            "{:?}",
+            outlined.diagnostics
+        );
+    }
+
+    #[test]
+    fn a_fallback_named_by_a_text_node_is_carried_once() {
+        let mut element = text_element(json!({ "text": "Hi", "fontSize": 12.0 }));
+        element["fontId"] = json!(FALLBACK_FONT_ID);
+        let scene = scene_of(json!([element]), None);
+        let fonts = [FontAsset::new(FALLBACK_FONT_ID, "Noto Sans", vec![7])];
+        let style = StyleContext {
+            palette: None,
+            strokes: &[],
+            fonts: &fonts,
+        };
+
+        let model = compile_with_style(&scene, &style).expect("compiles");
+        assert_eq!(model.fonts.len(), 1);
+        assert_eq!(model.fonts[0].id, FALLBACK_FONT_ID);
     }
 
     #[test]
