@@ -74,7 +74,7 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | T-029 | FEAT-008 | backend-engineer | Done | C-002, C-003 |
 | T-030 | FEAT-009 | backend-engineer | Done | C-002, C-003 |
 | T-031 | FEAT-010 | backend-engineer | Done | C-002, C-003 |
-| T-034 | FEAT-007, FEAT-008, FEAT-009, FEAT-010 | backend-engineer | In Progress | C-002, C-004 |
+| T-034 | FEAT-007, FEAT-008, FEAT-009, FEAT-010 | backend-engineer | Done | C-002, C-004 |
 
 ## Decisions log
 | # | Decision | Rationale | By |
@@ -106,6 +106,7 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | D-025 | The minimum renderable stroke weight is 0.05 scene units; a line-art stroke below it is clamped and warned. | FEAT-008 requires a minimum renderable unit but the docs name no figure. | lead |
 | D-026 | The minimum usable grid spacing is 0.05 scene units; a geometric recipe with a finer grid is reported as a performance warning and the grid is not applied. | FEAT-009 requires a performance warning for a grid finer than the renderable resolution but the docs name no figure; mirrors D-025. | lead |
 | D-027 | The isometric recipe snaps to the lattice its two 30-degree axes span and orders siblings back-to-front by isometric grid row, ties broken by document order; geometry is projected only through an explicit projection element. | FEAT-010 requires axis alignment and depth ordering but names no grid geometry or depth rule, and the schema has no flag to mark a billboard. | lead |
+| D-028 | A scene `recipeId` or project `defaultRecipeId` that does not resolve is a missing project asset (exit 2, `E_PROJECT_ASSET`), mirroring a missing palette. | The docs classify no error for an unresolved recipe reference; the project loader already treats other missing style documents this way. | lead |
 
 ## Definition of Done
 - Every acceptance criterion in the task's FEAT file is met, including its edge cases and failure states.
