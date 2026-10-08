@@ -6,7 +6,6 @@
 //! over HTTP on a loopback address. The filesystem scope starts at the working
 //! directory and widens only with `--allow <dir>` (NFR-024).
 
-mod assets;
 mod http;
 mod output;
 mod protocol;
