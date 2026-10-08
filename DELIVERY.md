@@ -71,8 +71,8 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 |---|---|---|---|---|
 | T-032 | FEAT-027 | backend-engineer | Done | C-001, C-002, C-003 |
 | T-028 | FEAT-007 | backend-engineer | Done | C-002, C-003 |
-| T-029 | FEAT-008 | backend-engineer | In Progress | C-002, C-003 |
-| T-030 | FEAT-009 | backend-engineer | Backlog | C-002, C-003 |
+| T-029 | FEAT-008 | backend-engineer | Done | C-002, C-003 |
+| T-030 | FEAT-009 | backend-engineer | In Progress | C-002, C-003 |
 | T-031 | FEAT-010 | backend-engineer | Backlog | C-002, C-003 |
 | T-034 | FEAT-007, FEAT-008, FEAT-009, FEAT-010 | backend-engineer | Backlog | C-002, C-004 |
 
@@ -102,6 +102,8 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | D-021 | Element paint is unified: `fill` and `stroke` each carry a `{kind, ref}` paint, and a new Gradient entity (linear or radial, palette-token stops) supplies gradient paints; texture is deferred to raster-assisted layers (FEAT-015). | The flat recipe's gradient and texture edge cases had no expressible trigger, so the user directed the gap to product-shaper, which made a gradient request expressible and removed the ambiguity of separate fill and stroke fields. Extends D-013 and D-015. | user |
 | D-022 | The scene format version moves to 0.2. | The paint-model change is a breaking change to the scene document; the pre-1.0 version signals it. Supersedes D-011's 0.1. | lead |
 | D-023 | The project layout gains a `gradients/` directory of Gradient documents, scaffolded by `vectr init`. | Gradients are project documents referenced by paint, parallel to palettes and strokes; the docs name no on-disk layout. Extends D-009. | lead |
+| D-024 | In a line-art scene, a stroke profile whose width is 0 takes the recipe's `strokeWeight`; a positive profile width is the explicit weight the recipe honors. | FEAT-008 requires the recipe to fix a consistent weight while honoring explicitly varied weights, but the scene language has no separate per-element weight field and a profile's width is required. Width 0 is the only channel that reads as "no explicit weight". | lead |
+| D-025 | The minimum renderable stroke weight is 0.05 scene units; a line-art stroke below it is clamped and warned. | FEAT-008 requires a minimum renderable unit but the docs name no figure. | lead |
 
 ## Definition of Done
 - Every acceptance criterion in the task's FEAT file is met, including its edge cases and failure states.
