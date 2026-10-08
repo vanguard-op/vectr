@@ -1,7 +1,7 @@
 # Delivery
 
 ## Source of truth
-docs/Vectr/ — git submodule, remote https://github.com/vanguard-op/vectr-docs.git; working tree at bfb1d01 (full-complexity scope, validated alpha colour model, single-layer shading scheduled as Phase 6), the recorded pointer advancing with the build. The docs are authoritative for what to build; this file tracks state only and never restates the spec.
+docs/Vectr/ — git submodule, remote https://github.com/vanguard-op/vectr-docs.git; working tree at 538b43f (multi-scene projects, full-complexity scope, validated alpha colour model, single-layer shading scheduled as Phase 6), the recorded pointer advancing with the build. The docs are authoritative for what to build; this file tracks state only and never restates the spec.
 
 ## Team & file ownership
 | Member | Owns |
