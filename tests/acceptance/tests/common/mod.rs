@@ -6,8 +6,9 @@
 //! per-feature test files share.
 #![allow(dead_code)]
 
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde_json::{json, Value};
@@ -322,4 +323,100 @@ pub fn font_bytes(file: &str) -> Vec<u8> {
     let path = workspace_root().join("assets/fonts").join(file);
     std::fs::read(&path)
         .unwrap_or_else(|error| panic!("could not read {}: {error}", path.display()))
+}
+
+/// The path to the built `vectr-mcp` binary.
+///
+/// Mirrors [`vectr_bin`]: the acceptance crate is a separate workspace, so the
+/// binary is resolved from the product workspace's target directory, honouring
+/// `CARGO_TARGET_DIR` and the `VECTR_MCP_BIN` override. Build the workspace
+/// first.
+pub fn vectr_mcp_bin() -> PathBuf {
+    if let Some(path) = std::env::var_os("VECTR_MCP_BIN") {
+        return PathBuf::from(path);
+    }
+    let target = std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| workspace_root().join("target"));
+    let name = format!("vectr-mcp{}", std::env::consts::EXE_SUFFIX);
+    target.join("debug").join(name)
+}
+
+/// The captured result of one `vectr-mcp` stdio session.
+pub struct McpRun {
+    /// Every response line, decoded as JSON, in the order the server emitted them.
+    pub responses: Vec<Value>,
+    /// The process exit code, or -1 when it was killed by a signal.
+    pub code: i32,
+    /// The captured standard error.
+    pub stderr: String,
+}
+
+/// Runs `vectr-mcp` over stdio, sending each request as one NDJSON line.
+///
+/// The requests are written while a reader thread drains standard output, so a
+/// session carrying a large response (the full schema, a render model) cannot
+/// deadlock on a full pipe.
+pub fn run_mcp_session(cwd: &Path, extra_args: &[&str], requests: &[Value]) -> McpRun {
+    let binary = vectr_mcp_bin();
+    assert!(
+        binary.is_file(),
+        "build the workspace before the acceptance suite: `{}` is missing",
+        binary.display()
+    );
+    let mut child = Command::new(&binary)
+        .args(extra_args)
+        .current_dir(cwd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|error| panic!("could not run `{}`: {error}", binary.display()));
+
+    let mut stdin = child.stdin.take().expect("stdin is piped");
+    let stdout = child.stdout.take().expect("stdout is piped");
+    let reader = std::thread::spawn(move || {
+        let mut text = String::new();
+        std::io::BufReader::new(stdout)
+            .read_to_string(&mut text)
+            .expect("reads the server's stdout");
+        text
+    });
+
+    for request in requests {
+        writeln!(stdin, "{request}").expect("writes the request");
+    }
+    drop(stdin);
+
+    let text = reader.join().expect("the stdout reader joins");
+    let mut stderr = String::new();
+    if let Some(mut stream) = child.stderr.take() {
+        let _ = stream.read_to_string(&mut stderr);
+    }
+    let status = child.wait().expect("waits for vectr-mcp");
+
+    let responses = text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            serde_json::from_str(line)
+                .unwrap_or_else(|error| panic!("a server response was not JSON: {line}: {error}"))
+        })
+        .collect();
+
+    McpRun {
+        responses,
+        code: status.code().unwrap_or(-1),
+        stderr,
+    }
+}
+
+/// A JSON-RPC request value for an MCP stdio session.
+pub fn mcp_request(id: i64, method: &str, params: Value) -> Value {
+    json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params })
+}
+
+/// A JSON-RPC `tools/call` request for an MCP stdio session.
+pub fn mcp_tool_call(id: i64, name: &str, arguments: Value) -> Value {
+    mcp_request(id, "tools/call", json!({ "name": name, "arguments": arguments }))
 }
