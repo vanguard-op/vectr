@@ -2,6 +2,7 @@
   "id": "project",
   "name": "Vectr fixtures",
   "formatVersion": "0.2",
+  "defaultSceneId": "example",
   "output": {
     "format": "svg",
     "width": 512,

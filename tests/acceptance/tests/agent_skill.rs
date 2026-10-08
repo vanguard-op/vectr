@@ -69,7 +69,9 @@ fn stroke_block(blocks: &[Value]) -> &Value {
     blocks
         .iter()
         .find(|block| {
-            block.get("cap").is_some() && block.get("join").is_some() && block.get("width").is_some()
+            block.get("cap").is_some()
+                && block.get("join").is_some()
+                && block.get("width").is_some()
         })
         .expect("a stroke profile example")
 }
@@ -143,9 +145,9 @@ fn run_the_worked_example(tag: &str, palette: &Value, stroke: Option<&Value>, sc
     if let Some(stroke) = stroke {
         dir.write("strokes/hairline.json", &stroke.to_string());
     }
-    dir.write("scenes/logo.json", &scene.to_string());
+    let scene_id = write_scene(&dir, scene);
 
-    let validate = run_vectr(dir.path(), &["validate", "scenes/logo.json"]);
+    let validate = run_vectr(dir.path(), &["validate", scene_id.as_str()]);
     assert_eq!(
         code(&validate),
         0,
@@ -153,7 +155,7 @@ fn run_the_worked_example(tag: &str, palette: &Value, stroke: Option<&Value>, sc
         stderr(&validate)
     );
 
-    let compile = run_vectr(dir.path(), &["compile", "scenes/logo.json", "--check"]);
+    let compile = run_vectr(dir.path(), &["compile", scene_id.as_str(), "--check"]);
     assert_eq!(
         code(&compile),
         0,
@@ -166,7 +168,7 @@ fn run_the_worked_example(tag: &str, palette: &Value, stroke: Option<&Value>, sc
         dir.path(),
         &[
             "export",
-            "scenes/logo.json",
+            scene_id.as_str(),
             "--format",
             "svg",
             "--out",
@@ -183,7 +185,7 @@ fn run_the_worked_example(tag: &str, palette: &Value, stroke: Option<&Value>, sc
         dir.path(),
         &[
             "export",
-            "scenes/logo.json",
+            scene_id.as_str(),
             "--format",
             "png",
             "--width",
@@ -216,7 +218,10 @@ fn the_skill_package_is_well_formed_and_targets_the_installed_tool() {
     let fields = frontmatter(&skill);
     assert_eq!(field(&fields, "name"), Some("vectr"));
     let description = field(&fields, "description").expect("a description");
-    assert!(description.len() > 40, "the description tells the model when to load it");
+    assert!(
+        description.len() > 40,
+        "the description tells the model when to load it"
+    );
     let version = field(&fields, "version").expect("a version");
     let parts: Vec<&str> = version.split('.').collect();
     assert_eq!(parts.len(), 3, "`{version}` is semver");
@@ -236,7 +241,10 @@ fn the_skill_package_is_well_formed_and_targets_the_installed_tool() {
         skill.contains("Version compatibility") && skill.contains("report the mismatch"),
         "the skill instructs a version-mismatch report"
     );
-    assert!(skill.contains(VERSION), "the skill names the format version");
+    assert!(
+        skill.contains(VERSION),
+        "the skill names the format version"
+    );
 }
 
 #[test]
@@ -248,18 +256,19 @@ fn the_shipped_scene_template_validates_and_compiles() {
 
     let dir = TempDir::new("skill-template");
     dir.write("vectr.project.json", "{}");
-    dir.write("scenes/template.json", &template.to_string());
+    let scene_id = write_scene(&dir, &template);
 
-    let validate = run_vectr(dir.path(), &["validate", "scenes/template.json"]);
+    let validate = run_vectr(dir.path(), &["validate", scene_id.as_str()]);
     assert_eq!(code(&validate), 0, "{}", stderr(&validate));
-    let compile = run_vectr(dir.path(), &["compile", "scenes/template.json", "--check"]);
+    let compile = run_vectr(dir.path(), &["compile", scene_id.as_str(), "--check"]);
     assert_eq!(code(&compile), 0, "{}", stderr(&compile));
 }
 
 #[test]
 fn the_guides_worked_example_validates_compiles_and_exports() {
-    let guide = fs::read_to_string(workspace_root().join("skills/vectr/references/authoring-guide.md"))
-        .expect("the authoring guide");
+    let guide =
+        fs::read_to_string(workspace_root().join("skills/vectr/references/authoring-guide.md"))
+            .expect("the authoring guide");
     let blocks = fenced_json_blocks(&guide);
     assert!(blocks.len() >= 3, "the guide carries several examples");
 
@@ -279,20 +288,34 @@ fn the_scaffolded_authoring_guide_teaches_the_workflow_and_its_example_works() {
     let project = dir.path().join("habit");
     let guide = fs::read_to_string(project.join("AGENTS.md")).expect("the scaffolded guide");
 
-    for step in ["vectr schema", "vectr validate", "vectr compile", "vectr export"] {
+    for step in [
+        "vectr schema",
+        "vectr validate",
+        "vectr compile",
+        "vectr export",
+    ] {
         assert!(guide.contains(step), "the guide teaches `{step}`");
     }
     // The workflow's inspect step, its bounded retry, and the ambiguous-request
     // defaults are what FEAT-020's acceptance criteria turn on.
-    assert!(guide.contains("Inspect and correct"), "the guide teaches inspection");
+    assert!(
+        guide.contains("Inspect and correct"),
+        "the guide teaches inspection"
+    );
     assert!(guide.contains("Retry once"), "the guide bounds the retry");
     assert!(guide.contains("Defaults for an ambiguous request"));
     assert!(guide.contains("Licensing"));
 
     // The guide names the versions of the tool that wrote it.
     let cli_version = cli_version(&dir);
-    assert!(guide.contains(&cli_version), "the guide names the tool version");
-    assert!(guide.contains(VERSION), "the guide names the format version");
+    assert!(
+        guide.contains(&cli_version),
+        "the guide names the tool version"
+    );
+    assert!(
+        guide.contains(VERSION),
+        "the guide names the format version"
+    );
 
     // The scaffold's own worked example runs end to end.
     let blocks = fenced_json_blocks(&guide);
@@ -318,13 +341,11 @@ fn the_guide_directs_recovery_from_an_invalid_scene() {
         "the skill bounds the retry"
     );
     assert!(guide.contains("Retry once"), "the guide bounds the retry");
-    assert!(guide.contains("Never export"), "no export from a failed scene");
-    for code in [
-        "E_SCHEMA",
-        "E_PARSE",
-        "E_FORMAT_VERSION",
-        "E_INVALID_COLOR",
-    ] {
+    assert!(
+        guide.contains("Never export"),
+        "no export from a failed scene"
+    );
+    for code in ["E_SCHEMA", "E_PARSE", "E_FORMAT_VERSION", "E_INVALID_COLOR"] {
         assert!(guide.contains(code), "the guide names `{code}`");
     }
 
@@ -334,9 +355,9 @@ fn the_guide_directs_recovery_from_an_invalid_scene() {
     dir.write("vectr.project.json", "{}");
     let mut document = scene(vec![rect("r1", 0, 0.0, 0.0, 10.0, 10.0)]);
     document["elements"][0]["opacity"] = serde_json::json!(2);
-    dir.write("scenes/scene.json", &document.to_string());
+    let scene_id = write_scene_as(&dir, "scene", document);
 
-    let output = run_vectr(dir.path(), &["validate", "--json", "scenes/scene.json"]);
+    let output = run_vectr(dir.path(), &["validate", "--json", scene_id.as_str()]);
     assert_eq!(code(&output), 1);
     let findings: Value = serde_json::from_str(stdout(&output).trim()).expect("JSON findings");
     let finding = findings
@@ -375,8 +396,8 @@ fn the_guide_directs_a_detailed_request_to_be_composed_in_full() {
 
 /// The skill's frontmatter description as a lowercased string.
 fn skill_description() -> String {
-    let skill = fs::read_to_string(workspace_root().join("skills/vectr/SKILL.md"))
-        .expect("SKILL.md");
+    let skill =
+        fs::read_to_string(workspace_root().join("skills/vectr/SKILL.md")).expect("SKILL.md");
     frontmatter(&skill)
         .into_iter()
         .find(|(key, _)| key == "description")
@@ -446,7 +467,14 @@ fn the_guides_complex_example_is_compositional_and_validates() {
         .iter()
         .filter_map(|element| element["kind"].as_str())
         .collect();
-    for primitive in ["group", "repeat", "boolean", "alongPath", "offset", "projection"] {
+    for primitive in [
+        "group",
+        "repeat",
+        "boolean",
+        "alongPath",
+        "offset",
+        "projection",
+    ] {
         assert!(
             kinds.contains(&primitive),
             "the complex example exercises `{primitive}`: {kinds:?}"

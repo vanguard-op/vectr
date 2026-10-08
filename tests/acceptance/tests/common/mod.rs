@@ -134,6 +134,40 @@ pub fn scene_with(
     document
 }
 
+/// The identifier a scene document declares, which names its file (D-032).
+pub fn scene_id(document: &Value) -> &str {
+    document["id"]
+        .as_str()
+        .expect("a scene document carries an id")
+}
+
+/// Writes a scene document at `scenes/<id>.json`, returning its identifier.
+///
+/// A command addresses a scene by this identifier, not by the file path
+/// (FEAT-016, D-032), so the test writes and names it the same way a project
+/// holds it.
+pub fn write_scene(dir: &TempDir, document: &Value) -> String {
+    let id = scene_id(document).to_string();
+    dir.write(&format!("scenes/{id}.json"), &document.to_string());
+    id
+}
+
+/// Rewrites a scene document's identifier (and its elements' `sceneId`) to `id`,
+/// then writes it at `scenes/<id>.json`.
+///
+/// Lets a test give several scenes in one project distinct identifiers while the
+/// file stem and the document agree (D-032).
+pub fn write_scene_as(dir: &TempDir, id: &str, mut document: Value) -> String {
+    document["id"] = json!(id);
+    if let Some(elements) = document["elements"].as_array_mut() {
+        for element in elements {
+            element["sceneId"] = json!(id);
+        }
+    }
+    dir.write(&format!("scenes/{id}.json"), &document.to_string());
+    id.to_string()
+}
+
 /// Parses a scene document, panicking with the diagnostics on failure.
 pub fn parse_scene(document: &Value) -> Scene {
     parse(&document.to_string()).unwrap_or_else(|diagnostics| {
@@ -418,5 +452,9 @@ pub fn mcp_request(id: i64, method: &str, params: Value) -> Value {
 
 /// A JSON-RPC `tools/call` request for an MCP stdio session.
 pub fn mcp_tool_call(id: i64, name: &str, arguments: Value) -> Value {
-    mcp_request(id, "tools/call", json!({ "name": name, "arguments": arguments }))
+    mcp_request(
+        id,
+        "tools/call",
+        json!({ "name": name, "arguments": arguments }),
+    )
 }

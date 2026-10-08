@@ -1,0 +1,24 @@
+{
+  "id": "mark",
+  "projectId": "project",
+  "name": "Mark",
+  "formatVersion": "0.2",
+  "canvas": { "width": 256, "height": 256, "background": "#ffffff" },
+  "paletteId": "brand",
+  "title": "Mark mark",
+  "description": "A solid token-filled badge",
+  "elements": [
+    {
+      "id": "badge",
+      "sceneId": "mark",
+      "order": 0,
+      "name": "Badge",
+      "kind": "rect",
+      "geometry": { "x": 32, "y": 32, "width": 192, "height": 192, "rx": 24, "ry": 24 },
+      "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
+      "fill": { "kind": "token", "ref": "accent" },
+      "opacity": 1,
+      "visible": true
+    }
+  ]
+}

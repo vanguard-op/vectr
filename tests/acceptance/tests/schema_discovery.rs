@@ -34,8 +34,18 @@ fn the_full_contract_is_printed_as_machine_readable_json() {
         .as_object()
         .expect("the contract carries $defs");
     for entity in [
-        "Scene", "Element", "Canvas", "Transform", "Paint", "Stroke", "Palette", "StrokeProfile",
-        "StyleRecipe", "Gradient", "Constraint", "Asset",
+        "Scene",
+        "Element",
+        "Canvas",
+        "Transform",
+        "Paint",
+        "Stroke",
+        "Palette",
+        "StrokeProfile",
+        "StyleRecipe",
+        "Gradient",
+        "Constraint",
+        "Asset",
     ] {
         assert!(definitions.contains_key(entity), "missing `{entity}`");
     }
@@ -73,7 +83,10 @@ fn a_single_type_request_prints_its_properties_and_allowed_values() {
         .iter()
         .filter_map(Value::as_str)
         .collect();
-    assert!(kinds.contains(&"rect") && kinds.contains(&"text"), "{kinds:?}");
+    assert!(
+        kinds.contains(&"rect") && kinds.contains(&"text"),
+        "{kinds:?}"
+    );
     assert!(
         element["$defs"]["PaintKind"]["enum"].is_array(),
         "paint's allowed values are present"
@@ -135,10 +148,20 @@ fn a_minimal_scene_authored_from_the_contract_alone_validates() {
     let element_required = required("Element");
     let transform_required = required("Transform");
     for field in ["id", "projectId", "name", "formatVersion", "canvas"] {
-        assert!(scene_required.iter().any(|f| f == field), "Scene requires `{field}`");
+        assert!(
+            scene_required.iter().any(|f| f == field),
+            "Scene requires `{field}`"
+        );
     }
     for field in [
-        "id", "sceneId", "order", "kind", "geometry", "transform", "opacity", "visible",
+        "id",
+        "sceneId",
+        "order",
+        "kind",
+        "geometry",
+        "transform",
+        "opacity",
+        "visible",
     ] {
         assert!(
             element_required.iter().any(|f| f == field),
@@ -188,9 +211,9 @@ fn a_minimal_scene_authored_from_the_contract_alone_validates() {
     let dir = TempDir::new("schema-minimal");
     dir.write("vectr.project.json", "{}");
     dir.write("scenes/minimal.json", &document.to_string());
-    let validate = run_vectr(dir.path(), &["validate", "scenes/minimal.json"]);
+    let validate = run_vectr(dir.path(), &["validate", "minimal"]);
     assert_eq!(code(&validate), 0, "{}", stderr(&validate));
-    let compile = run_vectr(dir.path(), &["compile", "scenes/minimal.json", "--check"]);
+    let compile = run_vectr(dir.path(), &["compile", "minimal", "--check"]);
     assert_eq!(code(&compile), 0, "{}", stderr(&compile));
 }
 
@@ -210,17 +233,14 @@ fn the_served_contract_declares_the_version_the_tool_accepts() {
     dir.write("vectr.project.json", "{}");
 
     let matching = scene(vec![rect("r1", 0, 0.0, 0.0, 10.0, 10.0)]);
-    let matching_path = dir.write("scenes/ok.json", &matching.to_string());
-    let output = run_vectr(
-        dir.path(),
-        &["validate", matching_path.to_str().expect("utf-8")],
-    );
+    dir.write("scenes/ok.json", &matching.to_string());
+    let output = run_vectr(dir.path(), &["validate", "ok"]);
     assert_eq!(code(&output), 0, "{}", stderr(&output));
 
     let mut mismatched = scene(vec![rect("r1", 0, 0.0, 0.0, 10.0, 10.0)]);
     mismatched["formatVersion"] = serde_json::json!("0.1");
     dir.write("scenes/bad.json", &mismatched.to_string());
-    let output = run_vectr(dir.path(), &["validate", "scenes/bad.json"]);
+    let output = run_vectr(dir.path(), &["validate", "bad"]);
     assert_eq!(code(&output), 1);
     let err = stderr(&output);
     assert!(err.contains("E_FORMAT_VERSION"), "{err}");

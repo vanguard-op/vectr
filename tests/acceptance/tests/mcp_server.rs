@@ -31,7 +31,16 @@ fn response(run: &McpRun, id: i64) -> &Value {
 /// A scene with `count` sibling rects, as JSON text.
 fn scene_with_rects(count: usize) -> String {
     let elements: Vec<Value> = (0..count)
-        .map(|index| rect(&format!("r{index}"), index as i64, index as f64 * 12.0, 0.0, 10.0, 10.0))
+        .map(|index| {
+            rect(
+                &format!("r{index}"),
+                index as i64,
+                index as f64 * 12.0,
+                0.0,
+                10.0,
+                10.0,
+            )
+        })
         .collect();
     scene(elements).to_string()
 }
@@ -180,10 +189,7 @@ fn the_cli_and_the_mcp_server_resolve_a_project_identically() {
     let document = scene_with(vec![card], None, Some("brand"));
     dir.write("scenes/logo.json", &document.to_string());
 
-    let cli = run_vectr(
-        dir.path(),
-        &["compile", "scenes/logo.json", "--out", "dist/model.json"],
-    );
+    let cli = run_vectr(dir.path(), &["compile", "logo", "--out", "dist/model.json"]);
     assert_eq!(code(&cli), 0, "{}", stderr(&cli));
     let cli_model: Value = serde_json::from_str(
         &std::fs::read_to_string(dir.path().join("dist/model.json"))
@@ -256,7 +262,9 @@ fn an_invalid_scene_is_a_structured_tool_error() {
     assert_eq!(body["code"], "E_SCHEMA");
     assert!(body["message"].as_str().is_some_and(|m| !m.is_empty()));
     assert!(
-        body["diagnostics"].as_array().is_some_and(|f| !f.is_empty()),
+        body["diagnostics"]
+            .as_array()
+            .is_some_and(|f| !f.is_empty()),
         "{body}"
     );
     assert!(body["location"].is_object(), "the error is located: {body}");
@@ -282,7 +290,10 @@ fn an_unsupported_capability_is_a_structured_error_and_the_server_survives() {
     let result = &response(&run, 1)["result"];
     assert_eq!(result["isError"], true);
     assert_eq!(result["structuredContent"]["code"], "E_UNSUPPORTED");
-    assert!(!dir.path().join("dist/out.pdf").exists(), "nothing is written");
+    assert!(
+        !dir.path().join("dist/out.pdf").exists(),
+        "nothing is written"
+    );
 
     // The server answered the next request, so the failure did not crash it.
     let tools = response(&run, 2)["result"]["tools"]
@@ -336,7 +347,10 @@ fn an_output_outside_the_filesystem_scope_is_refused_without_writing() {
     let result = &response(&run, 1)["result"];
     assert_eq!(result["isError"], true);
     assert_eq!(result["structuredContent"]["code"], "E_SCOPE");
-    assert!(!target.exists(), "a path outside the scope is never written");
+    assert!(
+        !target.exists(),
+        "a path outside the scope is never written"
+    );
 }
 
 #[test]
@@ -409,7 +423,11 @@ impl Drop for ServerProcess {
 /// `host:port` authority, parsed from the address the server reports.
 fn start_http_server(cwd: &Path) -> (ServerProcess, String) {
     let binary = vectr_mcp_bin();
-    assert!(binary.is_file(), "build the workspace first: `{}`", binary.display());
+    assert!(
+        binary.is_file(),
+        "build the workspace first: `{}`",
+        binary.display()
+    );
     let mut child = Command::new(&binary)
         .args(["--bind", "127.0.0.1:0"])
         .current_dir(cwd)
@@ -449,11 +467,15 @@ fn post(addr: &str, body: &str) -> (u16, String) {
     let mut stream = TcpStream::connect(addr).expect("connects to the server");
     let request = format!(
         "POST /mcp HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        body.as_bytes().len()
+        body.len()
     );
-    stream.write_all(request.as_bytes()).expect("writes the request");
+    stream
+        .write_all(request.as_bytes())
+        .expect("writes the request");
     let mut response = String::new();
-    stream.read_to_string(&mut response).expect("reads the response");
+    stream
+        .read_to_string(&mut response)
+        .expect("reads the response");
     let status = response
         .split_whitespace()
         .nth(1)
@@ -475,12 +497,8 @@ fn concurrent_calls_are_independent_over_the_http_transport() {
         .map(|count| {
             let authority = authority.clone();
             thread::spawn(move || {
-                let body = mcp_tool_call(
-                    1,
-                    "compile",
-                    json!({ "scene": scene_with_rects(count) }),
-                )
-                .to_string();
+                let body = mcp_tool_call(1, "compile", json!({ "scene": scene_with_rects(count) }))
+                    .to_string();
                 let (status, payload) = post(&authority, &body);
                 assert_eq!(status, 200, "worker {count}: {payload}");
                 let value: Value = serde_json::from_str(&payload).expect("valid JSON-RPC");

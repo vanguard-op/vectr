@@ -40,7 +40,7 @@ Progress:
 - [ ] 1. Compare the skill and tool versions (see **Version compatibility**).
 - [ ] 2. Scaffold a project if there is none: `vectr init`.
 - [ ] 3. Read the schema for the types you will write.
-- [ ] 4. Author the scene document.
+- [ ] 4. Author the scene document as `scenes/<id>.json`.
 - [ ] 5. Validate. Correct and re-validate until it passes.
 - [ ] 6. Compile with `--check` to confirm references resolve.
 - [ ] 7. Render a PNG preview and look at it against the request.
@@ -67,14 +67,16 @@ An MCP tool failure is a result with `isError: true` and a body
 just `message`. A CLI failure exits non-zero, prints a diagnostic with its
 location, and writes nothing: `1` invalid scene, `2` usage or unreadable input,
 `3` compilation failure, `4` export dependency missing, `5` output I/O failure.
-The `scene` argument to an MCP tool is either the scene document as JSON text or
-a path to one.
+The `<scene>` argument is a scene identifier resolved among the project's scenes
+(`scenes/<id>.json`), not a file path; omit it to use the project's
+`defaultSceneId`. The `scene` argument to an MCP tool is either the scene
+document as JSON text or a path to one.
 
 ## Output contract
 
 Deliver one Vectr scene document that conforms to the published schema, with
 `formatVersion` `"0.2"`. Validate it before compiling and render only on
-success. Exports default to `dist/<scene-stem>.<ext>`; `--out`/`out` chooses
+success. Exports default to `dist/<scene-id>.<ext>`; `--out`/`out` chooses
 another path.
 
 ## When authoring fails

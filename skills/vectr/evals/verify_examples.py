@@ -100,6 +100,18 @@ def check_static(skill_dir: Path) -> list[str]:
     for command in ("vectr schema", "vectr validate", "vectr compile", "vectr export"):
         if command not in guide:
             raise CheckError(f"the guide does not teach `{command}`")
+
+    # A scene is addressed by its identifier, not by a file path: the document
+    # is `scenes/<id>.json` and a command names the id, falling back to the
+    # project's default scene (FEAT-016, D-032). The guide must teach that and
+    # never show a scene file path as a command argument.
+    if "scenes/<id>.json" not in guide or "defaultSceneId" not in guide:
+        raise CheckError("the guide does not teach addressing a scene by its identifier")
+    for line in guide.splitlines():
+        if "scenes/" in line and any(
+            command in line for command in ("vectr validate", "vectr compile", "vectr export")
+        ):
+            raise CheckError(f"the guide passes a scene path as a command argument: {line.strip()!r}")
     for section in (
         "Inspect and correct",
         "Retry once",
@@ -156,31 +168,33 @@ def check_toolchain(
 
         # Every worked scene the guide ships runs the whole loop, so a simple
         # mark and a compositionally complex illustration are both pinned to the
-        # real toolchain.
-        for index, scene in enumerate(scenes):
-            stem = f"example-{index}"
-            (project / f"scenes/{stem}.json").write_text(json.dumps(scene))
-            run([vectr, "validate", f"scenes/{stem}.json"], project)
-            run([vectr, "compile", f"scenes/{stem}.json", "--check"], project)
+        # real toolchain. A command addresses a scene by its identifier and the
+        # document is `scenes/<id>.json` (FEAT-016, D-032).
+        for scene in scenes:
+            scene_id = scene["id"]
+            (project / f"scenes/{scene_id}.json").write_text(json.dumps(scene))
+            run([vectr, "validate", scene_id], project)
+            run([vectr, "compile", scene_id, "--check"], project)
             run(
-                [vectr, "export", f"scenes/{stem}.json", "--format", "svg", "--out", f"dist/{stem}.svg"],
+                [vectr, "export", scene_id, "--format", "svg", "--out", f"dist/{scene_id}.svg"],
                 project,
             )
-            if not (project / f"dist/{stem}.svg").read_text().lstrip().startswith("<?xml"):
-                raise CheckError(f"the exported SVG for {stem} is empty")
+            if not (project / f"dist/{scene_id}.svg").read_text().lstrip().startswith("<?xml"):
+                raise CheckError(f"the exported SVG for {scene_id} is empty")
             run(
-                [vectr, "export", f"scenes/{stem}.json", "--format", "png", "--out", f"dist/{stem}.png",
+                [vectr, "export", scene_id, "--format", "png", "--out", f"dist/{scene_id}.png",
                  "--width", "256", "--height", "256"],
                 project,
             )
-            png = (project / f"dist/{stem}.png").read_bytes()
+            png = (project / f"dist/{scene_id}.png").read_bytes()
             if png[:8] != b"\x89PNG\r\n\x1a\n":
-                raise CheckError(f"the exported PNG for {stem} is not a PNG")
+                raise CheckError(f"the exported PNG for {scene_id} is not a PNG")
         notes.append(f"{len(scenes)} worked scenes validate, compile, and export SVG and PNG")
 
-        template_path = project / "scenes/template.json"
+        template_id = template["id"]
+        template_path = project / f"scenes/{template_id}.json"
         template_path.write_text(json.dumps(template))
-        run([vectr, "validate", "scenes/template.json"], project)
+        run([vectr, "validate", template_id], project)
         notes.append("scene template validates")
     return notes
 

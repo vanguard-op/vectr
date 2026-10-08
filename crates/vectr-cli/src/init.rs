@@ -72,6 +72,7 @@ pub fn scaffold(dir: &Path) -> Report {
         "id": PROJECT_ID,
         "name": project_name(dir),
         "formatVersion": CURRENT_FORMAT_VERSION,
+        "defaultSceneId": STARTER_SCENE_ID,
         "defaultRecipeId": DEFAULT_RECIPE_ID,
         "output": {
             "format": "svg",
@@ -219,10 +220,22 @@ mod tests {
         assert_eq!(value["formatVersion"], CURRENT_FORMAT_VERSION);
         assert_eq!(value["defaultRecipeId"], "flat");
         assert_eq!(value["output"]["format"], "svg");
+        // The project names its starter scene as the default, and the scene
+        // lives under the scene directory, not at the project root (FEAT-016,
+        // D-032).
+        assert_eq!(value["defaultSceneId"], STARTER_SCENE_ID);
+        // The starter scene's file is named for its identifier, so the default
+        // id resolves to it (D-032).
+        assert_eq!(STARTER_SCENE_FILE, format!("{STARTER_SCENE_ID}.json"));
+        assert!(
+            !target.join(format!("{STARTER_SCENE_ID}.json")).exists(),
+            "no scene document at the project root"
+        );
 
         let scene_text =
             fs::read_to_string(target.join("scenes").join("example.json")).expect("scene");
         let scene = parse(&scene_text).expect("the starter scene is valid");
+        assert_eq!(scene.id, STARTER_SCENE_ID);
         assert_eq!(scene.project_id, PROJECT_ID);
 
         // The starter project ships a flat recipe and names it as the default,
