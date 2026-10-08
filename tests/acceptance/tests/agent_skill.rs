@@ -349,6 +349,153 @@ fn the_guide_directs_recovery_from_an_invalid_scene() {
     );
 }
 
+#[test]
+fn the_guide_directs_a_detailed_request_to_be_composed_in_full() {
+    // FEAT-020's edge case: a request for a very complex or detailed
+    // illustration is answered by composing the required elements, never by a
+    // refusal or a simplification to a simple mark.
+    let root = workspace_root();
+    let skill = fs::read_to_string(root.join("skills/vectr/SKILL.md")).expect("SKILL.md");
+    let guide = fs::read_to_string(root.join("skills/vectr/references/authoring-guide.md"))
+        .expect("the authoring guide");
+
+    assert!(
+        skill.contains("never simplified to a simple mark"),
+        "the skill forbids simplifying a detailed request"
+    );
+    assert!(
+        guide.contains("Never reduce a detailed request to a single mark"),
+        "the guide forbids reducing a detailed request"
+    );
+    assert!(
+        guide.contains("authored in full"),
+        "the guide directs a detailed request to be authored in full"
+    );
+}
+
+/// The skill's frontmatter description as a lowercased string.
+fn skill_description() -> String {
+    let skill = fs::read_to_string(workspace_root().join("skills/vectr/SKILL.md"))
+        .expect("SKILL.md");
+    frontmatter(&skill)
+        .into_iter()
+        .find(|(key, _)| key == "description")
+        .map(|(_, value)| value.to_lowercase())
+        .expect("a description")
+}
+
+#[test]
+fn the_skill_description_names_the_full_complexity_range_and_every_task() {
+    // The description is the surface an agent matches against, so it must name
+    // both the graphic types and the tasks across the full range, with no
+    // "simple" ceiling that would stop an agent loading it for a complex
+    // request (FEAT-020).
+    let description = skill_description();
+
+    for graphic in [
+        "logos",
+        "wordmarks",
+        "icons and icon sets",
+        "badges",
+        "diagrams",
+        "illustrations",
+    ] {
+        assert!(
+            description.contains(graphic),
+            "the description names `{graphic}`: {description}"
+        );
+    }
+    assert!(
+        description.contains("simple") && description.contains("very complex"),
+        "the description spans simple to very complex, with no simple ceiling: {description}"
+    );
+
+    for task in [
+        "authoring",
+        "validating",
+        "rendering and exporting",
+        "editing",
+        "restyling through palette tokens",
+        "debugging",
+        "wire the vectr tools into an agent",
+    ] {
+        assert!(
+            description.contains(task),
+            "the description names the `{task}` task: {description}"
+        );
+    }
+}
+
+#[test]
+fn the_guides_complex_example_is_compositional_and_validates() {
+    // FEAT-020 requires a shipped worked example that is compositionally
+    // complex and validates, compiles, and renders. The end-to-end run is
+    // exercised elsewhere; here the example's structure is pinned: the largest
+    // scene the guide ships must compose nested elements with the composition
+    // primitives, not enumerate primitives by hand.
+    let guide =
+        fs::read_to_string(workspace_root().join("skills/vectr/references/authoring-guide.md"))
+            .expect("the authoring guide");
+    let blocks = fenced_json_blocks(&guide);
+    let complex = scene_block(&blocks);
+    let elements = complex["elements"]
+        .as_array()
+        .expect("the example carries elements");
+
+    let kinds: Vec<&str> = elements
+        .iter()
+        .filter_map(|element| element["kind"].as_str())
+        .collect();
+    for primitive in ["group", "repeat", "boolean", "alongPath", "offset", "projection"] {
+        assert!(
+            kinds.contains(&primitive),
+            "the complex example exercises `{primitive}`: {kinds:?}"
+        );
+    }
+    assert!(
+        complex["constraints"]
+            .as_array()
+            .is_some_and(|constraints| !constraints.is_empty()),
+        "the complex example carries a constraint"
+    );
+
+    // Nesting several levels deep: at least one element sits at depth three or
+    // more (a child of a composition inside another composition).
+    let parent = |id: &str| -> Option<String> {
+        elements
+            .iter()
+            .find(|element| element["id"] == id)
+            .and_then(|element| element["parentId"].as_str())
+            .map(str::to_string)
+    };
+    let depth = |mut id: String| -> usize {
+        let mut depth = 0;
+        while let Some(next) = parent(&id) {
+            depth += 1;
+            id = next;
+        }
+        depth
+    };
+    let deepest = elements
+        .iter()
+        .filter_map(|element| element["id"].as_str())
+        .map(|id| depth(id.to_string()))
+        .max()
+        .unwrap_or(0);
+    assert!(
+        deepest >= 3,
+        "the complex example nests composition several levels deep: depth {deepest}"
+    );
+
+    // The example is a valid scene document, not just illustrative JSON.
+    let scene = vectr_core::parse(&complex.to_string()).expect("the example parses");
+    let diagnostics = vectr_core::validate(&scene);
+    assert!(
+        !diagnostics.has_errors(),
+        "the complex example validates: {diagnostics}"
+    );
+}
+
 /// The workspace's skill directory, exposed for tests that need more than the
 /// shared helpers.
 #[allow(dead_code)]

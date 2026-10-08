@@ -1,16 +1,17 @@
 ---
 name: vectr
 description: >
-  Author Vectr vector graphics from a natural-language request: logos, icons,
-  wordmarks, badges, diagrams, and simple illustrations built as Vectr scene
-  documents and rendered to SVG or PNG. Use this skill whenever the user asks
-  for a vector graphic, logo, or icon set and Vectr is the target toolchain,
-  including when they only describe the picture and never say "Vectr": read the
-  scene schema, author the scene, validate it, render a preview, and refine the
-  result. Also use it to edit, restyle, or debug an existing Vectr scene, or to
-  wire the Vectr tools into an agent. Do not use it for photographic or bitmap
-  image generation, for hand-writing raw SVG or HTML/CSS, or for graphics in
-  another tool's format.
+  Author Vectr vector graphics from a natural-language request: logos,
+  wordmarks, icons and icon sets, badges, diagrams, and illustrations from a
+  simple mark to a very complex, many-element composition. Use this skill
+  whenever the user asks for a vector graphic, logo, or icon set and Vectr is
+  the target toolchain, including when they only describe the picture and never
+  say "Vectr": read the scene schema, author the scene, validate it, render a
+  preview, and refine the result — authoring, validating, rendering and
+  exporting, editing, restyling through palette tokens, and debugging. Also use
+  it to wire the Vectr tools into an agent. Do not use it for photographic or
+  bitmap image generation, for hand-writing raw SVG or HTML/CSS, or for graphics
+  in another tool's format.
 version: 0.1.0
 license: MIT OR Apache-2.0
 compatibility: Requires the Vectr toolchain — the `vectr` CLI or the `vectr-mcp` server — available to the agent.
@@ -23,9 +24,15 @@ render model and exports as SVG or PNG. Read the schema, author the scene,
 validate, render, look at the render, and fix what is wrong. The schema and the
 tools are the source of truth; this skill is the workflow around them.
 
-Read `references/authoring-guide.md` before authoring your first scene. It holds
-the end-to-end walkthrough, a worked example, the default set for ambiguous
-requests, and the inspect-and-correct loop.
+**Read `references/authoring-guide.md` before authoring your first scene, and
+treat it as the single source of the procedure.** It holds the end-to-end
+walkthrough, the worked examples for a simple mark and for a very complex
+illustration, the rules the schema does not state, the default set for
+ambiguous requests, and the inspect-and-correct loop. This file only orients
+you: the workflow, the tool surface, and the version check.
+
+A request's complexity sets the scene's scope: a detailed illustration is
+composed in full from its elements, never simplified to a simple mark.
 
 ## Workflow
 
@@ -74,21 +81,11 @@ another path.
 
 Validation and compilation return diagnostics that name each problem and its
 location — severity, code, message, and a JSON path or element id. Read them,
-correct the scene, and re-validate.
-
-Retry authoring once. If the scene still fails after that correction, report the
-failure with its diagnostics and produce no output; do not export a partial or
-guessed result. If the authoring model itself is unavailable, report that
-authoring cannot proceed and produce no output. See the guide for the common
-findings and their fixes.
-
-## Ambiguous requests
-
-Pick the documented default and state it briefly; do not stall on a question.
-Defaults: a 512×512 canvas with a `transparent` background, a simple mark (one
-shape plus an optional wordmark), the project's default recipe, the bundled
-open-licensed sans for text, and a small named palette (`accent`, `ink`,
-`paper`) so the graphic can be restyled. The full set is in the guide.
+correct the scene, and re-validate. **Retry authoring once**: if the scene still
+fails after that correction, report the failure with its diagnostics and produce
+no output; never export a partial or guessed result. If the authoring model
+itself is unavailable, report that authoring cannot proceed and produce no
+output. The guide lists the common findings and their fixes.
 
 ## Version compatibility
 
@@ -100,31 +97,9 @@ versions instead of authoring against a tool the skill was not written for. If
 `vectr schema` reports `E_SCHEMA_VERSION`, the published contract and the
 installed tool disagree; report that the same way.
 
-## Gotchas
-
-- Every element requires the full `transform` object — `translateX`,
-  `translateY`, `rotate`, `scaleX`, `scaleY` — even for an identity transform,
-  and a `geometry` object even when the kind ignores it (a `group` uses `{}`).
-  The published `required` lists are shorter than what the parser enforces;
-  author against `vectr schema --type Element`.
-- A `fill` or `stroke` paint is `{kind, ref}` where `kind` is `token` (a name in
-  the scene's `paletteId` palette) or `gradient` (a gradient document id). There
-  are no inline colours on elements; the canvas `background` is the one raw
-  colour field.
-- A `stroke` needs both `profileId` (a document under `strokes/`) and `paint`. A
-  profile carries width, cap, and join only — never colour.
-- `order` is paint order among siblings, lowest first, and `parentId` builds the
-  tree. Parent decorative children to a `group` element, not to a shape.
-- A text element needs `geometry.text` and `geometry.fontSize`; `x` and `y`
-  anchor the baseline of its first line. `fontId` applies to text only — omit it
-  to use the bundled default sans.
-- Project references resolve by `id`, not by file name: palettes under
-  `palettes/`, strokes under `strokes/`, recipes under `recipes/`, gradients
-  under `gradients/`. Run the tools from inside the project so the root is found.
-
 ## References
 
 | File | Read it when |
 |---|---|
-| `references/authoring-guide.md` | Before authoring your first scene; the end-to-end walkthrough, worked example, default set, and inspect-and-correct loop. |
+| `references/authoring-guide.md` | Before authoring your first scene; the end-to-end walkthrough, worked example, default set, and inspect-and-correct loop. The single source of the procedure. |
 | `assets/scene.template.json` | As the starting point for a new scene. |

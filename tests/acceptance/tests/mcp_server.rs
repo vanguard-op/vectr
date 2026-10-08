@@ -114,6 +114,104 @@ fn a_valid_scene_compiles_through_mcp_and_returns_the_render_model() {
 }
 
 #[test]
+fn a_project_scene_resolves_its_style_assets_through_mcp() {
+    // The MCP server loads a scene's project assets through the shared project
+    // loader, so a fill token and a stroke profile resolve exactly as they do
+    // through the CLI (FEAT-016, FEAT-019). The inline-scene path is covered
+    // above; this is the project path, where the palette and stroke documents
+    // live beside the scene.
+    let dir = TempDir::new("mcp-project");
+    dir.write("vectr.project.json", "{}");
+    dir.write(
+        "palettes/brand.json",
+        &palette("brand", &[("accent", "#4f46e5")]),
+    );
+    dir.write(
+        "strokes/hairline.json",
+        &stroke_profile("hairline", 2.0, "round", "round"),
+    );
+    let mut card = rect("card", 0, 0.0, 0.0, 10.0, 10.0);
+    card["fill"] = token_paint("accent");
+    card["stroke"] = stroke("hairline", "accent");
+    let document = scene_with(vec![card], None, Some("brand"));
+    dir.write("scenes/logo.json", &document.to_string());
+
+    let run = run_mcp_session(
+        dir.path(),
+        &[],
+        &[mcp_tool_call(
+            1,
+            "compile",
+            json!({ "scene": "scenes/logo.json" }),
+        )],
+    );
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let result = &response(&run, 1)["result"];
+    assert_eq!(result["isError"], false, "{:?}", run.responses);
+    let model = &result["structuredContent"]["model"];
+    assert_eq!(
+        model["nodes"][0]["paint"]["fill"]["value"], "#4f46e5",
+        "the project's palette resolves over MCP: {model}"
+    );
+    assert_eq!(
+        model["nodes"][0]["paint"]["stroke"]["width"], 2.0,
+        "the project's stroke profile resolves over MCP: {model}"
+    );
+}
+
+#[test]
+fn the_cli_and_the_mcp_server_resolve_a_project_identically() {
+    // The project loader is shared between the two front ends, so the same
+    // scene against the same project yields the same render model through both
+    // (FEAT-016, FEAT-019, NFR-010).
+    let dir = TempDir::new("mcp-consistency");
+    dir.write("vectr.project.json", "{}");
+    dir.write(
+        "palettes/brand.json",
+        &palette("brand", &[("accent", "#4f46e5")]),
+    );
+    dir.write(
+        "strokes/hairline.json",
+        &stroke_profile("hairline", 2.0, "round", "round"),
+    );
+    let mut card = rect("card", 0, 0.0, 0.0, 10.0, 10.0);
+    card["fill"] = token_paint("accent");
+    card["stroke"] = stroke("hairline", "accent");
+    let document = scene_with(vec![card], None, Some("brand"));
+    dir.write("scenes/logo.json", &document.to_string());
+
+    let cli = run_vectr(
+        dir.path(),
+        &["compile", "scenes/logo.json", "--out", "dist/model.json"],
+    );
+    assert_eq!(code(&cli), 0, "{}", stderr(&cli));
+    let cli_model: Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join("dist/model.json"))
+            .expect("the CLI wrote a render model"),
+    )
+    .expect("the CLI render model is JSON");
+
+    let run = run_mcp_session(
+        dir.path(),
+        &[],
+        &[mcp_tool_call(
+            1,
+            "compile",
+            json!({ "scene": "scenes/logo.json" }),
+        )],
+    );
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let result = &response(&run, 1)["result"];
+    assert_eq!(result["isError"], false, "{:?}", run.responses);
+    let mcp_model = &result["structuredContent"]["model"];
+
+    assert_eq!(
+        &cli_model, mcp_model,
+        "both front ends resolve the project identically"
+    );
+}
+
+#[test]
 fn a_valid_scene_renders_through_mcp_and_writes_the_file() {
     let dir = TempDir::new("mcp-render");
     let run = run_mcp_session(

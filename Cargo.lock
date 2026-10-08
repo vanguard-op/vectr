@@ -523,6 +523,7 @@ version = "0.1.0"
 dependencies = [
  "serde_json",
  "vectr-core",
+ "vectr-project",
 ]
 
 [[package]]
@@ -543,6 +544,15 @@ version = "0.1.0"
 
 [[package]]
 name = "vectr-mcp"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "vectr-core",
+ "vectr-project",
+]
+
+[[package]]
+name = "vectr-project"
 version = "0.1.0"
 dependencies = [
  "serde_json",

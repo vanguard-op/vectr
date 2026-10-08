@@ -19,7 +19,8 @@ use vectr_core::{
     Diagnostics, Location, RasterOptions, RenderModel, Scene, SchemaForm, SvgOptions,
 };
 
-use crate::assets::{self, ProjectAssets};
+use vectr_project::{project_root, ProjectAssets};
+
 use crate::output::write_atomic;
 use crate::scope::{Scope, ScopeError, SCOPE};
 
@@ -329,7 +330,7 @@ fn load_scene(scope: &Scope, scene: &str, project: Option<&str>) -> Result<Scene
     let parsed = parse_scene(&source).map_err(exec_diagnostics)?;
     let root = match project {
         Some(root) => scope.read_dir(Path::new(root)).map_err(scope_error)?,
-        None => assets::project_root(&path),
+        None => project_root(&path),
     };
     let stem = path
         .file_stem()

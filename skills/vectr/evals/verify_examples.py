@@ -3,8 +3,11 @@
 
 The skill's value is that a model can follow the authoring guide against the
 published schema and the installed tool. These checks pin that contract: the
-frontmatter and JSON are well-formed, and the guide's own worked example — and
-the scene template — validate, compile, and export through the real toolchain.
+frontmatter and JSON are well-formed, the guide stands alone as the single
+source of the authoring procedure (the scaffold embeds it verbatim, so it must
+not depend on the skill's other files), and every worked scene the guide ships, from the simple mark to the
+compositionally complex illustration, plus the scene template, validate, compile,
+and export through the real toolchain.
 
 Nothing here grades authored scenes; measuring cross-model authoring quality is
 the evaluation harness's job. This only proves the shipped examples still work.
@@ -89,15 +92,44 @@ def check_static(skill_dir: Path) -> list[str]:
         raise CheckError("evals.json skill_name does not match the skill folder")
 
     guide = (skill_dir / "references/authoring-guide.md").read_text()
+
+    # The guide is the single source of the authoring procedure: it is what the
+    # scaffold embeds into a project, so it must carry the whole workflow, name
+    # the versions it targets, and stand alone — a scaffolded project has none
+    # of the skill's other files.
+    for command in ("vectr schema", "vectr validate", "vectr compile", "vectr export"):
+        if command not in guide:
+            raise CheckError(f"the guide does not teach `{command}`")
+    for section in (
+        "Inspect and correct",
+        "Retry once",
+        "Never export",
+        "Defaults for an ambiguous request",
+        "Licensing",
+    ):
+        if section not in guide:
+            raise CheckError(f"the guide is missing `{section}`")
+    if version and version not in guide:
+        raise CheckError(f"the guide does not name the tool version {version!r}")
+    for skill_only in ("SKILL.md", "assets/scene.template.json", "evals/"):
+        if skill_only in guide:
+            raise CheckError(
+                f"the guide references the skill-only {skill_only!r}; it must stand "
+                "alone so the scaffold can embed it verbatim"
+            )
+
     blocks = fenced_json_blocks(guide)
     palette = next((b for b in blocks if "tokens" in b), None)
     stroke = next((b for b in blocks if {"cap", "join", "width"} <= set(b)), None)
-    scenes = [b for b in blocks if "elements" in b]
-    scene = max(scenes, key=lambda b: len(b["elements"])) if scenes else None
-    if palette is None or stroke is None or scene is None:
+    scenes = [
+        b
+        for b in blocks
+        if isinstance(b, dict) and isinstance(b.get("elements"), list) and b["elements"]
+    ]
+    if palette is None or stroke is None or not scenes:
         raise CheckError("the authoring guide is missing a palette, stroke, or scene example")
-    notes.append(f"guide carries {len(blocks)} json examples")
-    return notes, palette, stroke, scene
+    notes.append(f"guide carries {len(blocks)} json examples and {len(scenes)} worked scenes")
+    return notes, palette, stroke, scenes
 
 
 def run(command: list[str], cwd: Path) -> subprocess.CompletedProcess:
@@ -108,7 +140,9 @@ def run(command: list[str], cwd: Path) -> subprocess.CompletedProcess:
     return result
 
 
-def check_toolchain(vectr: str, template: dict, palette: dict, stroke: dict, scene: dict) -> list[str]:
+def check_toolchain(
+    vectr: str, template: dict, palette: dict, stroke: dict, scenes: list[dict]
+) -> list[str]:
     notes = []
     with tempfile.TemporaryDirectory(prefix="vectr-skill-verify-") as raw:
         project = Path(raw)
@@ -119,25 +153,30 @@ def check_toolchain(vectr: str, template: dict, palette: dict, stroke: dict, sce
         (project / "vectr.project.json").write_text("{}")
         (project / "palettes/brand.json").write_text(json.dumps(palette))
         (project / "strokes/hairline.json").write_text(json.dumps(stroke))
-        scene_path = project / "scenes/logo.json"
-        scene_path.write_text(json.dumps(scene))
 
-        run([vectr, "validate", "scenes/logo.json"], project)
-        notes.append("guide example validates")
-        run([vectr, "compile", "scenes/logo.json", "--check"], project)
-        notes.append("guide example compiles")
-        run([vectr, "export", "scenes/logo.json", "--format", "svg", "--out", "dist/logo.svg"], project)
-        if not (project / "dist/logo.svg").read_text().lstrip().startswith("<?xml"):
-            raise CheckError("the exported SVG is empty")
-        run(
-            [vectr, "export", "scenes/logo.json", "--format", "png", "--out", "dist/logo.png",
-             "--width", "256", "--height", "256"],
-            project,
-        )
-        png = (project / "dist/logo.png").read_bytes()
-        if png[:8] != b"\x89PNG\r\n\x1a\n":
-            raise CheckError("the exported PNG is not a PNG")
-        notes.append("guide example exports SVG and PNG")
+        # Every worked scene the guide ships runs the whole loop, so a simple
+        # mark and a compositionally complex illustration are both pinned to the
+        # real toolchain.
+        for index, scene in enumerate(scenes):
+            stem = f"example-{index}"
+            (project / f"scenes/{stem}.json").write_text(json.dumps(scene))
+            run([vectr, "validate", f"scenes/{stem}.json"], project)
+            run([vectr, "compile", f"scenes/{stem}.json", "--check"], project)
+            run(
+                [vectr, "export", f"scenes/{stem}.json", "--format", "svg", "--out", f"dist/{stem}.svg"],
+                project,
+            )
+            if not (project / f"dist/{stem}.svg").read_text().lstrip().startswith("<?xml"):
+                raise CheckError(f"the exported SVG for {stem} is empty")
+            run(
+                [vectr, "export", f"scenes/{stem}.json", "--format", "png", "--out", f"dist/{stem}.png",
+                 "--width", "256", "--height", "256"],
+                project,
+            )
+            png = (project / f"dist/{stem}.png").read_bytes()
+            if png[:8] != b"\x89PNG\r\n\x1a\n":
+                raise CheckError(f"the exported PNG for {stem} is not a PNG")
+        notes.append(f"{len(scenes)} worked scenes validate, compile, and export SVG and PNG")
 
         template_path = project / "scenes/template.json"
         template_path.write_text(json.dumps(template))
@@ -154,7 +193,7 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        notes, palette, stroke, scene = check_static(args.skill_dir)
+        notes, palette, stroke, scenes = check_static(args.skill_dir)
         template = json.loads((args.skill_dir / "assets/scene.template.json").read_text())
         if not args.skip_toolchain:
             vectr = Path(args.vectr)
@@ -162,7 +201,7 @@ def main() -> int:
                 vectr = vectr.resolve()
             elif shutil.which(args.vectr) is None:
                 raise CheckError(f"the vectr binary `{args.vectr}` was not found")
-            notes += check_toolchain(str(vectr), template, palette, stroke, scene)
+            notes += check_toolchain(str(vectr), template, palette, stroke, scenes)
     except CheckError as error:
         print(f"FAIL: {error}", file=sys.stderr)
         return 1

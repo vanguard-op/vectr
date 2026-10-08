@@ -15,9 +15,9 @@ use serde_json::json;
 use vectr_core::scene::CURRENT_FORMAT_VERSION;
 use vectr_core::{parse_style_recipe, validate_style_recipe, Canvas, Scene};
 
-use crate::authoring::{authoring_guide, AUTHORING_GUIDE_FILE};
 use crate::cli::{diagnostics_text, Report, EXIT_OUTPUT, EXIT_SUCCESS};
 use crate::output::write_atomic;
+use vectr_project::{authoring_guide, AUTHORING_GUIDE_FILE};
 
 /// The identifier every scaffolded project and its starter scene share.
 const PROJECT_ID: &str = "project";

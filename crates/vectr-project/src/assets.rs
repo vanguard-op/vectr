@@ -1,16 +1,35 @@
-//! Project style assets for a compile (D-009, D-013, FEAT-024).
+//! Project asset loading for the front ends (D-009, FEAT-016, FEAT-024).
 //!
-//! A scene names its palette, style recipe, stroke profiles, gradients and fonts
-//! by identifier; none of those live in the scene document. The server loads
-//! them from the scene's project so `compile` and `render` resolve every
-//! reference before anything is written, exactly as the command line does
-//! (C-005: the MCP tools consume the CLI's capabilities).
+//! A project is a directory holding `vectr.project.json` and the entity folders
+//! the scene model refers to. Before compiling, a front end loads the assets a
+//! scene names: the palette the scene selects, the style recipe it renders in,
+//! the stroke profiles and gradients its elements reference, and the fonts its
+//! text elements name. The two open-licensed fonts Vectr ships are supplied for
+//! any scene with text, so a text element that names no font renders with the
+//! default and a glyph the chosen font lacks is covered by the fallback
+//! (FEAT-024, D-017, D-018).
 //!
-//! This mirrors `vectr-cli`'s loader under this crate's filesystem scope: asset
-//! documents are read in sorted order for deterministic results (NFR-010), a
-//! document that cannot be read is a located diagnostic rather than a silent
-//! skip (NFR-011), and an identifier or asset path that would escape the
-//! project root is refused (NFR-021, NFR-024).
+//! References resolve by identifier, not by file name: palettes live under
+//! `palettes/`, style recipes under `recipes/`, stroke profiles under `strokes/`,
+//! gradients under `gradients/`, and a user-supplied font is an `Asset` document
+//! under `assets/` whose `path` points at the font file. A document that cannot
+//! be read is a located diagnostic and no compilation happens; nothing is
+//! substituted silently (NFR-011, FEAT-005).
+//!
+//! A scene renders in the recipe it names, or, when it names none, the project's
+//! `defaultRecipeId` (docs/Vectr/schema.md, "ProjectConfig"). The recipe is
+//! resolved the same way a palette is: by identifier from its folder, an
+//! unresolvable id a located error rather than a scene that silently renders
+//! flat (FEAT-007–FEAT-010).
+//!
+//! Because both an identifier in a scene and a path in an asset document are
+//! untrusted input, the loader refuses an identifier that is not a plain file
+//! stem and an asset file that resolves outside the project root, so a scene
+//! cannot name its way out of its project (NFR-021, NFR-024).
+//!
+//! The loader is deterministic (NFR-010): directory entries are read in sorted
+//! order and the bundled fonts are carried in a fixed order, so the same project
+//! and scene always produce the same style context.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -26,28 +45,35 @@ use vectr_core::{
 
 /// The project configuration that marks a directory as a project root.
 const PROJECT_FILE: &str = "vectr.project.json";
+
 /// The folder holding palette documents.
 const PALETTE_DIR: &str = "palettes";
+
 /// The folder holding stroke-profile documents.
 const STROKE_DIR: &str = "strokes";
+
 /// The folder holding gradient documents.
 const GRADIENT_DIR: &str = "gradients";
-/// The folder holding style-recipe documents.
+
+/// The folder holding style-recipe documents (FEAT-007–FEAT-010).
 const RECIPE_DIR: &str = "recipes";
+
 /// The folder holding asset documents, including the fonts a scene may name.
 const ASSET_DIR: &str = "assets";
 
-/// A project style asset (a palette, recipe or stroke profile) could not be
-/// read or parsed, so the project an input refers to is broken.
+/// A project style asset (a palette, recipe, gradient or stroke profile) could
+/// not be read or parsed, so the project an input refers to is broken.
 pub const STYLE_ASSET: DiagnosticCode = DiagnosticCode::new("E_PROJECT_ASSET");
 
 /// The bundled default font's family name.
 const DEFAULT_FONT_NAME: &str = "Inter";
+
 /// The bundled fallback font's family name.
 const FALLBACK_FONT_NAME: &str = "Noto Sans";
 
 /// The bundled default sans, read into the binary at build time (A-001).
 const DEFAULT_FONT_BYTES: &[u8] = include_bytes!("../../../assets/fonts/Inter.ttf");
+
 /// The bundled fallback sans, read into the binary at build time (A-002).
 const FALLBACK_FONT_BYTES: &[u8] = include_bytes!("../../../assets/fonts/NotoSans.ttf");
 
@@ -63,7 +89,16 @@ pub struct ProjectAssets {
 }
 
 impl ProjectAssets {
-    /// Loads the assets the project at `root` provides for `scene`.
+    /// Loads the assets the project rooted at `root` provides for `scene`.
+    ///
+    /// A caller that resolves the root itself — the MCP server, whose root also
+    /// anchors its filesystem scope — passes it in. A caller that only has a
+    /// scene file uses [`ProjectAssets::load_for_scene`].
+    ///
+    /// A palette, style-recipe, stroke-profile, gradient, or asset document
+    /// that cannot be read is reported rather than skipped, so a broken project
+    /// fails loudly instead of compiling against stale or partial assets
+    /// (NFR-011).
     pub fn load(root: &Path, scene: &Scene) -> Result<Self, Diagnostics> {
         let mut diagnostics = Diagnostics::new();
 
@@ -78,6 +113,10 @@ impl ProjectAssets {
             None => None,
         };
 
+        // A scene renders in the recipe it names, or, when it names none, the
+        // project's default; a project without a configuration names neither and
+        // the scene compiles with no recipe (docs/Vectr/schema.md,
+        // "ProjectConfig").
         let default_recipe = match load_default_recipe_id(root) {
             Ok(id) => id,
             Err(findings) => {
@@ -113,6 +152,8 @@ impl ProjectAssets {
             }
         };
 
+        // The bundled fonts are only meaningful for a scene with text; carrying
+        // them into a scene with none would embed a font file nothing uses.
         let mut fonts = Vec::new();
         if has_text(scene) {
             fonts.extend(bundled_fonts());
@@ -132,6 +173,14 @@ impl ProjectAssets {
             gradients,
             fonts,
         })
+    }
+
+    /// Loads the assets for a scene file, resolving its project root first.
+    ///
+    /// The root is the nearest ancestor holding the project configuration, or
+    /// the scene's own directory when there is none ([`project_root`]).
+    pub fn load_for_scene(scene_path: &Path, scene: &Scene) -> Result<Self, Diagnostics> {
+        Self::load(&project_root(scene_path), scene)
     }
 
     /// The style context the compiler resolves the scene against (D-013).
@@ -156,7 +205,12 @@ impl ProjectAssets {
     }
 
     /// Checks a scene's stroke, gradient and font references against the loaded
-    /// assets, so an unresolvable reference fails before anything is compiled.
+    /// assets.
+    ///
+    /// A referenced stroke profile, gradient or font that no asset provides is
+    /// an error naming the element, so an unresolvable reference fails before
+    /// anything is compiled and never degrades to a missing stroke or a dropped
+    /// run (FEAT-005, FEAT-024).
     pub fn check_references(&self, scene: &Scene) -> Diagnostics {
         let mut diagnostics = Diagnostics::new();
         for element in &scene.elements {
@@ -324,7 +378,12 @@ fn load_palette(root: &Path, id: &str) -> Result<Palette, Diagnostics> {
     )))
 }
 
-/// Reads the project's default style-recipe id, when its configuration names one.
+/// Reads the project's default style-recipe id, when its configuration names one
+/// (docs/Vectr/schema.md, "ProjectConfig").
+///
+/// A project configuration that cannot be read or parsed is reported rather than
+/// ignored, so a mistyped `defaultRecipeId` cannot silently leave the project
+/// rendering without the recipe it meant to apply (NFR-011).
 fn load_default_recipe_id(root: &Path) -> Result<Option<String>, Diagnostics> {
     let path = root.join(PROJECT_FILE);
     if !path.is_file() {
@@ -337,6 +396,9 @@ fn load_default_recipe_id(root: &Path) -> Result<Option<String>, Diagnostics> {
         ))
     })?;
     let value: serde_json::Value = serde_json::from_str(&source).map_err(|error| {
+        // serde_json appends " at line N column M" to its message; the location
+        // is dropped so the finding reads as a project diagnostic, like the
+        // style documents' parse findings (NFR-011).
         let raw = error.to_string();
         let message = raw.split(" at line ").next().unwrap_or(&raw);
         style_error(format!(
@@ -363,7 +425,7 @@ fn load_default_recipe_id(root: &Path) -> Result<Option<String>, Diagnostics> {
     }
 }
 
-/// Loads the style recipe the scene renders in, by id.
+/// Loads the style recipe the scene renders in, by id (FEAT-007–FEAT-010).
 fn load_recipe(root: &Path, id: &str) -> Result<StyleRecipe, Diagnostics> {
     safe_id(id)?;
     let dir = root.join(RECIPE_DIR);
@@ -445,8 +507,11 @@ fn load_gradients(root: &Path) -> Result<Vec<Gradient>, Diagnostics> {
 
 /// Loads the user-supplied font assets the project declares.
 ///
-/// The font file is read as data and never executed (NFR-022), and must resolve
-/// inside the project root so an asset document cannot point elsewhere.
+/// Each `Asset` document of kind `font` names its font file in `path`, resolved
+/// relative to the project root or, failing that, to the document itself. The
+/// font file is read as data and never executed (NFR-022), and must resolve
+/// inside the project root so an asset document cannot point elsewhere
+/// (NFR-024).
 fn load_font_assets(root: &Path) -> Result<Vec<FontAsset>, Diagnostics> {
     let dir = root.join(ASSET_DIR);
     let canonical_root = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
@@ -590,7 +655,9 @@ fn font_error(message: impl Into<String>) -> Diagnostic {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vectr_core::parse as parse_scene;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use vectr_core::{compile_with_style, parse as parse_scene};
 
     const TEXT_SCENE: &str = r##"{
       "id": "s",
@@ -624,12 +691,31 @@ mod tests {
       ]
     }"##;
 
-    fn tempdir(name: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("vectr-mcp-assets-{name}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).expect("creates the temp dir");
-        dir
+    /// A unique directory that removes itself when the test ends.
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(label: &str) -> Self {
+            static COUNTER: AtomicUsize = AtomicUsize::new(0);
+            let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "vectr-project-{}-{label}-{unique}",
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&path);
+            fs::create_dir_all(&path).expect("creates the temporary directory");
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
     }
 
     fn write(dir: &Path, name: &str, text: &str) -> PathBuf {
@@ -641,60 +727,82 @@ mod tests {
         path
     }
 
+    fn bundled(file: &str) -> Vec<u8> {
+        let path = format!("{}/../../assets/fonts/{file}", env!("CARGO_MANIFEST_DIR"));
+        fs::read(&path).unwrap_or_else(|error| panic!("could not read {path}: {error}"))
+    }
+
     #[test]
     fn a_text_scene_carries_the_bundled_default_and_fallback_fonts() {
-        let dir = tempdir("bundled");
+        let dir = TempDir::new("assets-bundled");
+        let scene_path = write(dir.path(), "scene.json", TEXT_SCENE);
         let scene = parse_scene(TEXT_SCENE).expect("a valid scene");
-        let assets = ProjectAssets::load(&dir, &scene).expect("loads");
-        let ids: Vec<&str> = assets.fonts.iter().map(|font| font.id.as_str()).collect();
+
+        let assets = ProjectAssets::load_for_scene(&scene_path, &scene).expect("loads");
+        let model = compile_with_style(&scene, &assets.style_context()).expect("compiles");
+        let ids: Vec<&str> = model.fonts.iter().map(|font| font.id.as_str()).collect();
         assert_eq!(ids, vec![DEFAULT_FONT_ID, FALLBACK_FONT_ID]);
+        assert_eq!(model.fonts[0].data, bundled("Inter.ttf"));
+        assert_eq!(model.fonts[1].data, bundled("NotoSans.ttf"));
     }
 
     #[test]
     fn a_scene_without_text_carries_no_font() {
-        let dir = tempdir("no-text");
+        let dir = TempDir::new("assets-no-text");
+        let scene_path = write(dir.path(), "scene.json", RECT_SCENE);
         let scene = parse_scene(RECT_SCENE).expect("a valid scene");
-        let assets = ProjectAssets::load(&dir, &scene).expect("loads");
-        assert!(assets.fonts.is_empty());
+
+        let assets = ProjectAssets::load_for_scene(&scene_path, &scene).expect("loads");
+        let model = compile_with_style(&scene, &assets.style_context()).expect("compiles");
+        assert!(model.fonts.is_empty(), "{:?}", model.fonts);
     }
 
     #[test]
     fn a_project_palette_resolves_a_fill_token() {
-        let dir = tempdir("palette");
+        let dir = TempDir::new("assets-palette");
+        write(dir.path(), "vectr.project.json", "{}");
         write(
-            &dir,
+            dir.path(),
             "palettes/brand.json",
             r##"{"id":"brand","projectId":"p","name":"Brand","tokens":[{"name":"accent","value":"#ff0000"}]}"##,
         );
-        let scene_text = RECT_SCENE.replace(
+        let scene_text = TEXT_SCENE.replace(
             r##""elements": ["##,
             r##""paletteId": "brand", "elements": ["##,
         );
+        let scene_path = write(dir.path(), "scenes/scene.json", &scene_text);
         let scene = parse_scene(&scene_text).expect("a valid scene");
-        let assets = ProjectAssets::load(&dir, &scene).expect("loads");
-        assert_eq!(assets.palette().map(|p| p.id.as_str()), Some("brand"));
+
+        let assets = ProjectAssets::load_for_scene(&scene_path, &scene).expect("loads");
+        assert_eq!(
+            assets.palette().map(|palette| palette.id.as_str()),
+            Some("brand")
+        );
     }
 
     #[test]
     fn a_missing_palette_is_a_project_asset_error() {
-        let dir = tempdir("missing-palette");
+        let dir = TempDir::new("assets-missing-palette");
+        write(dir.path(), "vectr.project.json", "{}");
         let scene_text = RECT_SCENE.replace(
             r##""elements": ["##,
             r##""paletteId": "brand", "elements": ["##,
         );
+        let scene_path = write(dir.path(), "scenes/scene.json", &scene_text);
         let scene = parse_scene(&scene_text).expect("a valid scene");
-        let diagnostics = ProjectAssets::load(&dir, &scene).expect_err("refused");
-        assert_eq!(
-            diagnostics.errors().next().map(|error| error.code.clone()),
-            Some(STYLE_ASSET)
-        );
+
+        let diagnostics = ProjectAssets::load_for_scene(&scene_path, &scene).expect_err("refused");
+        let error = diagnostics.errors().next().expect("an error");
+        assert_eq!(error.code, STYLE_ASSET);
+        assert!(error.message.contains("brand"), "{}", error.message);
     }
 
     #[test]
     fn a_palette_id_that_escapes_the_root_is_refused() {
-        let dir = tempdir("escape-id");
+        let dir = TempDir::new("assets-escape-id");
+        write(dir.path(), "vectr.project.json", "{}");
         write(
-            &dir,
+            dir.path(),
             "palettes/../secret.json",
             r##"{"id":"../secret","projectId":"p","name":"S","tokens":[]}"##,
         );
@@ -702,8 +810,10 @@ mod tests {
             r##""elements": ["##,
             r##""paletteId": "../secret", "elements": ["##,
         );
+        let scene_path = write(dir.path(), "scenes/scene.json", &scene_text);
         let scene = parse_scene(&scene_text).expect("a valid scene");
-        let diagnostics = ProjectAssets::load(&dir, &scene).expect_err("refused");
+
+        let diagnostics = ProjectAssets::load_for_scene(&scene_path, &scene).expect_err("refused");
         assert_eq!(
             diagnostics.errors().next().map(|error| error.code.clone()),
             Some(STYLE_ASSET)
@@ -712,13 +822,16 @@ mod tests {
 
     #[test]
     fn a_missing_stroke_profile_is_reported_against_the_element() {
-        let dir = tempdir("missing-stroke");
+        let dir = TempDir::new("assets-missing-stroke");
+        write(dir.path(), "vectr.project.json", "{}");
         let scene_text = RECT_SCENE.replace(
             r##""kind": "rect","##,
             r##""kind": "rect", "stroke": {"profileId": "outline", "paint": {"kind": "token", "ref": "accent"}},"##,
         );
+        let scene_path = write(dir.path(), "scenes/scene.json", &scene_text);
         let scene = parse_scene(&scene_text).expect("a valid scene");
-        let assets = ProjectAssets::load(&dir, &scene).expect("loads");
+
+        let assets = ProjectAssets::load_for_scene(&scene_path, &scene).expect("loads");
         let diagnostics = assets.check_references(&scene);
         let error = diagnostics.errors().next().expect("an error");
         assert_eq!(error.code, UNDEFINED_STROKE);
@@ -732,52 +845,316 @@ mod tests {
     }
 
     #[test]
+    fn a_project_stroke_profile_resolves() {
+        let dir = TempDir::new("assets-stroke");
+        write(dir.path(), "vectr.project.json", "{}");
+        write(
+            dir.path(),
+            "strokes/outline.json",
+            r#"{"id":"outline","projectId":"p","name":"Outline","width":3,"cap":"butt","join":"miter"}"#,
+        );
+        write(
+            dir.path(),
+            "palettes/brand.json",
+            r##"{"id":"brand","projectId":"p","name":"Brand","tokens":[{"name":"accent","value":"#0000ff"}]}"##,
+        );
+        let scene_text = RECT_SCENE.replace(
+            r##""kind": "rect","##,
+            r##""kind": "rect", "stroke": {"profileId": "outline", "paint": {"kind": "token", "ref": "accent"}},"##,
+        );
+        let scene_text = scene_text.replace(
+            r##""elements": ["##,
+            r##""paletteId": "brand", "elements": ["##,
+        );
+        let scene_path = write(dir.path(), "scenes/scene.json", &scene_text);
+        let scene = parse_scene(&scene_text).expect("a valid scene");
+
+        let assets = ProjectAssets::load_for_scene(&scene_path, &scene).expect("loads");
+        assert!(assets.check_references(&scene).is_empty());
+        let model = compile_with_style(&scene, &assets.style_context()).expect("compiles");
+        let stroke = model.nodes[0]
+            .paint
+            .stroke
+            .as_ref()
+            .expect("a resolved stroke");
+        assert_eq!(stroke.width, 3.0);
+        assert_eq!(
+            stroke.paint,
+            vectr_core::render::Paint::Color {
+                value: "#0000ff".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn a_user_font_asset_is_loaded_and_carried() {
+        let dir = TempDir::new("assets-user-font");
+        write(dir.path(), "vectr.project.json", "{}");
+        fs::create_dir_all(dir.path().join("assets")).expect("creates assets");
+        fs::write(dir.path().join("assets/Brand.ttf"), bundled("Inter.ttf"))
+            .expect("writes the font file");
+        write(
+            dir.path(),
+            "assets/brand.json",
+            r#"{"id":"brand","sceneId":"s","kind":"font","path":"assets/Brand.ttf","license":"OFL"}"#,
+        );
+        let scene_text = TEXT_SCENE.replace(
+            r##""kind": "text","##,
+            r##""kind": "text", "fontId": "brand","##,
+        );
+        let scene_path = write(dir.path(), "scenes/scene.json", &scene_text);
+        let scene = parse_scene(&scene_text).expect("a valid scene");
+
+        let assets = ProjectAssets::load_for_scene(&scene_path, &scene).expect("loads");
+        assert!(assets.check_references(&scene).is_empty());
+        let model = compile_with_style(&scene, &assets.style_context()).expect("compiles");
+        let brand = model
+            .fonts
+            .iter()
+            .find(|font| font.id == "brand")
+            .expect("the user font is carried");
+        assert_eq!(brand.data, bundled("Inter.ttf"));
+    }
+
+    #[test]
     fn a_missing_font_is_reported_against_the_element() {
-        let dir = tempdir("missing-font");
+        let dir = TempDir::new("assets-missing-font");
+        write(dir.path(), "vectr.project.json", "{}");
         let scene_text = TEXT_SCENE.replace(
             r##""kind": "text","##,
             r##""kind": "text", "fontId": "absent","##,
         );
+        let scene_path = write(dir.path(), "scenes/scene.json", &scene_text);
         let scene = parse_scene(&scene_text).expect("a valid scene");
-        let assets = ProjectAssets::load(&dir, &scene).expect("loads");
-        let error = assets
-            .check_references(&scene)
-            .errors()
-            .next()
-            .expect("an error")
-            .clone();
+
+        let assets = ProjectAssets::load_for_scene(&scene_path, &scene).expect("loads");
+        let diagnostics = assets.check_references(&scene);
+        let error = diagnostics.errors().next().expect("an error");
         assert_eq!(error.code, FONT);
-        assert!(error.message.contains("absent"));
+        assert!(error.message.contains("absent"), "{}", error.message);
     }
 
     #[test]
-    fn a_project_recipe_reaches_the_style_context() {
-        let dir = tempdir("recipe");
+    fn a_font_asset_whose_file_is_missing_is_a_dependency_error() {
+        let dir = TempDir::new("assets-font-file");
+        write(dir.path(), "vectr.project.json", "{}");
         write(
-            &dir,
-            "recipes/line.json",
-            r#"{"id":"line","projectId":"p","name":"line-art","parameters":{"strokeWeight":2}}"#,
+            dir.path(),
+            "assets/brand.json",
+            r#"{"id":"brand","sceneId":"s","kind":"font","path":"assets/Brand.ttf","license":"OFL"}"#,
         );
-        let scene_text = RECT_SCENE.replace(
-            r##""formatVersion": "0.2","##,
-            r##""formatVersion": "0.2", "recipeId": "line","##,
+        let scene_text = TEXT_SCENE.replace(
+            r##""kind": "text","##,
+            r##""kind": "text", "fontId": "brand","##,
         );
+        let scene_path = write(dir.path(), "scenes/scene.json", &scene_text);
         let scene = parse_scene(&scene_text).expect("a valid scene");
-        let assets = ProjectAssets::load(&dir, &scene).expect("loads");
-        assert_eq!(
-            assets
-                .style_context()
-                .recipe
-                .map(|recipe| recipe.id.as_str()),
-            Some("line")
+
+        let diagnostics = ProjectAssets::load_for_scene(&scene_path, &scene).expect_err("refused");
+        let error = diagnostics.errors().next().expect("an error");
+        assert_eq!(error.code, FONT);
+    }
+
+    #[test]
+    fn a_font_file_outside_the_project_root_is_refused() {
+        let dir = TempDir::new("assets-font-escape");
+        let outside = dir.path().join("outside");
+        fs::create_dir_all(&outside).expect("creates the outside directory");
+        fs::write(outside.join("Brand.ttf"), bundled("Inter.ttf")).expect("writes the font file");
+        let project = dir.path().join("project");
+        write(&project, "vectr.project.json", "{}");
+        write(
+            &project,
+            "assets/brand.json",
+            r#"{"id":"brand","sceneId":"s","kind":"font","path":"../outside/Brand.ttf","license":"OFL"}"#,
         );
+        let scene_text = TEXT_SCENE.replace(
+            r##""kind": "text","##,
+            r##""kind": "text", "fontId": "brand","##,
+        );
+        let scene_path = write(&project, "scenes/scene.json", &scene_text);
+        let scene = parse_scene(&scene_text).expect("a valid scene");
+
+        let diagnostics = ProjectAssets::load_for_scene(&scene_path, &scene).expect_err("refused");
+        let error = diagnostics.errors().next().expect("an error");
+        assert_eq!(error.code, FONT);
+        assert!(error.message.contains("outside"), "{}", error.message);
     }
 
     #[test]
     fn the_project_root_is_the_nearest_ancestor_with_the_configuration() {
-        let dir = tempdir("root");
-        write(&dir, "vectr.project.json", "{}");
-        let scene = write(&dir, "scenes/deep/scene.json", RECT_SCENE);
-        assert_eq!(project_root(&scene), dir);
+        let dir = TempDir::new("assets-root");
+        let project = dir.path().join("habit");
+        write(&project, "vectr.project.json", "{}");
+        let scene = write(&project, "scenes/deep/scene.json", RECT_SCENE);
+        assert_eq!(project_root(&scene), project);
+    }
+
+    #[test]
+    fn loading_is_deterministic() {
+        let dir = TempDir::new("assets-determinism");
+        write(dir.path(), "vectr.project.json", "{}");
+        write(
+            dir.path(),
+            "strokes/a.json",
+            r#"{"id":"a","projectId":"p","name":"A","width":1,"cap":"butt","join":"miter"}"#,
+        );
+        write(
+            dir.path(),
+            "strokes/b.json",
+            r#"{"id":"b","projectId":"p","name":"B","width":2,"cap":"round","join":"bevel"}"#,
+        );
+        let scene_path = write(dir.path(), "scene.json", RECT_SCENE);
+        let scene = parse_scene(RECT_SCENE).expect("a valid scene");
+
+        let first = ProjectAssets::load_for_scene(&scene_path, &scene).expect("loads");
+        let second = ProjectAssets::load_for_scene(&scene_path, &scene).expect("loads");
+        let first_ids: Vec<&str> = first.strokes.iter().map(|p| p.id.as_str()).collect();
+        let second_ids: Vec<&str> = second.strokes.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(first_ids, second_ids);
+        assert_eq!(first_ids, vec!["a", "b"]);
+    }
+
+    const LINE_RECIPE: &str =
+        r#"{"id":"line","projectId":"p","name":"line-art","parameters":{"strokeWeight":2.5}}"#;
+
+    const FLAT_RECIPE: &str = r#"{"id":"flat","projectId":"p","name":"flat","parameters":{}}"#;
+
+    const HAIRLINE: &str = r#"{"id":"hairline","projectId":"p","name":"Hairline","width":0,"cap":"butt","join":"miter"}"#;
+
+    const INK_PALETTE: &str = r##"{"id":"brand","projectId":"p","name":"Brand","tokens":[{"name":"accent","value":"#ff0000"}]}"##;
+
+    /// A rect with a stroke whose profile leaves the weight unset, so a line-art
+    /// recipe's `strokeWeight` is the one that reaches the render model.
+    fn scene_naming(recipe: &str) -> String {
+        RECT_SCENE
+            .replace(
+                r##""kind": "rect","##,
+                r##""kind": "rect", "stroke": {"profileId": "hairline", "paint": {"kind": "token", "ref": "accent"}},"##,
+            )
+            .replace(
+                r##""formatVersion": "0.2","##,
+                &format!(r##""formatVersion": "0.2", "recipeId": "{recipe}","##),
+            )
+    }
+
+    #[test]
+    fn a_scene_naming_a_recipe_loads_and_applies_it() {
+        let dir = TempDir::new("recipe-scene");
+        write(dir.path(), "vectr.project.json", "{}");
+        write(dir.path(), "recipes/line.json", LINE_RECIPE);
+        write(dir.path(), "strokes/hairline.json", HAIRLINE);
+        write(dir.path(), "palettes/brand.json", INK_PALETTE);
+        let scene_text = scene_naming("line");
+        let scene_text = scene_text.replace(
+            r##""elements": ["##,
+            r##""paletteId": "brand", "elements": ["##,
+        );
+        let scene_path = write(dir.path(), "scenes/scene.json", &scene_text);
+        let scene = parse_scene(&scene_text).expect("a valid scene");
+
+        let assets = ProjectAssets::load_for_scene(&scene_path, &scene).expect("loads");
+        let model = compile_with_style(&scene, &assets.style_context()).expect("compiles");
+        assert_eq!(model.meta.recipe.as_deref(), Some("line-art"));
+        let stroke = model.nodes[0]
+            .paint
+            .stroke
+            .as_ref()
+            .expect("the recipe's weight reaches the stroke");
+        assert_eq!(stroke.width, 2.5);
+    }
+
+    #[test]
+    fn the_project_default_recipe_applies_when_the_scene_names_none() {
+        let dir = TempDir::new("recipe-default");
+        write(
+            dir.path(),
+            "vectr.project.json",
+            r#"{"defaultRecipeId":"line"}"#,
+        );
+        write(dir.path(), "recipes/line.json", LINE_RECIPE);
+        let scene_path = write(dir.path(), "scenes/scene.json", RECT_SCENE);
+        let scene = parse_scene(RECT_SCENE).expect("a valid scene");
+
+        let assets = ProjectAssets::load_for_scene(&scene_path, &scene).expect("loads");
+        let model = compile_with_style(&scene, &assets.style_context()).expect("compiles");
+        assert_eq!(model.meta.recipe.as_deref(), Some("line-art"));
+    }
+
+    #[test]
+    fn a_scene_recipe_overrides_the_project_default() {
+        let dir = TempDir::new("recipe-override");
+        write(
+            dir.path(),
+            "vectr.project.json",
+            r#"{"defaultRecipeId":"flat"}"#,
+        );
+        write(dir.path(), "recipes/flat.json", FLAT_RECIPE);
+        write(dir.path(), "recipes/line.json", LINE_RECIPE);
+        let scene_text = scene_naming("line");
+        let scene_path = write(dir.path(), "scenes/scene.json", &scene_text);
+        let scene = parse_scene(&scene_text).expect("a valid scene");
+
+        let assets = ProjectAssets::load_for_scene(&scene_path, &scene).expect("loads");
+        let model = compile_with_style(&scene, &assets.style_context()).expect("compiles");
+        assert_eq!(model.meta.recipe.as_deref(), Some("line-art"));
+    }
+
+    #[test]
+    fn a_scene_without_a_recipe_loads_no_recipe() {
+        let dir = TempDir::new("recipe-none");
+        let scene_path = write(dir.path(), "scene.json", RECT_SCENE);
+        let scene = parse_scene(RECT_SCENE).expect("a valid scene");
+
+        let assets = ProjectAssets::load_for_scene(&scene_path, &scene).expect("loads");
+        assert!(assets.style_context().recipe.is_none());
+    }
+
+    #[test]
+    fn a_missing_recipe_is_a_project_asset_error() {
+        let dir = TempDir::new("recipe-missing");
+        write(dir.path(), "vectr.project.json", "{}");
+        let scene_text = scene_naming("absent");
+        let scene_path = write(dir.path(), "scenes/scene.json", &scene_text);
+        let scene = parse_scene(&scene_text).expect("a valid scene");
+
+        let diagnostics = ProjectAssets::load_for_scene(&scene_path, &scene).expect_err("refused");
+        let error = diagnostics.errors().next().expect("an error");
+        assert_eq!(error.code, STYLE_ASSET);
+        assert!(error.message.contains("absent"), "{}", error.message);
+    }
+
+    #[test]
+    fn an_invalid_recipe_document_is_refused() {
+        let dir = TempDir::new("recipe-invalid");
+        write(dir.path(), "vectr.project.json", "{}");
+        write(
+            dir.path(),
+            "recipes/bad.json",
+            r#"{"id":"bad","projectId":"p","name":"geometric","parameters":{"gridSize":-1}}"#,
+        );
+        let scene_text = scene_naming("bad");
+        let scene_path = write(dir.path(), "scenes/scene.json", &scene_text);
+        let scene = parse_scene(&scene_text).expect("a valid scene");
+
+        let diagnostics = ProjectAssets::load_for_scene(&scene_path, &scene).expect_err("refused");
+        assert!(
+            diagnostics
+                .errors()
+                .any(|error| error.code == DiagnosticCode::SCHEMA),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn a_malformed_project_configuration_is_reported() {
+        let dir = TempDir::new("recipe-bad-config");
+        write(dir.path(), "vectr.project.json", "{ not json");
+        let scene_path = write(dir.path(), "scene.json", RECT_SCENE);
+        let scene = parse_scene(RECT_SCENE).expect("a valid scene");
+
+        let diagnostics = ProjectAssets::load_for_scene(&scene_path, &scene).expect_err("refused");
+        let error = diagnostics.errors().next().expect("an error");
+        assert_eq!(error.code, STYLE_ASSET);
     }
 }

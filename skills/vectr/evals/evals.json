@@ -36,6 +36,12 @@
       "prompt": "Author a scene with the Vectr skill, but the installed vectr is version 0.2.0 and the skill targets 0.1.0.",
       "expected_output": "Before authoring, the skill compares the installed tool version (vectr --version or MCP serverInfo.version) with the skill version, reports the mismatch naming both versions, and does not silently author against the wrong build.",
       "files": []
+    },
+    {
+      "id": 7,
+      "prompt": "Build a rich, detailed illustration: a mountain lake at dawn with snow-capped peaks, a pine forest, reeds at the water's edge, a trail of stepping stones, and a low sun.",
+      "expected_output": "A compositionally complex Vectr scene: nested groups plus composition elements (repeat for the clouds and forest, boolean for the lake and snow cap, alongPath for the reeds and trail, offset for the sun halo, projection for the boardwalk) and at least one constraint, with every colour drawn from palette tokens. The skill validates, compiles, renders, and refines it, composing the full illustration rather than reducing it to a simple mark.",
+      "files": []
     }
   ]
 }
