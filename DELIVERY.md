@@ -65,17 +65,7 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | Phase | Closed | Notes |
 |---|---|---|
 | Phase 1 — First Graphic | 2026-10-08 | FEAT-001, FEAT-002, FEAT-003, FEAT-004, FEAT-005, FEAT-011, FEAT-012, FEAT-013, FEAT-016, FEAT-024 shipped; C-001–C-004 implemented; A-001–A-004 sourced. |
-
-### Active phase: Phase 2 — Style Core
-| Task | Feature | Owner | Status | Contract |
-|---|---|---|---|---|
-| T-032 | FEAT-027 | backend-engineer | Done | C-001, C-002, C-003 |
-| T-028 | FEAT-007 | backend-engineer | Done | C-002, C-003 |
-| T-029 | FEAT-008 | backend-engineer | Done | C-002, C-003 |
-| T-030 | FEAT-009 | backend-engineer | Done | C-002, C-003 |
-| T-031 | FEAT-010 | backend-engineer | Done | C-002, C-003 |
-| T-034 | FEAT-007, FEAT-008, FEAT-009, FEAT-010 | backend-engineer | Done | C-002, C-004 |
-| T-036 | FEAT-009, FEAT-010 | backend-engineer | Done | C-002, C-003 |
+| Phase 2 — Style Core | 2026-10-08 | FEAT-027, FEAT-007, FEAT-008, FEAT-009, FEAT-010 shipped; the element paint model unified with linear/radial gradients; recipe selection wired through the CLI; C-001–C-003 re-implemented at revision 5. |
 
 ## Decisions log
 | # | Decision | Rationale | By |
@@ -125,4 +115,4 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 - cargo fmt --all -- --check
 - cargo clippy --workspace --all-targets -- -D warnings
 - cargo run -p vectr-cli -- validate fixtures/scene.json
-- cargo run -p vectr-cli -- export fixtures/scene.json --format svg --out dist/
+- cargo run -p vectr-cli -- export fixtures/scene.json --format svg --out dist/scene.svg
