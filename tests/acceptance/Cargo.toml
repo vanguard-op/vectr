@@ -1,0 +1,25 @@
+# Vectr phase-gate acceptance suite (integration and acceptance layer).
+#
+# This crate is deliberately outside the product workspace (`members =
+# ["crates/*"]`): the acceptance tests are QA-owned (`tests/**`) and exercise
+# the shipped library and the `vectr` binary as a whole rather than one unit.
+# It is its own workspace so it does not need a root-manifest change; run it
+# with `cargo test --manifest-path tests/acceptance/Cargo.toml`.
+[workspace]
+
+[package]
+name = "vectr-acceptance"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+# The engine under test, exercised through its public API (C-002).
+vectr-core = { path = "../../crates/vectr-core" }
+
+[dev-dependencies]
+# Reading and building scene documents in the tests (C-001).
+serde_json = "1.0"
+# Decoding exported PNGs to compare raster output against the render model
+# (FEAT-013).
+tiny-skia = "0.12"

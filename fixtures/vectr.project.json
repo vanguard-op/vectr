@@ -1,0 +1,12 @@
+{
+  "id": "project",
+  "name": "Vectr fixtures",
+  "formatVersion": "0.1",
+  "output": {
+    "format": "svg",
+    "width": 512,
+    "height": 512,
+    "density": 1,
+    "background": "#ffffff"
+  }
+}
