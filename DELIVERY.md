@@ -68,6 +68,12 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | Phase 2 — Style Core | 2026-10-08 | FEAT-027, FEAT-007, FEAT-008, FEAT-009, FEAT-010 shipped; the element paint model unified with linear/radial gradients; recipe selection wired through the CLI; C-001–C-003 re-implemented at revision 5. |
 | Phase 3 — Any Model Can Author | 2026-10-08 | FEAT-017, FEAT-018, FEAT-019, FEAT-020 shipped; validated alpha colour model (FEAT-005) and the shading-request warning (FEAT-007); scope extended to very complex illustrations (FEAT-003, FEAT-011) with complex-scene acceptance coverage; CLI and MCP share one project loader and one authoring guide; C-001–C-005 implemented. |
 
+### Active phase: Phase 3 — Any Model Can Author
+| Task | Feature | Owner | Status | Contract |
+|---|---|---|---|---|
+| T-054 | FEAT-016 | backend-engineer | In Progress | C-004 |
+| T-055 | FEAT-016 | qa-engineer | Backlog | C-004 |
+
 ## Decisions log
 | # | Decision | Rationale | By |
 |---|---|---|---|
@@ -102,6 +108,7 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | D-029 | A colour value is a validated capability: any format SVG supports, optionally carrying alpha, so fill and stroke carry independent transparency; a value that is not such a colour is a located error and no output is produced. | The user decided alpha is worth having as a supported capability; the docs now define the colour model (FEAT-005, FEAT-018) where values were previously an unchecked pass-through. | user |
 | D-030 | Single-layer shading is a real feature (FEAT-028) scheduled in Phase 6; until it ships, a recipe that requests shading it does not apply reports a warning rather than rendering a silent flat result. | The user chose to build the look rather than retract it; the flat recipe's promise is reconciled to point at the new feature. | user |
 | D-031 | The MCP server serves over stdio by default, with an opt-in loopback HTTP listener behind an explicit bind flag, rather than binding a port by default. | MCP's canonical local transport is a subprocess over stdio, which is strictly more local than a listening socket and matches NFR-024's local-only intent. Clarifies C-005. | lead |
+| D-032 | A project's scene directory holds one document per scene named for the scene's identifier (`scenes/<id>.json`); a project names its default scene by that identifier, and the project root holds no scene document. | FEAT-016 addresses a scene by its identifier; the docs name the scene directory but not its file naming, so the identifier is the file name. Extends D-009. | lead |
 
 ## Definition of Done
 - Every acceptance criterion in the task's FEAT file is met, including its edge cases and failure states.
@@ -118,5 +125,5 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 - cargo test --manifest-path tests/acceptance/Cargo.toml --locked
 - cargo fmt --all -- --check
 - cargo clippy --workspace --all-targets -- -D warnings
-- cargo run -p vectr-cli -- validate fixtures/scene.json
-- cargo run -p vectr-cli -- export fixtures/scene.json --format svg --out dist/scene.svg
+- cargo run -p vectr-cli -- validate <scene-id>
+- cargo run -p vectr-cli -- export <scene-id> --format svg --out dist/scene.svg
