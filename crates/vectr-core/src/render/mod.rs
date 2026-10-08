@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::composition::Affine;
 use crate::primitives::Shape;
-use crate::scene::{Diagnostic, DiagnosticCode, Diagnostics, Location};
+use crate::scene::{Diagnostic, DiagnosticCode, Diagnostics, Location, TextAlign};
 use crate::style::{StrokeCap, StrokeJoin};
 
 /// The compiled result of a scene, ready for any exporter (C-003).
@@ -40,6 +40,11 @@ pub struct RenderModel {
     /// Findings recorded while compiling: warnings only on success.
     #[serde(default)]
     pub diagnostics: Diagnostics,
+    /// The resolved fonts the model's text nodes name, each carrying its file
+    /// data so an exporter can finalize glyph geometry with no external state
+    /// (C-003, FEAT-011, FEAT-024).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fonts: Vec<ResolvedFont>,
 }
 
 impl RenderModel {
@@ -155,9 +160,18 @@ pub struct ResolvedNode {
     /// element. Reading a model without the field yields an empty chain.
     #[serde(default)]
     pub groups: Vec<NodeGroup>,
-    /// The node's concrete geometry, in its own local coordinates.
-    pub geometry: Shape,
-    /// The resolved world transform applied to the geometry.
+    /// The node's concrete geometry, in its own local coordinates. Absent for a
+    /// text node, whose glyph geometry the exporter finalizes from [`text`]
+    /// (C-003).
+    ///
+    /// [`text`]: ResolvedNode::text
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geometry: Option<Shape>,
+    /// The text run a text node carries; absent for every other node. A text
+    /// node carries `text` and no `geometry` (C-003).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<TextRun>,
+    /// The resolved world transform applied to the geometry or text.
     pub transform: Affine,
     /// The node's fill and stroke.
     pub paint: Paint,
@@ -192,6 +206,136 @@ pub struct NodeStroke {
     pub cap: StrokeCap,
     /// Stroke line join.
     pub join: StrokeJoin,
+}
+
+/// A text node's run: its string and resolved layout, with no glyph geometry
+/// (C-003, FEAT-011).
+///
+/// The compiler resolves the element's declared font and layout into these
+/// concrete values and bakes the anchor into the node's transform, so an
+/// exporter only has to turn the string into glyph outlines with the font named
+/// by `font_id` (FEAT-024).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TextRun {
+    /// The string the text element renders.
+    pub value: String,
+    /// The resolved font's identifier, naming an entry in [`RenderModel::fonts`].
+    pub font_id: String,
+    /// Em size in scene units.
+    pub font_size: f64,
+    /// Horizontal alignment of the run's lines about the anchor.
+    pub align: TextAlign,
+    /// Baseline-to-baseline distance in scene units.
+    pub line_height: f64,
+    /// Additional advance between glyphs, in scene units.
+    pub letter_spacing: f64,
+    /// The wrap width in scene units, when the element declares one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<f64>,
+}
+
+/// A font the model's text nodes render with (C-003).
+///
+/// The font file travels with the model so an exporter finalizes glyph geometry
+/// with no external state; in JSON `data` is base64-encoded, keeping the render
+/// model plain text (D-014).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvedFont {
+    /// The font's stable identifier.
+    pub id: String,
+    /// The font's human-readable name.
+    pub name: String,
+    /// The font file's bytes, base64-encoded in JSON.
+    #[serde(with = "font_data")]
+    pub data: Vec<u8>,
+}
+
+impl ResolvedFont {
+    /// The font's file size in bytes.
+    pub fn len(&self) -> usize {
+        self.data.len()
+    }
+
+    /// Whether the font file is empty.
+    pub fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
+}
+
+/// Serde adapter that carries font bytes as base64 text (C-003).
+mod font_data {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&super::base64::encode(bytes))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        super::base64::decode(&text).map_err(serde::de::Error::custom)
+    }
+}
+
+/// A small, dependency-free base64 codec (standard alphabet, padded), used only
+/// to carry font bytes through the render model's JSON (C-003).
+mod base64 {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+    pub fn encode(bytes: &[u8]) -> String {
+        let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+        for chunk in bytes.chunks(3) {
+            let b0 = u32::from(chunk[0]);
+            let b1 = chunk.get(1).copied().map(u32::from).unwrap_or(0);
+            let b2 = chunk.get(2).copied().map(u32::from).unwrap_or(0);
+            let triple = (b0 << 16) | (b1 << 8) | b2;
+            out.push(ALPHABET[((triple >> 18) & 0x3f) as usize] as char);
+            out.push(ALPHABET[((triple >> 12) & 0x3f) as usize] as char);
+            out.push(if chunk.len() > 1 {
+                ALPHABET[((triple >> 6) & 0x3f) as usize] as char
+            } else {
+                '='
+            });
+            out.push(if chunk.len() > 2 {
+                ALPHABET[(triple & 0x3f) as usize] as char
+            } else {
+                '='
+            });
+        }
+        out
+    }
+
+    pub fn decode(text: &str) -> Result<Vec<u8>, String> {
+        let mut out = Vec::with_capacity(text.len() / 4 * 3);
+        let mut buffer = 0u32;
+        let mut bits = 0u32;
+        for (index, byte) in text.bytes().enumerate() {
+            if byte == b'=' {
+                break;
+            }
+            let value = value_of(byte)
+                .ok_or_else(|| format!("invalid base64 character at offset {index}"))?;
+            buffer = (buffer << 6) | u32::from(value);
+            bits += 6;
+            if bits >= 8 {
+                bits -= 8;
+                out.push(((buffer >> bits) & 0xff) as u8);
+            }
+        }
+        Ok(out)
+    }
+
+    fn value_of(byte: u8) -> Option<u8> {
+        match byte {
+            b'A'..=b'Z' => Some(byte - b'A'),
+            b'a'..=b'z' => Some(byte - b'a' + 26),
+            b'0'..=b'9' => Some(byte - b'0' + 52),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -332,5 +476,63 @@ mod tests {
             diagnostics.errors().next().map(|d| d.code.clone()),
             Some(DiagnosticCode::SCHEMA)
         );
+    }
+
+    #[test]
+    fn font_bytes_serialize_as_base64_and_round_trip() {
+        let font = ResolvedFont {
+            id: "body".to_string(),
+            name: "Body".to_string(),
+            data: vec![0, 1, 2, 253, 254, 255],
+        };
+        let text = serde_json::to_string(&font).unwrap();
+        assert!(text.contains("\"data\":\"AAEC/f7/\""), "{text}");
+        let reparsed: ResolvedFont = serde_json::from_str(&text).unwrap();
+        assert_eq!(font, reparsed);
+    }
+
+    #[test]
+    fn a_text_node_carries_text_and_no_geometry_in_json() {
+        let model = RenderModel {
+            canvas: RenderCanvas {
+                width: 100.0,
+                height: 50.0,
+                background: "#ffffff".to_string(),
+            },
+            nodes: vec![ResolvedNode {
+                id: "t1".to_string(),
+                name: None,
+                order: 0,
+                kind: "text".to_string(),
+                groups: Vec::new(),
+                geometry: None,
+                text: Some(TextRun {
+                    value: "Hi".to_string(),
+                    font_id: "body".to_string(),
+                    font_size: 12.0,
+                    align: TextAlign::Start,
+                    line_height: 12.0,
+                    letter_spacing: 0.0,
+                    width: None,
+                }),
+                transform: crate::composition::Affine::IDENTITY,
+                paint: Paint::default(),
+                opacity: 1.0,
+                visible: true,
+            }],
+            meta: RenderMeta::default(),
+            diagnostics: Diagnostics::new(),
+            fonts: vec![ResolvedFont {
+                id: "body".to_string(),
+                name: "Body".to_string(),
+                data: vec![1, 2, 3],
+            }],
+        };
+
+        let text = model.to_json_string().expect("serializable");
+        assert!(text.contains("\"text\":{\"value\":\"Hi\""), "{text}");
+        assert!(!text.contains("\"geometry\""), "{text}");
+        assert!(text.contains("\"fontId\":\"body\""), "{text}");
+        assert_eq!(parse(&text).expect("deserializable"), model);
     }
 }

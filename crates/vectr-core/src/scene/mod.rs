@@ -13,7 +13,7 @@ mod version;
 pub use diagnostic::{Diagnostic, DiagnosticCode, Diagnostics, Location, Severity};
 pub use model::{
     Axis, BooleanOperation, Canvas, Constraint, ConstraintKind, Element, ElementKind, Geometry,
-    ProjectionAxis, Scene, Transform,
+    ProjectionAxis, Scene, TextAlign, Transform,
 };
 pub use version::{
     is_supported, is_supported_version, parse_version, supported_range, CURRENT_FORMAT_VERSION,
@@ -205,6 +205,11 @@ fn validate_non_negative_number(
 
 fn validate_elements(diagnostics: &mut Diagnostics, scene: &Scene) {
     let mut seen: HashSet<&str> = HashSet::with_capacity(scene.elements.len());
+    let mut index_of: std::collections::HashMap<&str, usize> =
+        std::collections::HashMap::with_capacity(scene.elements.len());
+    for (index, element) in scene.elements.iter().enumerate() {
+        index_of.insert(element.id.as_str(), index);
+    }
 
     for (index, element) in scene.elements.iter().enumerate() {
         let base = format!("/elements/{index}");
@@ -239,7 +244,107 @@ fn validate_elements(diagnostics: &mut Diagnostics, scene: &Scene) {
         validate_geometry(diagnostics, &element.geometry, &base);
         validate_transform(diagnostics, &element.transform, &base);
         validate_stroke_pair(diagnostics, element, &base);
+        validate_text(diagnostics, element, &base);
+        validate_text_operand(diagnostics, scene, element, &base, &index_of);
     }
+}
+
+/// A text element needs a string and a positive size, and a font reference
+/// belongs only to a text element (FEAT-002, FEAT-024).
+fn validate_text(diagnostics: &mut Diagnostics, element: &Element, base: &str) {
+    if element.kind == ElementKind::Text {
+        if element.geometry.text.as_deref().is_none_or(str::is_empty) {
+            diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::SCHEMA,
+                    format!("text element `{}` requires geometry.text", element.id),
+                )
+                .with_location(Location::element_at(
+                    element.id.clone(),
+                    format!("{base}/geometry/text"),
+                )),
+            );
+        }
+        match element.geometry.font_size {
+            Some(size) if size.is_finite() && size > 0.0 => {}
+            _ => diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::SCHEMA,
+                    format!(
+                        "text element `{}` requires geometry.fontSize greater than zero",
+                        element.id
+                    ),
+                )
+                .with_location(Location::element_at(
+                    element.id.clone(),
+                    format!("{base}/geometry/fontSize"),
+                )),
+            ),
+        }
+    } else if element.font_id.is_some() {
+        diagnostics.push(
+            Diagnostic::error(
+                DiagnosticCode::SCHEMA,
+                format!(
+                    "element `{}` declares fontId but is not a text element",
+                    element.id
+                ),
+            )
+            .with_location(Location::element_at(
+                element.id.clone(),
+                format!("{base}/fontId"),
+            )),
+        );
+    }
+}
+
+/// A text element cannot be an operand of a boolean, offset, projection,
+/// repeat, or alongPath element (FEAT-002, FEAT-011).
+fn validate_text_operand(
+    diagnostics: &mut Diagnostics,
+    scene: &Scene,
+    element: &Element,
+    base: &str,
+    index_of: &std::collections::HashMap<&str, usize>,
+) {
+    if element.kind != ElementKind::Text {
+        return;
+    }
+    let Some(parent_id) = element.parent_id.as_deref() else {
+        return;
+    };
+    let Some(&parent_index) = index_of.get(parent_id) else {
+        return;
+    };
+    let parent_kind = scene.elements[parent_index].kind;
+    if is_text_operand_kind(parent_kind) {
+        diagnostics.push(
+            Diagnostic::error(
+                DiagnosticCode::SCHEMA,
+                format!(
+                    "text element `{}` is not a valid operand of a {} element",
+                    element.id,
+                    parent_kind.as_str()
+                ),
+            )
+            .with_location(Location::element_at(
+                element.id.clone(),
+                format!("{base}/parentId"),
+            )),
+        );
+    }
+}
+
+/// The composition kinds a text element cannot be lowered into.
+fn is_text_operand_kind(kind: ElementKind) -> bool {
+    matches!(
+        kind,
+        ElementKind::Boolean
+            | ElementKind::Offset
+            | ElementKind::Projection
+            | ElementKind::Repeat
+            | ElementKind::AlongPath
+    )
 }
 
 /// A stroke needs both a profile and a colour token (C-001).
@@ -319,6 +424,24 @@ fn validate_geometry(diagnostics: &mut Diagnostics, geometry: &Geometry, base: &
         geometry.distance,
         &format!("{base}/geometry/distance"),
         "distance",
+    );
+    validate_non_negative_number(
+        diagnostics,
+        geometry.font_size,
+        &format!("{base}/geometry/fontSize"),
+        "fontSize",
+    );
+    validate_non_negative_number(
+        diagnostics,
+        geometry.line_height,
+        &format!("{base}/geometry/lineHeight"),
+        "lineHeight",
+    );
+    validate_optional_number(
+        diagnostics,
+        geometry.letter_spacing,
+        &format!("{base}/geometry/letterSpacing"),
+        "letterSpacing",
     );
 
     if let Some(points) = &geometry.points {
@@ -823,5 +946,110 @@ mod tests {
     fn valid_scene_produces_no_findings() {
         let scene = parse(&full_scene()).unwrap();
         assert!(validate(&scene).is_empty());
+    }
+
+    fn text_scene(geometry: &str, extra: &str) -> String {
+        format!(
+            r#"{{"id":"s","projectId":"p","name":"Scene","formatVersion":"{SHIPPED_VERSION}","canvas":{{"width":200,"height":100,"background":"transparent"}},"elements":[{{"id":"t1","sceneId":"s","order":0,"kind":"text","geometry":{geometry},"transform":{{"translateX":0,"translateY":0,"rotate":0,"scaleX":1,"scaleY":1}}{extra},"opacity":1,"visible":true}}]}}"#
+        )
+    }
+
+    #[test]
+    fn parses_a_text_element_with_its_run_fields() {
+        let source = text_scene(
+            r#"{"x":10,"y":20,"text":"Hello","fontSize":24,"align":"center","lineHeight":30,"letterSpacing":1.5,"width":100}"#,
+            r#","fontId":"font-1""#,
+        );
+        let scene = parse(&source).expect("a valid text scene");
+        let element = scene.element("t1").expect("the text element");
+        assert_eq!(element.kind, ElementKind::Text);
+        assert_eq!(element.geometry.text.as_deref(), Some("Hello"));
+        assert_eq!(element.geometry.font_size, Some(24.0));
+        assert_eq!(element.geometry.align, Some(TextAlign::Center));
+        assert_eq!(element.geometry.line_height, Some(30.0));
+        assert_eq!(element.geometry.letter_spacing, Some(1.5));
+        assert_eq!(element.geometry.width, Some(100.0));
+        assert_eq!(element.font_id.as_deref(), Some("font-1"));
+
+        let text = scene.to_json_string().expect("serializable");
+        assert!(text.contains(r#""kind":"text""#), "{text}");
+        assert!(text.contains(r#""fontId":"font-1""#), "{text}");
+        assert_eq!(parse(&text).expect("round-trips"), scene);
+    }
+
+    #[test]
+    fn a_text_element_without_a_string_or_size_is_refused_naming_the_element() {
+        let no_text = text_scene(r#"{"fontSize":24}"#, "");
+        let diagnostics = parse_error(&no_text);
+        let error = diagnostics.errors().next().expect("an error");
+        assert!(error.message.contains("t1"), "{}", error.message);
+        assert_eq!(
+            error
+                .location
+                .as_ref()
+                .and_then(|location| location.json_path.as_deref()),
+            Some("/elements/0/geometry/text")
+        );
+
+        let no_size = text_scene(r#"{"text":"Hello"}"#, "");
+        let diagnostics = parse_error(&no_size);
+        let error = diagnostics.errors().next().expect("an error");
+        assert!(error.message.contains("t1"), "{}", error.message);
+        assert_eq!(
+            error
+                .location
+                .as_ref()
+                .and_then(|location| location.json_path.as_deref()),
+            Some("/elements/0/geometry/fontSize")
+        );
+    }
+
+    #[test]
+    fn a_font_reference_on_a_non_text_element_is_refused_naming_the_element() {
+        let source = format!(
+            r#"{{"id":"s","projectId":"p","name":"Scene","formatVersion":"{SHIPPED_VERSION}","canvas":{{"width":1,"height":1,"background":"transparent"}},"elements":[{{"id":"r1","sceneId":"s","order":0,"kind":"rect","geometry":{{"width":10,"height":10}},"transform":{{"translateX":0,"translateY":0,"rotate":0,"scaleX":1,"scaleY":1}},"fontId":"font-1","opacity":1,"visible":true}}]}}"#
+        );
+        let diagnostics = parse_error(&source);
+        let error = diagnostics.errors().next().expect("an error");
+        assert!(error.message.contains("r1"), "{}", error.message);
+        assert_eq!(
+            error
+                .location
+                .as_ref()
+                .and_then(|location| location.json_path.as_deref()),
+            Some("/elements/0/fontId")
+        );
+    }
+
+    #[test]
+    fn a_text_element_as_a_composition_operand_is_refused() {
+        let source = format!(
+            r#"{{"id":"s","projectId":"p","name":"Scene","formatVersion":"{SHIPPED_VERSION}","canvas":{{"width":1,"height":1,"background":"transparent"}},"elements":[{{"id":"b1","sceneId":"s","order":0,"kind":"boolean","geometry":{{"operation":"union"}},"transform":{{"translateX":0,"translateY":0,"rotate":0,"scaleX":1,"scaleY":1}},"opacity":1,"visible":true}},{{"id":"t1","sceneId":"s","order":0,"kind":"text","parentId":"b1","geometry":{{"text":"Hi","fontSize":12}},"transform":{{"translateX":0,"translateY":0,"rotate":0,"scaleX":1,"scaleY":1}},"opacity":1,"visible":true}}]}}"#
+        );
+        let diagnostics = parse_error(&source);
+        let error = diagnostics.errors().next().expect("an error");
+        assert!(
+            error.message.contains("text element `t1`"),
+            "{}",
+            error.message
+        );
+        assert!(error.message.contains("boolean"), "{}", error.message);
+    }
+
+    #[test]
+    fn text_alignment_names_match_the_language() {
+        for (align, name) in [
+            (TextAlign::Start, "start"),
+            (TextAlign::Center, "center"),
+            (TextAlign::End, "end"),
+        ] {
+            assert_eq!(
+                serde_json::to_string(&align).unwrap(),
+                format!("\"{name}\"")
+            );
+            assert_eq!(TextAlign::from_name(name), Some(align));
+            assert_eq!(align.as_str(), name);
+        }
+        assert_eq!(TextAlign::from_name("middle"), None);
     }
 }

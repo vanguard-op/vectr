@@ -48,11 +48,12 @@ use crate::primitives::{
     self, parse as parse_path, Line, Path as PathGeometry, Segment, Shape, SubPath,
 };
 use crate::render::{
-    NodeGroup, NodeStroke, Paint, RenderCanvas, RenderMeta, RenderModel, ResolvedNode,
+    NodeGroup, NodeStroke, Paint, RenderCanvas, RenderMeta, RenderModel, ResolvedFont,
+    ResolvedNode, TextRun,
 };
 use crate::scene::{
     validate, BooleanOperation, Diagnostic, DiagnosticCode, Diagnostics, ElementKind, Location,
-    Scene,
+    Scene, TextAlign,
 };
 use crate::style::{Palette, StrokeProfile, UNDEFINED_STROKE, UNDEFINED_TOKEN};
 
@@ -67,6 +68,22 @@ pub const UNSUPPORTED: DiagnosticCode = DiagnosticCode::new("E_UNSUPPORTED");
 
 /// A stroke profile reference could not be resolved for lack of style assets.
 pub const UNRESOLVED_STROKE: DiagnosticCode = DiagnosticCode::new("W_UNRESOLVED_STROKE");
+
+/// A font reference could not be resolved: the font is missing from the style
+/// context, or a text element names none and no default is available
+/// (FEAT-024).
+pub const FONT: DiagnosticCode = DiagnosticCode::new("E_FONT");
+
+/// A font reference could not be resolved for lack of style assets.
+pub const UNRESOLVED_FONT: DiagnosticCode = DiagnosticCode::new("W_UNRESOLVED_FONT");
+
+/// The font asset id a text element resolves to when it names none: the
+/// caller's open-licensed default font (FEAT-024).
+///
+/// A text element's `fontId` is `null` to select the default; the compiler
+/// resolves that to the font asset the caller supplies under this id, so a
+/// caller with style assets always provides its default font explicitly.
+pub const DEFAULT_FONT_ID: &str = "default";
 
 /// A scene above the documented large-scene element count.
 pub const LARGE_SCENE: DiagnosticCode = DiagnosticCode::new("W_LARGE_SCENE");
@@ -89,6 +106,48 @@ pub struct StyleContext<'a> {
     pub palette: Option<&'a Palette>,
     /// The stroke profiles the scene's elements resolve against.
     pub strokes: &'a [StrokeProfile],
+    /// The font assets the scene's text elements resolve against, each an id, a
+    /// name and its bytes. The default open-licensed font is supplied under
+    /// [`DEFAULT_FONT_ID`], since a text element that names no font resolves to
+    /// it (FEAT-024).
+    pub fonts: &'a [FontAsset],
+}
+
+/// A font asset a caller supplies so the compiler can resolve a text element's
+/// `fontId` without filesystem access (C-002, FEAT-024).
+///
+/// The caller loads the font file (the bundled open-licensed default or a font
+/// the user supplied) and passes its bytes here; the compiler carries the
+/// resolved font into the render model so an exporter finalizes glyph geometry
+/// with no external state.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FontAsset {
+    /// The font's stable identifier, matched against a text element's `fontId`.
+    pub id: String,
+    /// The font's human-readable name.
+    pub name: String,
+    /// The font file's bytes.
+    pub data: Vec<u8>,
+}
+
+impl FontAsset {
+    /// Builds a font asset from its parts.
+    pub fn new(id: impl Into<String>, name: impl Into<String>, data: Vec<u8>) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            data,
+        }
+    }
+
+    /// The font as the render model carries it.
+    pub fn resolved(&self) -> ResolvedFont {
+        ResolvedFont {
+            id: self.id.clone(),
+            name: self.name.clone(),
+            data: self.data.clone(),
+        }
+    }
 }
 
 /// Compiles a validated scene into its render model (C-002).
@@ -150,6 +209,8 @@ pub fn compile_with_style<'s>(
         diagnostics,
         nodes: Vec::new(),
         used_ids: HashSet::new(),
+        fonts: Vec::new(),
+        font_ids: HashSet::new(),
         order: 0,
         limit_hit: false,
         parent: Vec::new(),
@@ -193,6 +254,8 @@ struct Compiler<'a, 's> {
     diagnostics: Diagnostics,
     nodes: Vec<ResolvedNode>,
     used_ids: HashSet<String>,
+    fonts: Vec<ResolvedFont>,
+    font_ids: HashSet<String>,
     order: usize,
     limit_hit: bool,
     parent: Vec<Option<usize>>,
@@ -331,6 +394,9 @@ impl Compiler<'_, '_> {
             ElementKind::Group => {
                 self.emit_children(index, world, opacity, visible, copy, &descendant_groups)
             }
+            ElementKind::Text => {
+                self.emit_text(index, world, opacity, visible, copy, groups);
+            }
             ElementKind::Repeat => {
                 let mut findings = Diagnostics::new();
                 let count = self.scene.elements[index].geometry.count.unwrap_or(0);
@@ -446,6 +512,10 @@ impl Compiler<'_, '_> {
         match kind {
             ElementKind::Raster => {
                 self.reject_unsupported(index, "raster");
+                None
+            }
+            ElementKind::Text => {
+                self.reject_unsupported(index, "text as a composition operand");
                 None
             }
             ElementKind::Rect
@@ -754,12 +824,165 @@ impl Compiler<'_, '_> {
             order,
             kind,
             groups: groups.to_vec(),
-            geometry,
+            geometry: Some(geometry),
+            text: None,
             transform,
             paint,
             opacity,
             visible,
         });
+    }
+
+    /// Appends one text node for a text element (C-003, FEAT-011).
+    ///
+    /// A text node carries its string and resolved layout and no geometry: the
+    /// element's anchor is baked into the resolved transform, and the font is
+    /// carried into the model so an exporter finalizes glyph geometry with no
+    /// external state (FEAT-024).
+    #[allow(clippy::too_many_arguments)]
+    fn push_text_node(
+        &mut self,
+        index: usize,
+        transform: Affine,
+        opacity: f64,
+        visible: bool,
+        copy: Option<&CopyTag>,
+        groups: &[NodeGroup],
+    ) {
+        if self.limit_hit {
+            return;
+        }
+        if self.nodes.len() >= MAX_RENDER_NODES {
+            self.limit_hit = true;
+            self.diagnostics.push(Diagnostic::error(
+                DiagnosticCode::SIZE_LIMIT,
+                format!("compilation produced more than {MAX_RENDER_NODES} nodes"),
+            ));
+            return;
+        }
+
+        let Some(run) = self.text_run(index) else {
+            return;
+        };
+        let (base_id, name) = {
+            let element = &self.scene.elements[index];
+            (element.id.clone(), element.name.clone())
+        };
+        let id = self.unique_id(&base_id, copy);
+        let paint = self.paint_for(
+            &base_id,
+            self.scene.elements[index].fill_token.as_deref(),
+            self.scene.elements[index].stroke_profile_id.as_deref(),
+            self.scene.elements[index].stroke_token.as_deref(),
+        );
+        let order = self.order;
+        self.order += 1;
+        self.nodes.push(ResolvedNode {
+            id,
+            name,
+            order,
+            kind: "text".to_string(),
+            groups: groups.to_vec(),
+            geometry: None,
+            text: Some(run),
+            transform,
+            paint,
+            opacity,
+            visible,
+        });
+    }
+
+    /// Builds a text element's run, resolving its font and layout (C-003).
+    fn text_run(&mut self, index: usize) -> Option<TextRun> {
+        let element = &self.scene.elements[index];
+        let geometry = &element.geometry;
+        let value = geometry.text.clone().unwrap_or_default();
+        let font_size = geometry.font_size.unwrap_or(0.0);
+        let align = geometry.align.unwrap_or(TextAlign::Start);
+        let line_height = geometry.line_height.unwrap_or(font_size);
+        let letter_spacing = geometry.letter_spacing.unwrap_or(0.0);
+        let width = geometry.width;
+        let declared = element.font_id.clone();
+        let element_id = element.id.clone();
+
+        let font_id = self.resolve_font(&element_id, declared.as_deref());
+        Some(TextRun {
+            value,
+            font_id,
+            font_size,
+            align,
+            line_height,
+            letter_spacing,
+            width,
+        })
+    }
+
+    /// Resolves a text element's font against the style context, carrying the
+    /// resolved font into the model and returning the id the run names.
+    ///
+    /// A declared font that the context does not provide is a located error
+    /// naming the font (FEAT-024). Without any font assets the declared
+    /// reference passes through, mirroring the no-style path, with a warning;
+    /// a text element that names none resolves to [`DEFAULT_FONT_ID`].
+    fn resolve_font(&mut self, element_id: &str, declared: Option<&str>) -> String {
+        let requested = declared.unwrap_or(DEFAULT_FONT_ID);
+        match self.style.fonts.iter().find(|font| font.id == requested) {
+            Some(font) => {
+                self.add_font(font.resolved());
+                font.id.clone()
+            }
+            None if self.style.fonts.is_empty() => {
+                if declared.is_some() {
+                    self.diagnostics.push(
+                        Diagnostic::warning(
+                            UNRESOLVED_FONT,
+                            format!(
+                                "font `{requested}` for element `{element_id}` was not resolved; compile with a style context to apply it"
+                            ),
+                        )
+                        .with_location(Location::element_at(element_id, "/fontId")),
+                    );
+                }
+                requested.to_string()
+            }
+            None => {
+                self.diagnostics.push(
+                    Diagnostic::error(
+                        FONT,
+                        format!(
+                            "text element `{element_id}` references undefined font `{requested}`"
+                        ),
+                    )
+                    .with_location(Location::element_at(element_id, "/fontId")),
+                );
+                requested.to_string()
+            }
+        }
+    }
+
+    /// Records a resolved font once, in first-seen order (NFR-010).
+    fn add_font(&mut self, font: ResolvedFont) {
+        if self.font_ids.insert(font.id.clone()) {
+            self.fonts.push(font);
+        }
+    }
+
+    /// Emits a text element's node, baking its anchor into the transform.
+    #[allow(clippy::too_many_arguments)]
+    fn emit_text(
+        &mut self,
+        index: usize,
+        world: Affine,
+        opacity: f64,
+        visible: bool,
+        copy: Option<&CopyTag>,
+        groups: &[NodeGroup],
+    ) {
+        let anchor = {
+            let geometry = &self.scene.elements[index].geometry;
+            Affine::translate(geometry.x.unwrap_or(0.0), geometry.y.unwrap_or(0.0))
+        };
+        self.push_text_node(index, world.then(anchor), opacity, visible, copy, groups);
     }
 
     /// Resolves the paint an element declares.
@@ -957,6 +1180,7 @@ impl Compiler<'_, '_> {
                 description: self.scene.description.clone(),
             },
             diagnostics: self.diagnostics,
+            fonts: self.fonts,
         }
     }
 }
@@ -1002,20 +1226,7 @@ fn detect_cycle(parent: &[Option<usize>]) -> Option<Vec<usize>> {
 }
 
 fn kind_name(kind: ElementKind) -> &'static str {
-    match kind {
-        ElementKind::Rect => "rect",
-        ElementKind::Ellipse => "ellipse",
-        ElementKind::Polygon => "polygon",
-        ElementKind::Line => "line",
-        ElementKind::Path => "path",
-        ElementKind::Group => "group",
-        ElementKind::Repeat => "repeat",
-        ElementKind::Boolean => "boolean",
-        ElementKind::AlongPath => "alongPath",
-        ElementKind::Offset => "offset",
-        ElementKind::Projection => "projection",
-        ElementKind::Raster => "raster",
-    }
+    kind.as_str()
 }
 
 #[cfg(test)]
@@ -1082,14 +1293,14 @@ mod tests {
         assert_eq!(node.order, 0);
         assert_eq!(
             node.geometry,
-            Shape::Rect(PrimRect {
+            Some(Shape::Rect(PrimRect {
                 x: 0.0,
                 y: 0.0,
                 width: 30.0,
                 height: 40.0,
                 rx: 0.0,
                 ry: 0.0,
-            })
+            }))
         );
         assert_eq!(model.canvas.width, 400.0);
         assert_eq!(model.canvas.background, "#ffffff");
@@ -1190,9 +1401,9 @@ mod tests {
         let node = model.node("wire").expect("the connector");
         assert_eq!(
             node.geometry,
-            Shape::Line(Line {
+            Some(Shape::Line(Line {
                 points: vec![[10.0, 10.0], [110.0, 50.0]],
-            })
+            }))
         );
         assert_eq!(node.transform, Affine::IDENTITY);
     }
@@ -1210,7 +1421,7 @@ mod tests {
         assert_eq!(model.nodes.len(), 1);
         let node = &model.nodes[0];
         assert_eq!(node.kind, "boolean");
-        assert!(matches!(node.geometry, Shape::Path(_)));
+        assert!(matches!(node.geometry, Some(Shape::Path(_))));
     }
 
     #[test]
@@ -1288,7 +1499,7 @@ mod tests {
         let model = compiled(json!([offset, child]));
         assert_eq!(model.nodes.len(), 1);
         assert_eq!(model.nodes[0].kind, "offset");
-        assert!(matches!(model.nodes[0].geometry, Shape::Path(_)));
+        assert!(matches!(model.nodes[0].geometry, Some(Shape::Path(_))));
     }
 
     #[test]
@@ -1449,6 +1660,7 @@ mod tests {
         let style = StyleContext {
             palette: Some(&palette),
             strokes: std::slice::from_ref(&profile),
+            fonts: &[],
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -1486,6 +1698,7 @@ mod tests {
             &StyleContext {
                 palette: Some(&before),
                 strokes: std::slice::from_ref(&profile),
+                fonts: &[],
             },
         )
         .expect("compiles");
@@ -1494,6 +1707,7 @@ mod tests {
             &StyleContext {
                 palette: Some(&after),
                 strokes: std::slice::from_ref(&profile),
+                fonts: &[],
             },
         )
         .expect("compiles");
@@ -1535,6 +1749,7 @@ mod tests {
         let style = StyleContext {
             palette: Some(&palette),
             strokes: std::slice::from_ref(&profile),
+            fonts: &[],
         };
 
         let diagnostics =
@@ -1593,12 +1808,176 @@ mod tests {
         let model = compiled(json!([element]));
         assert_eq!(
             model.nodes[0].geometry,
-            Shape::Ellipse(Ellipse {
+            Some(Shape::Ellipse(Ellipse {
                 cx: 40.0,
                 cy: 20.0,
                 rx: 40.0,
                 ry: 20.0,
-            })
+            }))
         );
+    }
+
+    fn text_element(geometry: Value) -> Value {
+        base("t1", 0, "text", geometry)
+    }
+
+    #[test]
+    fn a_text_element_compiles_to_a_text_node_with_no_geometry() {
+        let mut element = text_element(json!({
+            "x": 10.0, "y": 20.0, "text": "Hi", "fontSize": 12.0
+        }));
+        element["fontId"] = json!("body");
+        let scene = scene_of(json!([element]), None);
+        let model = compile(&scene).expect("compiles");
+
+        assert_eq!(model.nodes.len(), 1);
+        let node = &model.nodes[0];
+        assert_eq!(node.kind, "text");
+        assert!(node.geometry.is_none(), "a text node carries no geometry");
+        let run = node.text.as_ref().expect("a text run");
+        assert_eq!(run.value, "Hi");
+        assert_eq!(run.font_size, 12.0);
+        assert_eq!(run.align, TextAlign::Start);
+        assert_eq!(run.line_height, 12.0);
+        assert_eq!(run.letter_spacing, 0.0);
+        assert_eq!(run.font_id, "body");
+        // The anchor is baked into the resolved transform.
+        assert_eq!(node.transform.apply([0.0, 0.0]), [10.0, 20.0]);
+        // Without a style context the declared reference passes through with a
+        // warning, mirroring the no-style paint path.
+        assert!(model.fonts.is_empty());
+        assert!(model
+            .diagnostics
+            .warnings()
+            .any(|warning| warning.code == UNRESOLVED_FONT));
+    }
+
+    #[test]
+    fn a_text_run_carries_its_declared_layout_and_fill() {
+        let mut element = text_element(json!({
+            "text": "Hi", "fontSize": 20.0, "align": "center",
+            "lineHeight": 26.0, "letterSpacing": 2.0, "width": 80.0
+        }));
+        element["fillToken"] = json!("ink");
+        let model = compiled(json!([element]));
+        let run = model.nodes[0].text.as_ref().expect("a text run");
+        assert_eq!(run.align, TextAlign::Center);
+        assert_eq!(run.line_height, 26.0);
+        assert_eq!(run.letter_spacing, 2.0);
+        assert_eq!(run.width, Some(80.0));
+        assert_eq!(model.nodes[0].paint.fill.as_deref(), Some("ink"));
+    }
+
+    #[test]
+    fn a_declared_font_resolves_and_travels_in_the_model() {
+        let mut element = text_element(json!({ "text": "Hi", "fontSize": 12.0 }));
+        element["fontId"] = json!("body");
+        let scene = scene_of(json!([element]), None);
+        let fonts = [FontAsset::new("body", "Body", vec![1, 2, 3, 4])];
+        let style = StyleContext {
+            palette: None,
+            strokes: &[],
+            fonts: &fonts,
+        };
+
+        let model = compile_with_style(&scene, &style).expect("compiles");
+        assert_eq!(model.nodes[0].text.as_ref().unwrap().font_id, "body");
+        assert_eq!(model.fonts.len(), 1);
+        assert_eq!(model.fonts[0].id, "body");
+        assert_eq!(model.fonts[0].name, "Body");
+        assert_eq!(model.fonts[0].data, vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn a_text_element_with_no_font_resolves_to_the_default() {
+        let scene = scene_of(
+            json!([text_element(json!({ "text": "Hi", "fontSize": 12.0 }))]),
+            None,
+        );
+        let fonts = [FontAsset::new(DEFAULT_FONT_ID, "Inter", vec![9])];
+        let style = StyleContext {
+            palette: None,
+            strokes: &[],
+            fonts: &fonts,
+        };
+
+        let model = compile_with_style(&scene, &style).expect("compiles");
+        let run = model.nodes[0].text.as_ref().expect("a text run");
+        assert_eq!(run.font_id, DEFAULT_FONT_ID);
+        assert_eq!(model.fonts.len(), 1);
+        assert_eq!(model.fonts[0].name, "Inter");
+    }
+
+    #[test]
+    fn a_missing_font_is_refused_naming_it() {
+        let mut element = text_element(json!({ "text": "Hi", "fontSize": 12.0 }));
+        element["fontId"] = json!("ghost");
+        let scene = scene_of(json!([element]), None);
+        let fonts = [FontAsset::new("body", "Body", vec![1])];
+        let style = StyleContext {
+            palette: None,
+            strokes: &[],
+            fonts: &fonts,
+        };
+
+        let diagnostics =
+            compile_with_style(&scene, &style).expect_err("a missing font is refused");
+        let error = diagnostics
+            .errors()
+            .find(|error| error.code == FONT)
+            .expect("a font error");
+        assert!(error.message.contains("ghost"), "{}", error.message);
+        assert_eq!(
+            error
+                .location
+                .as_ref()
+                .and_then(|location| location.json_path.as_deref()),
+            Some("/fontId")
+        );
+    }
+
+    #[test]
+    fn text_compilation_is_deterministic() {
+        let scene = scene_of(
+            json!([text_element(json!({ "text": "Hi", "fontSize": 12.0 }))]),
+            None,
+        );
+        let first = compile(&scene).expect("compiles");
+        let second = compile(&scene).expect("compiles");
+        assert_eq!(first, second, "repeated runs must be identical (NFR-010)");
+    }
+
+    #[test]
+    fn a_text_element_inside_a_group_carries_the_group_chain() {
+        let mut group = base("g1", 0, "group", json!({}));
+        group["name"] = json!("Caption");
+        let mut text = text_element(json!({ "text": "Hi", "fontSize": 12.0 }));
+        text["parentId"] = json!("g1");
+        let model = compiled(json!([group, text]));
+        let node = model.node("t1").expect("the text node");
+        assert_eq!(
+            node.groups,
+            vec![NodeGroup {
+                id: "g1".to_string(),
+                name: Some("Caption".to_string()),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_text_element_lowered_into_a_boolean_is_refused_as_unsupported() {
+        let boolean = base("b1", 0, "boolean", json!({ "operation": "union" }));
+        let mut group = base("g1", 0, "group", json!({}));
+        group["parentId"] = json!("b1");
+        let mut text = text_element(json!({ "text": "Hi", "fontSize": 12.0 }));
+        text["parentId"] = json!("g1");
+        let scene = scene_of(json!([boolean, group, text]), None);
+
+        let diagnostics = compile(&scene).expect_err("a lowered text is refused");
+        let error = diagnostics
+            .errors()
+            .find(|error| error.code == UNSUPPORTED)
+            .expect("an unsupported-feature error");
+        assert!(error.message.contains("t1"), "{}", error.message);
     }
 }

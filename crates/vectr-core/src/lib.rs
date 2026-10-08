@@ -28,17 +28,19 @@ pub mod render;
 pub mod scene;
 pub mod style;
 
-pub use compiler::{compile, compile_with_style, StyleContext};
+pub use compiler::{compile, compile_with_style, FontAsset, StyleContext, DEFAULT_FONT_ID};
 pub use composition::{flatten_shape, is_composition, projection_for, resolve_transform, Affine};
 pub use constraints::{resolve as resolve_constraints, Attachment, Frame, Placement, Resolution};
 pub use export::png::{export_png, export_png_reporting, PngExport, RasterOptions};
 pub use export::svg::{export_svg, export_svg_reporting, SvgExport, SvgOptions};
 pub use primitives::{Ellipse, Line, Polygon, Rect, Shape};
-pub use render::{NodeStroke, Paint, RenderCanvas, RenderMeta, RenderModel, ResolvedNode};
+pub use render::{
+    NodeStroke, Paint, RenderCanvas, RenderMeta, RenderModel, ResolvedFont, ResolvedNode, TextRun,
+};
 pub use scene::{
     parse, validate, Canvas, Constraint, ConstraintKind, Diagnostic, DiagnosticCode, Diagnostics,
-    Element, ElementKind, Geometry, Location, ProjectionAxis, Scene, Severity, Transform,
-    MAX_SCENE_BYTES,
+    Element, ElementKind, Geometry, Location, ProjectionAxis, Scene, Severity, TextAlign,
+    Transform, MAX_SCENE_BYTES,
 };
 pub use style::{
     parse_palette, parse_stroke_profile, parse_style_recipe, resolve_fill, resolve_stroke,

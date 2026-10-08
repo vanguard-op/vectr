@@ -222,20 +222,7 @@ fn reject(diagnostics: &mut Diagnostics, element: &Element, message: String) {
 }
 
 fn kind_name(kind: ElementKind) -> &'static str {
-    match kind {
-        ElementKind::Rect => "rect",
-        ElementKind::Ellipse => "ellipse",
-        ElementKind::Polygon => "polygon",
-        ElementKind::Line => "line",
-        ElementKind::Path => "path",
-        ElementKind::Group => "group",
-        ElementKind::Repeat => "repeat",
-        ElementKind::Boolean => "boolean",
-        ElementKind::AlongPath => "alongPath",
-        ElementKind::Offset => "offset",
-        ElementKind::Projection => "projection",
-        ElementKind::Raster => "raster",
-    }
+    kind.as_str()
 }
 
 #[cfg(test)]
@@ -264,6 +251,7 @@ mod tests {
             fill_token: None,
             stroke_profile_id: None,
             stroke_token: None,
+            font_id: None,
             opacity: 1.0,
             visible: true,
         }

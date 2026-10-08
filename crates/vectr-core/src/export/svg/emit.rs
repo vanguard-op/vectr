@@ -142,6 +142,8 @@ fn emit_nodes(
 fn unsupported(node: &ResolvedNode) -> Option<&'static str> {
     if node.kind == "raster" {
         Some("is a raster layer, which SVG export omits")
+    } else if node.text.is_some() {
+        Some("is a text node, which SVG export does not yet outline")
     } else if !is_finite(node) {
         Some("has non-finite geometry or transform, so SVG export omits it")
     } else {
@@ -194,6 +196,7 @@ fn omit(diagnostics: &mut Diagnostics, node: &ResolvedNode, reason: &str) {
 
 /// The SVG shape element for a node, or `None` when it draws nothing.
 fn shape_element(node: &ResolvedNode) -> Option<String> {
+    let shape = node.geometry.as_ref()?;
     let mut attrs = paint_attributes(node);
     if node.transform != Affine::IDENTITY {
         let transform = node.transform;
@@ -209,7 +212,7 @@ fn shape_element(node: &ResolvedNode) -> Option<String> {
         );
     }
 
-    let element = match &node.geometry {
+    let element = match shape {
         Shape::Rect(rect) => rect_element(rect, &attrs),
         Shape::Ellipse(ellipse) => format!(
             "<ellipse cx=\"{}\" cy=\"{}\" rx=\"{}\" ry=\"{}\"{attrs}/>",
@@ -413,7 +416,7 @@ fn is_finite(node: &ResolvedNode) -> bool {
             .stroke
             .as_ref()
             .is_none_or(|stroke| stroke.width.is_finite())
-        && geometry_is_finite(&node.geometry)
+        && node.geometry.as_ref().is_none_or(geometry_is_finite)
 }
 
 fn geometry_is_finite(shape: &Shape) -> bool {

@@ -243,7 +243,8 @@ mod tests {
             order: 0,
             kind: geometry.kind().to_string(),
             groups: Vec::new(),
-            geometry,
+            geometry: Some(geometry),
+            text: None,
             transform: Affine::IDENTITY,
             paint: Paint::default(),
             opacity: 1.0,
@@ -261,6 +262,7 @@ mod tests {
             nodes,
             meta: RenderMeta::default(),
             diagnostics: Diagnostics::new(),
+            fonts: Vec::new(),
         }
     }
 

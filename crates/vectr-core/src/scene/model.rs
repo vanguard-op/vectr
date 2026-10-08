@@ -110,6 +110,13 @@ pub struct Element {
     /// every colour lives in the palette (D-015).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stroke_token: Option<String>,
+    /// Font asset a text element renders with; absent or `null` selects the
+    /// default open-licensed font.
+    ///
+    /// Applies only to a text element: a font reference on any other kind is
+    /// rejected (FEAT-024).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font_id: Option<String>,
     /// Element opacity, from 0 to 1.
     pub opacity: f64,
     /// Whether the element is rendered.
@@ -130,6 +137,8 @@ pub enum ElementKind {
     Line,
     /// Path data.
     Path,
+    /// A run of text.
+    Text,
     /// Container for child elements.
     Group,
     /// Repeat operation.
@@ -144,6 +153,27 @@ pub enum ElementKind {
     Projection,
     /// Raster image.
     Raster,
+}
+
+impl ElementKind {
+    /// The kind name as it appears in the scene language.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ElementKind::Rect => "rect",
+            ElementKind::Ellipse => "ellipse",
+            ElementKind::Polygon => "polygon",
+            ElementKind::Line => "line",
+            ElementKind::Path => "path",
+            ElementKind::Text => "text",
+            ElementKind::Group => "group",
+            ElementKind::Repeat => "repeat",
+            ElementKind::Boolean => "boolean",
+            ElementKind::AlongPath => "alongPath",
+            ElementKind::Offset => "offset",
+            ElementKind::Projection => "projection",
+            ElementKind::Raster => "raster",
+        }
+    }
 }
 
 /// The element's geometry; which fields apply depends on the element's kind.
@@ -174,6 +204,21 @@ pub struct Geometry {
     /// Path data for path elements.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path_data: Option<String>,
+    /// The string a text element renders.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// Em size in scene units for a text element.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font_size: Option<f64>,
+    /// Horizontal alignment of a text element's lines about its anchor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub align: Option<TextAlign>,
+    /// Baseline-to-baseline distance in scene units for a text element.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line_height: Option<f64>,
+    /// Additional advance between glyphs of a text element, in scene units.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub letter_spacing: Option<f64>,
     /// Number of copies for repeat elements.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub count: Option<u32>,
@@ -190,6 +235,39 @@ pub struct Geometry {
     /// The axes a projection element maps its children onto.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub axis: Option<ProjectionAxis>,
+}
+
+/// Horizontal alignment of a text element's lines about its anchor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TextAlign {
+    /// Lines begin at the anchor.
+    Start,
+    /// Lines are centred on the anchor.
+    Center,
+    /// Lines end at the anchor.
+    End,
+}
+
+impl TextAlign {
+    /// The alignment name as it appears in the scene language.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TextAlign::Start => "start",
+            TextAlign::Center => "center",
+            TextAlign::End => "end",
+        }
+    }
+
+    /// Parses an alignment name, or `None` when it is not one of the three.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "start" => Some(TextAlign::Start),
+            "center" => Some(TextAlign::Center),
+            "end" => Some(TextAlign::End),
+            _ => None,
+        }
+    }
 }
 
 /// The axes a `projection` element maps its children onto (FEAT-003).
