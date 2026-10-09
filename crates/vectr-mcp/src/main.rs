@@ -232,7 +232,7 @@ mod tests {
         let second: serde_json::Value = serde_json::from_str(lines[1]).expect("json");
         assert_eq!(first["id"], 1);
         assert_eq!(second["id"], 2);
-        assert_eq!(second["result"]["tools"].as_array().map(Vec::len), Some(4));
+        assert_eq!(second["result"]["tools"].as_array().map(Vec::len), Some(5));
     }
 
     #[test]
