@@ -61,6 +61,15 @@ const RECIPE_DIR: &str = "recipes";
 /// The folder holding asset documents, including the fonts a scene may name.
 const ASSET_DIR: &str = "assets";
 
+/// The scene field that names the palette a scene selects (C-001).
+const PALETTE_FIELD: &str = "/paletteId";
+
+/// The scene field that names the style recipe a scene renders in (C-001).
+const RECIPE_FIELD: &str = "/recipeId";
+
+/// The project configuration field that names the default style recipe (D-009).
+const DEFAULT_RECIPE_FIELD: &str = "/defaultRecipeId";
+
 /// A project style asset (a palette, recipe, gradient or stroke profile) could
 /// not be read or parsed, so the project an input refers to is broken.
 pub const STYLE_ASSET: DiagnosticCode = DiagnosticCode::new("E_PROJECT_ASSET");
@@ -124,9 +133,17 @@ impl ProjectAssets {
                 None
             }
         };
+        // The reference is located at the field that named it: a recipe the scene
+        // selects lives in the scene document, while the project's default lives
+        // in the project configuration (FEAT-019).
+        let recipe_field = if scene.recipe_id.is_some() {
+            RECIPE_FIELD
+        } else {
+            DEFAULT_RECIPE_FIELD
+        };
         let recipe_id = scene.recipe_id.clone().or(default_recipe);
         let recipe = match recipe_id.as_deref() {
-            Some(id) => match load_recipe(root, id) {
+            Some(id) => match load_recipe(root, id, recipe_field) {
                 Ok(recipe) => Some(recipe),
                 Err(findings) => {
                     diagnostics.extend(findings);
@@ -357,29 +374,41 @@ pub(crate) fn is_plain_id(id: &str) -> bool {
 
 /// Refuses an identifier that is not a plain file stem, so a scene cannot name
 /// its way out of the asset directory (NFR-021, NFR-024).
-pub(crate) fn safe_id(id: &str) -> Result<(), Diagnostics> {
+///
+/// The refusal is located at the field that named the identifier, so a front
+/// end reports the reference and where it is declared (FEAT-019).
+pub(crate) fn safe_id(id: &str, field: &str) -> Result<(), Diagnostics> {
     if is_plain_id(id) {
         Ok(())
     } else {
-        Err(style_error(format!(
-            "`{id}` is not a valid asset identifier"
-        )))
+        Err(style_error_at(
+            field,
+            format!("`{id}` is not a valid asset identifier"),
+        ))
     }
 }
 
 /// Loads the palette the scene selected by id.
+///
+/// A reference that resolves nowhere is a located error at the scene's
+/// `/paletteId`, so a front end reports the reference and where it is declared
+/// (FEAT-005, FEAT-019).
 fn load_palette(root: &Path, id: &str) -> Result<Palette, Diagnostics> {
-    safe_id(id)?;
+    safe_id(id, PALETTE_FIELD)?;
     let dir = root.join(PALETTE_DIR);
     let direct = dir.join(format!("{id}.json"));
     if direct.is_file() {
-        let palette = read_document(&direct, "palette", parse_palette, validate_palette)?;
+        let palette = read_document(&direct, "palette", parse_palette, validate_palette)
+            .map_err(|findings| located(findings, PALETTE_FIELD))?;
         if palette.id != id {
-            return Err(style_error(format!(
-                "palette `{}` declares id `{}`, not `{id}`",
-                direct.display(),
-                palette.id
-            )));
+            return Err(style_error_at(
+                PALETTE_FIELD,
+                format!(
+                    "palette `{}` declares id `{}`, not `{id}`",
+                    direct.display(),
+                    palette.id
+                ),
+            ));
         }
         return Ok(palette);
     }
@@ -390,10 +419,10 @@ fn load_palette(root: &Path, id: &str) -> Result<Palette, Diagnostics> {
             }
         }
     }
-    Err(style_error(format!(
-        "palette `{id}` was not found under `{}`",
-        dir.display()
-    )))
+    Err(style_error_at(
+        PALETTE_FIELD,
+        format!("palette `{id}` was not found under `{}`", dir.display()),
+    ))
 }
 
 /// Reads the project's default style-recipe id, when its configuration names one
@@ -457,8 +486,13 @@ pub(crate) fn project_string_field(
 }
 
 /// Loads the style recipe the scene renders in, by id (FEAT-007–FEAT-010).
-fn load_recipe(root: &Path, id: &str) -> Result<StyleRecipe, Diagnostics> {
-    safe_id(id)?;
+///
+/// A reference that resolves nowhere is a located error at the field that named
+/// it — the scene's `/recipeId`, or the project configuration's
+/// `/defaultRecipeId` when the recipe is the project's default — so a front end
+/// reports the reference and where it is declared (FEAT-019).
+fn load_recipe(root: &Path, id: &str, field: &str) -> Result<StyleRecipe, Diagnostics> {
+    safe_id(id, field)?;
     let dir = root.join(RECIPE_DIR);
     let direct = dir.join(format!("{id}.json"));
     if direct.is_file() {
@@ -467,13 +501,17 @@ fn load_recipe(root: &Path, id: &str) -> Result<StyleRecipe, Diagnostics> {
             "style recipe",
             parse_style_recipe,
             validate_style_recipe,
-        )?;
+        )
+        .map_err(|findings| located(findings, field))?;
         if recipe.id != id {
-            return Err(style_error(format!(
-                "style recipe `{}` declares id `{}`, not `{id}`",
-                direct.display(),
-                recipe.id
-            )));
+            return Err(style_error_at(
+                field,
+                format!(
+                    "style recipe `{}` declares id `{}`, not `{id}`",
+                    direct.display(),
+                    recipe.id
+                ),
+            ));
         }
         return Ok(recipe);
     }
@@ -489,10 +527,13 @@ fn load_recipe(root: &Path, id: &str) -> Result<StyleRecipe, Diagnostics> {
             }
         }
     }
-    Err(style_error(format!(
-        "style recipe `{id}` was not found under `{}`",
-        dir.display()
-    )))
+    Err(style_error_at(
+        field,
+        format!(
+            "style recipe `{id}` was not found under `{}`",
+            dir.display()
+        ),
+    ))
 }
 
 /// Loads every stroke profile the project defines.
@@ -679,6 +720,26 @@ fn style_error(message: impl Into<String>) -> Diagnostics {
     Diagnostics::from(Diagnostic::error(STYLE_ASSET, message))
 }
 
+/// A project asset error located at the field that named the reference.
+fn style_error_at(field: &str, message: impl Into<String>) -> Diagnostics {
+    Diagnostics::from(Diagnostic::error(STYLE_ASSET, message).with_location(Location::path(field)))
+}
+
+/// Locates findings that carry no location of their own at the field that led
+/// to them, leaving any location a document's own parse already recorded.
+fn located(findings: Diagnostics, field: &str) -> Diagnostics {
+    findings
+        .into_iter()
+        .map(|finding| {
+            if finding.location.is_none() {
+                finding.at_path(field)
+            } else {
+                finding
+            }
+        })
+        .collect()
+}
+
 fn font_error(message: impl Into<String>) -> Diagnostic {
     Diagnostic::error(FONT, message)
 }
@@ -826,6 +887,14 @@ mod tests {
         let error = diagnostics.errors().next().expect("an error");
         assert_eq!(error.code, STYLE_ASSET);
         assert!(error.message.contains("brand"), "{}", error.message);
+        assert_eq!(
+            error
+                .location
+                .as_ref()
+                .and_then(|location| location.json_path.as_deref()),
+            Some("/paletteId"),
+            "the scene-level reference is located"
+        );
     }
 
     #[test]
@@ -1153,6 +1222,39 @@ mod tests {
         let error = diagnostics.errors().next().expect("an error");
         assert_eq!(error.code, STYLE_ASSET);
         assert!(error.message.contains("absent"), "{}", error.message);
+        assert_eq!(
+            error
+                .location
+                .as_ref()
+                .and_then(|location| location.json_path.as_deref()),
+            Some("/recipeId"),
+            "the scene-level reference is located"
+        );
+    }
+
+    #[test]
+    fn a_missing_default_recipe_is_located_at_the_project_field() {
+        let dir = TempDir::new("recipe-default-missing");
+        write(
+            dir.path(),
+            "vectr.project.json",
+            r#"{"defaultRecipeId":"absent"}"#,
+        );
+        let scene_path = write(dir.path(), "scenes/scene.json", RECT_SCENE);
+        let scene = parse_scene(RECT_SCENE).expect("a valid scene");
+
+        let diagnostics = ProjectAssets::load_for_scene(&scene_path, &scene).expect_err("refused");
+        let error = diagnostics.errors().next().expect("an error");
+        assert_eq!(error.code, STYLE_ASSET);
+        assert!(error.message.contains("absent"), "{}", error.message);
+        assert_eq!(
+            error
+                .location
+                .as_ref()
+                .and_then(|location| location.json_path.as_deref()),
+            Some("/defaultRecipeId"),
+            "the project-level reference is located"
+        );
     }
 
     #[test]
