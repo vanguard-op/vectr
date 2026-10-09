@@ -1,0 +1,9 @@
+{
+  "id": "p-071-train",
+  "corpusId": "vectr-authoring",
+  "intent": "A steam train on tracks.",
+  "text": "Draw a steam train on tracks.",
+  "order": 70,
+  "complexity": "moderate",
+  "qualities": []
+}

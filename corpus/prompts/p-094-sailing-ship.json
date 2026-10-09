@@ -1,0 +1,14 @@
+{
+  "id": "p-094-sailing-ship",
+  "corpusId": "vectr-authoring",
+  "intent": "A sailing ship with masts and rigging.",
+  "text": "Draw a sailing ship with masts and rigging placed relative to the hull.",
+  "order": 93,
+  "complexity": "complex",
+  "qualities": [
+    "depth",
+    "relative_placement",
+    "reusable_parts",
+    "shared_anchors"
+  ]
+}

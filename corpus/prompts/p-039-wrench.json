@@ -1,0 +1,9 @@
+{
+  "id": "p-039-wrench",
+  "corpusId": "vectr-authoring",
+  "intent": "A wrench.",
+  "text": "Draw a wrench.",
+  "order": 38,
+  "complexity": "moderate",
+  "qualities": []
+}

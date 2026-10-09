@@ -1,0 +1,9 @@
+{
+  "id": "p-055-umbrella-rain",
+  "corpusId": "vectr-authoring",
+  "intent": "An umbrella with raindrops around it.",
+  "text": "Draw an umbrella with a few raindrops around it.",
+  "order": 54,
+  "complexity": "moderate",
+  "qualities": []
+}

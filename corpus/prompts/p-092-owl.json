@@ -1,0 +1,13 @@
+{
+  "id": "p-092-owl",
+  "corpusId": "vectr-authoring",
+  "intent": "An owl with correct anatomy.",
+  "text": "Draw an owl with correct wing and talon anatomy, its parts joined at the body.",
+  "order": 91,
+  "complexity": "complex",
+  "qualities": [
+    "reusable_parts",
+    "shared_anchors",
+    "subject_accuracy"
+  ]
+}

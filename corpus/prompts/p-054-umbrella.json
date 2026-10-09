@@ -1,0 +1,9 @@
+{
+  "id": "p-054-umbrella",
+  "corpusId": "vectr-authoring",
+  "intent": "An open umbrella.",
+  "text": "Draw an open umbrella.",
+  "order": 53,
+  "complexity": "moderate",
+  "qualities": []
+}

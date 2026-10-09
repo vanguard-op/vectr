@@ -1,0 +1,9 @@
+{
+  "id": "p-064-beach",
+  "corpusId": "vectr-authoring",
+  "intent": "A beach scene with sea, sand, and a parasol.",
+  "text": "Draw a beach scene with the sea, sand, and a parasol.",
+  "order": 63,
+  "complexity": "moderate",
+  "qualities": []
+}

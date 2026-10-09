@@ -1,0 +1,9 @@
+{
+  "id": "p-060-kitchen-scene",
+  "corpusId": "vectr-authoring",
+  "intent": "A kitchen counter with pots and utensils.",
+  "text": "Draw a kitchen counter with pots and utensils.",
+  "order": 59,
+  "complexity": "moderate",
+  "qualities": []
+}

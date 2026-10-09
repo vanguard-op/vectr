@@ -1,0 +1,9 @@
+{
+  "id": "p-012-diamond",
+  "corpusId": "vectr-authoring",
+  "intent": "A diamond, a square rotated a quarter turn.",
+  "text": "Draw a diamond shape.",
+  "order": 11,
+  "complexity": "simple",
+  "qualities": []
+}

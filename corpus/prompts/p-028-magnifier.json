@@ -1,0 +1,9 @@
+{
+  "id": "p-028-magnifier",
+  "corpusId": "vectr-authoring",
+  "intent": "A magnifying glass.",
+  "text": "Draw a magnifying glass.",
+  "order": 27,
+  "complexity": "moderate",
+  "qualities": []
+}

@@ -1,0 +1,13 @@
+{
+  "id": "p-085-horse",
+  "corpusId": "vectr-authoring",
+  "intent": "A horse with realistic proportions.",
+  "text": "Draw a horse with realistic proportions and legs joined at the joints.",
+  "order": 84,
+  "complexity": "complex",
+  "qualities": [
+    "reusable_parts",
+    "shared_anchors",
+    "subject_accuracy"
+  ]
+}

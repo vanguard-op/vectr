@@ -1,0 +1,9 @@
+{
+  "id": "p-062-weather-scene",
+  "corpusId": "vectr-authoring",
+  "intent": "A weather scene with sun, cloud, and rain.",
+  "text": "Draw a weather scene with a sun, a cloud, and rain.",
+  "order": 61,
+  "complexity": "moderate",
+  "qualities": []
+}

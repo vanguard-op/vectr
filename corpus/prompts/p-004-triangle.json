@@ -1,0 +1,9 @@
+{
+  "id": "p-004-triangle",
+  "corpusId": "vectr-authoring",
+  "intent": "An upward-pointing filled triangle.",
+  "text": "Draw a solid triangle pointing up.",
+  "order": 3,
+  "complexity": "simple",
+  "qualities": []
+}

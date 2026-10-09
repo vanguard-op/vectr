@@ -1,0 +1,9 @@
+{
+  "id": "p-075-treasure-map",
+  "corpusId": "vectr-authoring",
+  "intent": "A treasure map with a dashed path.",
+  "text": "Draw a treasure map with a dashed path and an X.",
+  "order": 74,
+  "complexity": "moderate",
+  "qualities": []
+}

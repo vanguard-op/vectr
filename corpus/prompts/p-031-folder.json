@@ -1,0 +1,9 @@
+{
+  "id": "p-031-folder",
+  "corpusId": "vectr-authoring",
+  "intent": "A folder icon.",
+  "text": "Draw a folder icon.",
+  "order": 30,
+  "complexity": "moderate",
+  "qualities": []
+}

@@ -1,0 +1,9 @@
+{
+  "id": "p-008-arrow",
+  "corpusId": "vectr-authoring",
+  "intent": "A right-pointing arrow.",
+  "text": "Draw an arrow pointing right.",
+  "order": 7,
+  "complexity": "simple",
+  "qualities": []
+}

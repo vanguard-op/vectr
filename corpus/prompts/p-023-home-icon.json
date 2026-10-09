@@ -1,0 +1,9 @@
+{
+  "id": "p-023-home-icon",
+  "corpusId": "vectr-authoring",
+  "intent": "A simple house icon.",
+  "text": "Draw a simple house icon.",
+  "order": 22,
+  "complexity": "simple",
+  "qualities": []
+}

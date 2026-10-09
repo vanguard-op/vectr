@@ -1,0 +1,9 @@
+{
+  "id": "p-038-padlock",
+  "corpusId": "vectr-authoring",
+  "intent": "A padlock.",
+  "text": "Draw a padlock.",
+  "order": 37,
+  "complexity": "moderate",
+  "qualities": []
+}

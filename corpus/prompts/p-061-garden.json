@@ -1,0 +1,9 @@
+{
+  "id": "p-061-garden",
+  "corpusId": "vectr-authoring",
+  "intent": "A garden with flowers and a fence.",
+  "text": "Draw a garden with flowers and a fence.",
+  "order": 60,
+  "complexity": "moderate",
+  "qualities": []
+}

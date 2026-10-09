@@ -1,0 +1,9 @@
+{
+  "id": "p-006-cross",
+  "corpusId": "vectr-authoring",
+  "intent": "A plus-shaped cross.",
+  "text": "Draw a plus sign.",
+  "order": 5,
+  "complexity": "simple",
+  "qualities": []
+}

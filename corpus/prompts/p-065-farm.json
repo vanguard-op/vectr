@@ -1,0 +1,9 @@
+{
+  "id": "p-065-farm",
+  "corpusId": "vectr-authoring",
+  "intent": "A farm with a barn, field, and fence.",
+  "text": "Draw a farm with a barn, a field, and a fence.",
+  "order": 64,
+  "complexity": "moderate",
+  "qualities": []
+}

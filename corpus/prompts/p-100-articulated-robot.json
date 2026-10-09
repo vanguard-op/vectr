@@ -1,0 +1,14 @@
+{
+  "id": "p-100-articulated-robot",
+  "corpusId": "vectr-authoring",
+  "intent": "A robot with articulated joints.",
+  "text": "Draw a robot with articulated arms and legs, each joint a shared anchor.",
+  "order": 99,
+  "complexity": "complex",
+  "qualities": [
+    "depth",
+    "relative_placement",
+    "reusable_parts",
+    "shared_anchors"
+  ]
+}

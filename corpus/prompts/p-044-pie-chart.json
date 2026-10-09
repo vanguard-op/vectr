@@ -1,0 +1,9 @@
+{
+  "id": "p-044-pie-chart",
+  "corpusId": "vectr-authoring",
+  "intent": "A pie chart with three slices.",
+  "text": "Draw a pie chart with three slices.",
+  "order": 43,
+  "complexity": "moderate",
+  "qualities": []
+}

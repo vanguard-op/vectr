@@ -1,0 +1,13 @@
+{
+  "id": "p-099-isometric-bicycle",
+  "corpusId": "vectr-authoring",
+  "intent": "A bicycle shown in isometric view.",
+  "text": "Draw a bicycle shown in isometric view, with its frame and wheels joined at the dropouts.",
+  "order": 98,
+  "complexity": "complex",
+  "qualities": [
+    "depth",
+    "reusable_parts",
+    "shared_anchors"
+  ]
+}

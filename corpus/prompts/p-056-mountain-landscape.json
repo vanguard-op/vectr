@@ -1,0 +1,9 @@
+{
+  "id": "p-056-mountain-landscape",
+  "corpusId": "vectr-authoring",
+  "intent": "A mountain landscape with sky and foreground.",
+  "text": "Draw a mountain landscape with a sky and a foreground.",
+  "order": 55,
+  "complexity": "moderate",
+  "qualities": []
+}

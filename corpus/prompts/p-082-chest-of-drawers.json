@@ -1,0 +1,13 @@
+{
+  "id": "p-082-chest-of-drawers",
+  "corpusId": "vectr-authoring",
+  "intent": "A wooden chest of drawers in three dimensions.",
+  "text": "Draw a wooden chest of drawers shown in three dimensions, with each drawer placed relative to the frame.",
+  "order": 81,
+  "complexity": "complex",
+  "qualities": [
+    "depth",
+    "relative_placement",
+    "reusable_parts"
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "id": "p-018-sun",
+  "corpusId": "vectr-authoring",
+  "intent": "A sun with short rays.",
+  "text": "Draw a sun with short rays around it.",
+  "order": 17,
+  "complexity": "simple",
+  "qualities": []
+}

@@ -1,0 +1,9 @@
+{
+  "id": "p-069-hot-air-balloon",
+  "corpusId": "vectr-authoring",
+  "intent": "A hot-air balloon over hills.",
+  "text": "Draw a hot-air balloon floating over hills.",
+  "order": 68,
+  "complexity": "moderate",
+  "qualities": []
+}

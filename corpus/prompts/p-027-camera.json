@@ -1,0 +1,9 @@
+{
+  "id": "p-027-camera",
+  "corpusId": "vectr-authoring",
+  "intent": "A camera icon.",
+  "text": "Draw a camera icon.",
+  "order": 26,
+  "complexity": "moderate",
+  "qualities": []
+}

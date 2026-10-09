@@ -1,0 +1,9 @@
+{
+  "id": "p-070-sailboat",
+  "corpusId": "vectr-authoring",
+  "intent": "A sailboat on the water.",
+  "text": "Draw a sailboat on the water.",
+  "order": 69,
+  "complexity": "moderate",
+  "qualities": []
+}

@@ -1,0 +1,13 @@
+{
+  "id": "p-084-dragon",
+  "corpusId": "vectr-authoring",
+  "intent": "A dragon with correct anatomy.",
+  "text": "Draw a dragon with correct wing and limb anatomy, its parts joined at shared joints.",
+  "order": 83,
+  "complexity": "complex",
+  "qualities": [
+    "reusable_parts",
+    "shared_anchors",
+    "subject_accuracy"
+  ]
+}

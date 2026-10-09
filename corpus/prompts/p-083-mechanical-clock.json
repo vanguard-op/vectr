@@ -1,0 +1,14 @@
+{
+  "id": "p-083-mechanical-clock",
+  "corpusId": "vectr-authoring",
+  "intent": "A mechanical clock with visible gears.",
+  "text": "Draw a mechanical clock with visible gears joined at their axles, shown in three dimensions.",
+  "order": 82,
+  "complexity": "complex",
+  "qualities": [
+    "depth",
+    "relative_placement",
+    "reusable_parts",
+    "shared_anchors"
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "id": "p-088-lighthouse-cliff",
+  "corpusId": "vectr-authoring",
+  "intent": "A lighthouse on a cliff with depth.",
+  "text": "Draw a lighthouse on a cliff with a foreground, a midground, and a background.",
+  "order": 87,
+  "complexity": "complex",
+  "qualities": [
+    "depth",
+    "relative_placement",
+    "reusable_parts"
+  ]
+}

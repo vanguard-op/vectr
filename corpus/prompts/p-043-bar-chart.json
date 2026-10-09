@@ -1,0 +1,9 @@
+{
+  "id": "p-043-bar-chart",
+  "corpusId": "vectr-authoring",
+  "intent": "A bar chart with three bars.",
+  "text": "Draw a simple bar chart with three bars.",
+  "order": 42,
+  "complexity": "moderate",
+  "qualities": []
+}

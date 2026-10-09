@@ -1,0 +1,9 @@
+{
+  "id": "p-074-spaceship",
+  "corpusId": "vectr-authoring",
+  "intent": "A spaceship in space.",
+  "text": "Draw a spaceship in space.",
+  "order": 73,
+  "complexity": "moderate",
+  "qualities": []
+}

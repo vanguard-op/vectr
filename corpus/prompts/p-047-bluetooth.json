@@ -1,0 +1,9 @@
+{
+  "id": "p-047-bluetooth",
+  "corpusId": "vectr-authoring",
+  "intent": "A Bluetooth symbol.",
+  "text": "Draw a Bluetooth symbol.",
+  "order": 46,
+  "complexity": "moderate",
+  "qualities": []
+}

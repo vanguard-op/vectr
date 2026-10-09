@@ -1,0 +1,9 @@
+{
+  "id": "p-045-battery",
+  "corpusId": "vectr-authoring",
+  "intent": "A battery icon with a partial charge.",
+  "text": "Draw a battery icon with a partial charge.",
+  "order": 44,
+  "complexity": "moderate",
+  "qualities": []
+}

@@ -1,0 +1,9 @@
+{
+  "id": "p-078-potted-plant",
+  "corpusId": "vectr-authoring",
+  "intent": "A potted plant on a table.",
+  "text": "Draw a potted plant on a table.",
+  "order": 77,
+  "complexity": "moderate",
+  "qualities": []
+}

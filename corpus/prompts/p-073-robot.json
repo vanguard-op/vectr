@@ -1,0 +1,9 @@
+{
+  "id": "p-073-robot",
+  "corpusId": "vectr-authoring",
+  "intent": "A friendly robot.",
+  "text": "Draw a friendly robot.",
+  "order": 72,
+  "complexity": "moderate",
+  "qualities": []
+}

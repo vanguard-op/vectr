@@ -1,0 +1,9 @@
+{
+  "id": "p-005-line",
+  "corpusId": "vectr-authoring",
+  "intent": "A single straight horizontal line.",
+  "text": "Draw one straight horizontal line across the middle.",
+  "order": 4,
+  "complexity": "simple",
+  "qualities": []
+}

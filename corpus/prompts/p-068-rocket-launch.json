@@ -1,0 +1,9 @@
+{
+  "id": "p-068-rocket-launch",
+  "corpusId": "vectr-authoring",
+  "intent": "A rocket launching with smoke.",
+  "text": "Draw a rocket launching with smoke beneath it.",
+  "order": 67,
+  "complexity": "moderate",
+  "qualities": []
+}

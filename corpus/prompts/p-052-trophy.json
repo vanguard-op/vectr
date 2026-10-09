@@ -1,0 +1,9 @@
+{
+  "id": "p-052-trophy",
+  "corpusId": "vectr-authoring",
+  "intent": "A trophy.",
+  "text": "Draw a trophy.",
+  "order": 51,
+  "complexity": "moderate",
+  "qualities": []
+}

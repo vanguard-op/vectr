@@ -1,0 +1,13 @@
+{
+  "id": "p-095-balloon-festival",
+  "corpusId": "vectr-authoring",
+  "intent": "A hot-air balloon festival at different distances.",
+  "text": "Draw a hot-air balloon festival with balloons at different distances.",
+  "order": 94,
+  "complexity": "complex",
+  "qualities": [
+    "depth",
+    "relative_placement",
+    "reusable_parts"
+  ]
+}

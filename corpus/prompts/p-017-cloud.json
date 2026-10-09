@@ -1,0 +1,9 @@
+{
+  "id": "p-017-cloud",
+  "corpusId": "vectr-authoring",
+  "intent": "A simple cloud.",
+  "text": "Draw a simple cloud.",
+  "order": 16,
+  "complexity": "simple",
+  "qualities": []
+}

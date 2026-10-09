@@ -1,0 +1,9 @@
+{
+  "id": "p-016-location-pin",
+  "corpusId": "vectr-authoring",
+  "intent": "A map location pin.",
+  "text": "Draw a map pin.",
+  "order": 15,
+  "complexity": "simple",
+  "qualities": []
+}

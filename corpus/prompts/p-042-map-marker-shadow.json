@@ -1,0 +1,9 @@
+{
+  "id": "p-042-map-marker-shadow",
+  "corpusId": "vectr-authoring",
+  "intent": "A map marker with a soft shadow.",
+  "text": "Draw a map marker with a soft shadow beneath it.",
+  "order": 41,
+  "complexity": "moderate",
+  "qualities": []
+}

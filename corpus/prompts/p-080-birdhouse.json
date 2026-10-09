@@ -1,0 +1,9 @@
+{
+  "id": "p-080-birdhouse",
+  "corpusId": "vectr-authoring",
+  "intent": "A birdhouse on a post.",
+  "text": "Draw a birdhouse on a post.",
+  "order": 79,
+  "complexity": "moderate",
+  "qualities": []
+}
