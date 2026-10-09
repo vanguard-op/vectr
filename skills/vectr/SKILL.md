@@ -135,5 +135,5 @@ installed tool disagree; report that the same way.
 
 | File | Read it when |
 |---|---|
-| `references/authoring-guide.md` | Before authoring your first scene; the end-to-end walkthrough, worked examples (including the build-up method for a complex graphic), the default set, and the inspect-and-correct loop. The single source of the procedure. |
+| `references/authoring-guide.md` | Before authoring your first scene; the end-to-end walkthrough, worked examples (including the build-up method for a complex graphic), the depth and structure directives, the default set, and the inspect-and-correct loop. The single source of the procedure. |
 | `assets/scene.template.json` | As the starting point for a new scene. |
