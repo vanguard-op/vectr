@@ -1,21 +1,22 @@
 //! `vectr` command parsing and dispatch (C-004).
 //!
 //! The grammar and exit codes are frozen by the contract: `init`, `validate`,
-//! `compile` and `export`, with 0 success, 1 invalid scene, 2 usage or unreadable
-//! input, 3 compilation failure, 4 missing export dependency, and 5 output I/O
-//! failure. Parsing is hand-rolled rather than pulled from a CLI crate so the
-//! binary depends only on the engine and can control the exit code of every
-//! path, including "no arguments prints usage and exits zero".
+//! `compile`, `export`, `render`, `inspect` and `schema`, with 0 success, 1
+//! invalid scene, 2 usage or unreadable input, 3 compilation failure, 4 missing
+//! export dependency, and 5 output I/O failure. Parsing is hand-rolled rather
+//! than pulled from a CLI crate so the binary depends only on the engine and can
+//! control the exit code of every path, including "no arguments prints usage and
+//! exits zero".
 //!
 //! Every command returns a [`Report`] holding the text to print and the status
 //! to exit with; only [`main`](crate::main) touches the process. Diagnostics are
 //! the engine's structured findings, so a failure names its code, message and
 //! location (NFR-011).
 //!
-//! `validate`, `compile` and `export` load the assets the scene's project
-//! provides — its palette, stroke profiles, and fonts — and compile against
-//! them, so a scene's style and font references resolve to concrete values
-//! before anything is written (FEAT-005, FEAT-024).
+//! `validate`, `compile`, `export` and `inspect` load the assets the scene's
+//! project provides — its palette, stroke profiles, and fonts — and compile
+//! against them, so a scene's style and font references resolve to concrete
+//! values before anything is written (FEAT-005, FEAT-024).
 //!
 //! A scene is named by its identifier, resolved among the project's scene
 //! documents under `scenes/`, with the project discovered from the working
@@ -62,6 +63,7 @@ Usage:
   vectr validate [<scene>] [--json]
   vectr compile [<scene>] [--out <file>] [--check]
   vectr export [<scene>] --format svg|png [--out <file>] [--width <n>] [--height <n>] [--density <n>] [--background <color|transparent>]
+  vectr inspect [<scene>] [--out <file>] [--width <n>] [--height <n>] [--density <n>] [--background <color|transparent>]
   vectr render <part> [--out <file>] [--format svg|png] [--width <n>] [--height <n>] [--density <n>] [--background <color|transparent>]
   vectr schema [--type <name>] [--compact]
 
@@ -112,6 +114,21 @@ pub enum Command {
         /// Output height override.
         height: Option<f64>,
         /// Pixel density multiplier; PNG only.
+        density: Option<f64>,
+        /// Background override, or `transparent`.
+        background: Option<String>,
+    },
+    /// Render a whole-scene preview for inspection (FEAT-022).
+    Inspect {
+        /// The scene identifier to read; the project's default when absent.
+        scene: Option<String>,
+        /// Where to write the preview; the default `dist/` path when absent.
+        out: Option<PathBuf>,
+        /// Preview width override.
+        width: Option<f64>,
+        /// Preview height override.
+        height: Option<f64>,
+        /// Pixel density multiplier.
         density: Option<f64>,
         /// Background override, or `transparent`.
         background: Option<String>,
@@ -200,6 +217,7 @@ pub fn help_text() -> String {
          \x20 validate  Check a scene against the language contract.\n\
          \x20 compile   Compile a scene into its render model.\n\
          \x20 export    Export a scene as SVG or PNG.\n\
+         \x20 inspect   Render a whole-scene preview for inspection.\n\
          \x20 render    Render one part on its own, framed to its bounds.\n\
          \x20 schema    Print the language contract.\n\n\
          Exit codes:\n\
@@ -235,9 +253,9 @@ pub fn parse(args: Vec<OsString>) -> Result<Command, String> {
         "validate" => parse_validate(rest),
         "compile" => parse_compile(rest),
         "export" => parse_export(rest),
+        "inspect" => parse_inspect(rest),
         "render" => parse_render(rest),
         "schema" => parse_schema(rest),
-        "inspect" => Err("`inspect` is reserved for a later release".to_string()),
         _ if name.starts_with('-') => Err(format!("unknown option `{name}`")),
         _ => Err(format!("unknown command `{name}`")),
     }
@@ -293,6 +311,30 @@ pub fn run_in(command: Command, cwd: &Path) -> Report {
                 export_scene(
                     &scene,
                     format,
+                    &target,
+                    width,
+                    height,
+                    density,
+                    background.as_deref(),
+                )
+            }
+            Err(report) => report,
+        },
+        Command::Inspect {
+            scene,
+            out,
+            width,
+            height,
+            density,
+            background,
+        } => match resolve(cwd, scene.as_deref()) {
+            Ok(scene) => {
+                let target = out
+                    .as_deref()
+                    .map(|path| absolute(cwd, path))
+                    .unwrap_or_else(|| cwd.join(default_output(scene.id(), "png")));
+                inspect_scene(
+                    &scene,
                     &target,
                     width,
                     height,
@@ -505,6 +547,86 @@ fn parse_export(args: Vec<OsString>) -> Result<Command, String> {
     })
 }
 
+/// Parses the `inspect` command: a scene plus the preview-size options.
+///
+/// A whole-scene preview is always a PNG, so `inspect` takes no `--format`; the
+/// size is configurable so a preview too small to judge can be raised
+/// (FEAT-022).
+fn parse_inspect(args: Vec<OsString>) -> Result<Command, String> {
+    let mut scene: Option<String> = None;
+    let mut out: Option<PathBuf> = None;
+    let mut width: Option<f64> = None;
+    let mut height: Option<f64> = None;
+    let mut density: Option<f64> = None;
+    let mut background: Option<String> = None;
+
+    let mut i = 0;
+    while i < args.len() {
+        let raw = args[i].clone();
+        let text = raw.to_str().map(str::to_owned);
+        match text.as_deref() {
+            None => set_scene_id(&mut scene, raw)?,
+            Some("-h") | Some("--help") => return Ok(Command::Help),
+            Some(text) => {
+                if let Some(value) = text.strip_prefix("--out=") {
+                    out = Some(PathBuf::from(value));
+                } else if let Some(value) = text.strip_prefix("--width=") {
+                    width = Some(parse_number(value, "width")?);
+                } else if let Some(value) = text.strip_prefix("--height=") {
+                    height = Some(parse_number(value, "height")?);
+                } else if let Some(value) = text.strip_prefix("--density=") {
+                    density = Some(parse_number(value, "density")?);
+                } else if let Some(value) = text.strip_prefix("--background=") {
+                    background = Some(value.to_string());
+                } else {
+                    match text {
+                        "--out" => out = Some(PathBuf::from(take_value(&args, &mut i, "--out")?)),
+                        "--width" => {
+                            width = Some(parse_number(
+                                &take_value(&args, &mut i, "--width")?.to_string_lossy(),
+                                "width",
+                            )?)
+                        }
+                        "--height" => {
+                            height = Some(parse_number(
+                                &take_value(&args, &mut i, "--height")?.to_string_lossy(),
+                                "height",
+                            )?)
+                        }
+                        "--density" => {
+                            density = Some(parse_number(
+                                &take_value(&args, &mut i, "--density")?.to_string_lossy(),
+                                "density",
+                            )?)
+                        }
+                        "--background" => {
+                            background = Some(
+                                take_value(&args, &mut i, "--background")?
+                                    .to_string_lossy()
+                                    .into_owned(),
+                            )
+                        }
+                        t if t.starts_with('-') && t != "-" => {
+                            return Err(format!("unknown option `{t}` for `inspect`"))
+                        }
+                        _ => set_scene_id(&mut scene, raw)?,
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+
+    Ok(Command::Inspect {
+        scene,
+        out,
+        width,
+        height,
+        density,
+        background,
+    })
+}
+
 /// Parses the `render` command: one part plus the export-style options.
 ///
 /// The format is optional here, defaulting to SVG: a vector preview is always
@@ -705,15 +827,28 @@ fn validate_scene(scene: &ProjectScene, json: bool) -> Report {
         }
     };
 
-    // Validation is the gate a project's references pass: a palette token the
-    // palette no longer defines, a stroke profile, or a font that does not
-    // resolve is an error naming it, so a restyle that broke a scene is caught
-    // before anything is compiled (FEAT-005, FEAT-024). The checks run against
-    // the scene with its definition instances expanded, so a reference written
-    // inside a reusable part is checked like one written in the scene (FEAT-030).
-    let mut findings = validate_scene_model(&parsed);
-    let expanded = assets.expanded_scene(&parsed);
-    let usage_scene = expanded.as_ref().unwrap_or(&parsed);
+    let findings = structural_findings(&parsed, &assets);
+
+    let code = if findings.has_errors() {
+        dependency_exit_code(&findings, EXIT_INVALID_SCENE)
+    } else {
+        EXIT_SUCCESS
+    };
+    report_findings(code, findings, json)
+}
+
+/// The structural checks a scene and its project assets must pass (FEAT-018).
+///
+/// A palette token the palette no longer defines, a stroke profile, or a font
+/// that does not resolve is an error naming it, so a restyle that broke a scene
+/// is caught before anything is compiled (FEAT-005, FEAT-024). The checks run
+/// against the scene with its definition instances expanded, so a reference
+/// written inside a reusable part is checked like one written in the scene
+/// (FEAT-030).
+fn structural_findings(scene: &Scene, assets: &ProjectAssets) -> Diagnostics {
+    let mut findings = validate_scene_model(scene);
+    let expanded = assets.expanded_scene(scene);
+    let usage_scene = expanded.as_ref().unwrap_or(scene);
     if let Some(palette) = assets.palette() {
         findings.extend(validate_palette_usage(
             usage_scene,
@@ -722,14 +857,8 @@ fn validate_scene(scene: &ProjectScene, json: bool) -> Report {
         ));
     }
     findings.extend(validate_gradient_usage(usage_scene, assets.gradients()));
-    findings.extend(assets.check_references(&parsed));
-
-    let code = if findings.has_errors() {
-        dependency_exit_code(&findings, EXIT_INVALID_SCENE)
-    } else {
-        EXIT_SUCCESS
-    };
-    report_findings(code, findings, json)
+    findings.extend(assets.check_references(scene));
+    findings
 }
 
 fn compile_scene(cwd: &Path, scene: &ProjectScene, out: Option<&Path>, check: bool) -> Report {
@@ -860,6 +989,151 @@ fn export_scene(
     };
 
     write_report(target, &bytes, &warnings)
+}
+
+/// The finding recorded when no in-process capability can compare a preview
+/// with the original request, so the caller performs the inspection (FEAT-022).
+const INSPECTION_UNAVAILABLE: DiagnosticCode = DiagnosticCode::new("W_INSPECTION_UNAVAILABLE");
+
+/// Renders a whole-scene preview for inspection (FEAT-022).
+///
+/// The scene passes the same structural gate `validate` applies and is compiled
+/// exactly as `export` does, so a broken scene is reported before a preview is
+/// attempted and a render failure is reported before any inspection (NFR-011).
+/// The preview is written as PNG at the requested size, and the command reports
+/// its path and the size it rendered at. The command line has no inspection
+/// capability of its own: it renders the preview for a person or a model to
+/// compare against the request, and records that limitation rather than hiding
+/// it (FEAT-022).
+fn inspect_scene(
+    scene: &ProjectScene,
+    target: &Path,
+    width: Option<f64>,
+    height: Option<f64>,
+    density: Option<f64>,
+    background: Option<&str>,
+) -> Report {
+    // A background override is a colour value like any other, refused before
+    // the scene is read so no partial preview can be produced (FEAT-005).
+    if let Some(background) = background {
+        if !vectr_core::scene::is_color(background) {
+            let diagnostics = Diagnostics::from(Diagnostic::error(
+                INVALID_COLOR,
+                format!("`--background` is not a colour SVG supports: `{background}`"),
+            ));
+            return Report::failure(EXIT_USAGE, diagnostics_text(&diagnostics));
+        }
+    }
+
+    let parsed = match parse_project_scene(scene) {
+        Ok(parsed) => parsed,
+        Err((code, diagnostics)) => return Report::failure(code, diagnostics_text(&diagnostics)),
+    };
+    let assets = match ProjectAssets::load(scene.root(), &parsed) {
+        Ok(assets) => assets,
+        Err(diagnostics) => {
+            return Report::failure(
+                asset_exit_code(&diagnostics),
+                diagnostics_text(&diagnostics),
+            )
+        }
+    };
+
+    // Structural checks run first and gate the preview: a scene that fails them
+    // is reported and nothing is rendered, so the structural findings still
+    // stand even when no inspection can follow (FEAT-018, FEAT-022).
+    let structural = structural_findings(&parsed, &assets);
+    if structural.has_errors() {
+        return Report::failure(
+            dependency_exit_code(&structural, EXIT_INVALID_SCENE),
+            diagnostics_text(&structural),
+        );
+    }
+
+    let style = assets.style_context();
+    let model = match compile_with_style(&parsed, &style) {
+        Ok(model) => model,
+        Err(diagnostics) => {
+            return Report::failure(
+                dependency_exit_code(&diagnostics, EXIT_COMPILE),
+                diagnostics_text(&diagnostics),
+            )
+        }
+    };
+
+    let options = RasterOptions {
+        width,
+        height,
+        density,
+        background: background.map(str::to_string),
+    };
+    let export = match export_png_reporting(&model, &options) {
+        Ok(export) => export,
+        Err(diagnostics) => {
+            return Report::failure(
+                export_exit_code(&diagnostics),
+                diagnostics_text(&diagnostics),
+            )
+        }
+    };
+
+    // The preview is complete: report the structural and export findings, then
+    // note that the visual comparison with the request is the caller's.
+    let mut warnings = diagnostics_text(&structural);
+    warnings.push_str(&diagnostics_text(&model.diagnostics));
+    warnings.push_str(&diagnostics_text(&export.diagnostics));
+    warnings.push_str(&diagnostics_text(&Diagnostics::from(Diagnostic::warning(
+        INSPECTION_UNAVAILABLE,
+        "no inspection capability is available; the preview is rendered for a person or a model to compare against the request",
+    ))));
+
+    let size = png_size(&export.png);
+    write_preview(target, &export.png, &warnings, size)
+}
+
+/// The pixel size a PNG encodes in its IHDR header, as `(width, height)`.
+///
+/// The exporter wrote a well-formed PNG, so this reads the size it actually
+/// produced rather than re-deriving it from the requested options. A byte slice
+/// that is not a PNG header has no size.
+fn png_size(bytes: &[u8]) -> Option<(u32, u32)> {
+    const SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
+    if bytes.len() < 24 || &bytes[..8] != SIGNATURE || &bytes[12..16] != b"IHDR" {
+        return None;
+    }
+    let read = |offset: usize| {
+        u32::from_be_bytes([
+            bytes[offset],
+            bytes[offset + 1],
+            bytes[offset + 2],
+            bytes[offset + 3],
+        ])
+    };
+    Some((read(16), read(20)))
+}
+
+/// Writes an inspection preview, reporting the path and the size it rendered at.
+fn write_preview(target: &Path, bytes: &[u8], warnings: &str, size: Option<(u32, u32)>) -> Report {
+    match write_atomic(target, bytes) {
+        Ok(()) => {
+            let size = match size {
+                Some((width, height)) => format!("{width}x{height}"),
+                None => "unknown".to_string(),
+            };
+            Report {
+                code: EXIT_SUCCESS,
+                stdout: format!("wrote {}\npreview {size}\n", target.display()),
+                stderr: warnings.to_string(),
+            }
+        }
+        Err(error) => Report::failure(
+            EXIT_OUTPUT,
+            format!(
+                "{warnings}error: cannot write output `{}`: {error}\n",
+                target.display()
+            ),
+        ),
+    }
 }
 
 /// Renders one part on its own, framed to its own bounds (FEAT-031).
@@ -1343,9 +1617,50 @@ mod tests {
     }
 
     #[test]
-    fn a_reserved_command_is_reported() {
-        let error = parse_args(&["inspect"]).expect_err("reserved");
-        assert!(error.contains("reserved"), "{error}");
+    fn inspect_parses_the_scene_and_defaults_to_the_project_scene() {
+        assert_eq!(
+            parse_args(&["inspect"]).unwrap(),
+            Command::Inspect {
+                scene: None,
+                out: None,
+                width: None,
+                height: None,
+                density: None,
+                background: None,
+            }
+        );
+        assert_eq!(
+            parse_args(&[
+                "inspect",
+                "logo",
+                "--out",
+                "dist/logo.png",
+                "--width",
+                "640",
+                "--height",
+                "480",
+                "--density",
+                "2",
+                "--background",
+                "transparent",
+            ])
+            .unwrap(),
+            Command::Inspect {
+                scene: Some("logo".to_string()),
+                out: Some(PathBuf::from("dist/logo.png")),
+                width: Some(640.0),
+                height: Some(480.0),
+                density: Some(2.0),
+                background: Some("transparent".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn inspect_refuses_unknown_options_and_extra_positionals() {
+        assert!(parse_args(&["inspect", "a", "b"]).is_err());
+        assert!(parse_args(&["inspect", "logo", "--nope"]).is_err());
+        assert!(parse_args(&["inspect", "logo", "--format", "png"]).is_err());
     }
 
     #[test]
@@ -2483,5 +2798,175 @@ mod tests {
             !out.exists(),
             "no preview is written before the duplicate fails"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Whole-scene verification (FEAT-022)
+    // -----------------------------------------------------------------------
+
+    fn inspect(out: Option<PathBuf>, width: Option<f64>) -> Command {
+        Command::Inspect {
+            scene: None,
+            out,
+            width,
+            height: None,
+            density: None,
+            background: None,
+        }
+    }
+
+    #[test]
+    fn inspect_writes_a_preview_and_reports_its_size() {
+        let dir = TempDir::new("inspect-preview");
+        project(&dir, "scene-1", VALID_SCENE);
+        let out = dir.path().join("preview.png");
+        let report = run_in(inspect(Some(out.clone()), None), dir.path());
+
+        assert_eq!(report.code, EXIT_SUCCESS, "{}", report.stderr);
+        let bytes = fs::read(&out).expect("reads the preview");
+        assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n", "PNG signature");
+        assert!(
+            report.stdout.contains("preview 100x100"),
+            "the size is reported: {}",
+            report.stdout
+        );
+        assert!(
+            report.stderr.contains("W_INSPECTION_UNAVAILABLE"),
+            "the missing inspection capability is noted: {}",
+            report.stderr
+        );
+    }
+
+    #[test]
+    fn inspect_size_is_configurable() {
+        let dir = TempDir::new("inspect-size");
+        project(&dir, "scene-1", VALID_SCENE);
+        let report = run_in(
+            inspect(Some(dir.path().join("preview.png")), Some(200.0)),
+            dir.path(),
+        );
+        assert_eq!(report.code, EXIT_SUCCESS, "{}", report.stderr);
+        assert!(
+            report.stdout.contains("preview 200x200"),
+            "a requested size is honoured: {}",
+            report.stdout
+        );
+    }
+
+    #[test]
+    fn inspect_defaults_its_output_to_dist_scene_png() {
+        let dir = TempDir::new("inspect-default-out");
+        project(&dir, "scene-1", VALID_SCENE);
+        let report = run_in(inspect(None, None), dir.path());
+        assert_eq!(report.code, EXIT_SUCCESS, "{}", report.stderr);
+        assert!(
+            dir.path().join("dist/scene-1.png").exists(),
+            "the default output is dist/<scene>.png"
+        );
+    }
+
+    #[test]
+    fn inspect_runs_structural_checks_before_rendering() {
+        let dir = TempDir::new("inspect-structural");
+        project(&dir, "scene-1", INVALID_SCENE);
+        let out = dir.path().join("preview.png");
+        let report = run_in(inspect(Some(out.clone()), None), dir.path());
+
+        assert_eq!(report.code, EXIT_INVALID_SCENE);
+        assert!(report.stderr.contains("E_SCHEMA"), "{}", report.stderr);
+        assert!(!out.exists(), "no preview is written for an invalid scene");
+    }
+
+    #[test]
+    fn inspect_reports_structural_warnings_alongside_the_preview() {
+        // An unused palette token is a structural warning, not an error, so it
+        // is reported without blocking the preview (FEAT-018, FEAT-022).
+        let dir = TempDir::new("inspect-warning");
+        write_at(&dir, "vectr.project.json", r#"{"defaultSceneId":"brand"}"#);
+        write_at(
+            &dir,
+            "palettes/brand.json",
+            r##"{"id":"brand","projectId":"project","name":"Brand","tokens":[{"name":"accent","value":"#ff0000"},{"name":"unused","value":"#00ff00"}]}"##,
+        );
+        write_at(&dir, "scenes/brand.json", PALETTE_SCENE);
+
+        let out = dir.path().join("preview.png");
+        let report = run_in(inspect(Some(out.clone()), None), dir.path());
+        assert_eq!(report.code, EXIT_SUCCESS, "{}", report.stderr);
+        assert!(
+            report.stderr.contains("W_UNUSED_TOKEN"),
+            "the structural warning is reported: {}",
+            report.stderr
+        );
+        assert!(out.exists(), "the preview is still written");
+    }
+
+    #[test]
+    fn inspect_refuses_an_invalid_background_before_any_output() {
+        let dir = TempDir::new("inspect-background");
+        project(&dir, "scene-1", VALID_SCENE);
+        let out = dir.path().join("preview.png");
+        let report = run_in(
+            Command::Inspect {
+                scene: None,
+                out: Some(out.clone()),
+                width: None,
+                height: None,
+                density: None,
+                background: Some("not-a-colour".to_string()),
+            },
+            dir.path(),
+        );
+        assert_eq!(report.code, EXIT_USAGE);
+        assert!(
+            report.stderr.contains("E_INVALID_COLOR"),
+            "{}",
+            report.stderr
+        );
+        assert!(!out.exists(), "no preview is written for an invalid colour");
+    }
+
+    #[test]
+    fn inspect_reports_a_render_failure_before_inspection() {
+        // A size beyond the rasterizer's budget fails the render, so the
+        // failure is reported and no inspection follows (FEAT-022).
+        let dir = TempDir::new("inspect-render-failure");
+        project(&dir, "scene-1", VALID_SCENE);
+        let out = dir.path().join("preview.png");
+        let report = run_in(inspect(Some(out.clone()), Some(100_000.0)), dir.path());
+
+        assert_eq!(report.code, EXIT_COMPILE);
+        assert!(
+            report.stderr.contains("E_RASTER_LIMIT"),
+            "the render failure is reported: {}",
+            report.stderr
+        );
+        assert!(
+            !report.stderr.contains("W_INSPECTION_UNAVAILABLE"),
+            "inspection is not attempted after a render failure: {}",
+            report.stderr
+        );
+        assert!(!out.exists(), "no partial preview is written");
+    }
+
+    #[test]
+    fn inspect_re_renders_a_correction() {
+        let dir = TempDir::new("inspect-correction");
+        write_at(&dir, "vectr.project.json", r#"{"defaultSceneId":"s"}"#);
+        write_at(&dir, "palettes/brand.json", PALETTE);
+        write_at(&dir, "scenes/s.json", PALETTE_SCENE);
+        let out = dir.path().join("preview.png");
+        run_in(inspect(Some(out.clone()), None), dir.path());
+        let before = fs::read(&out).expect("reads the first preview");
+
+        let corrected = PALETTE_SCENE.replace(
+            r##""x": 0, "y": 0, "width": 10, "height": 10"##,
+            r##""x": 0, "y": 0, "width": 60, "height": 60"##,
+        );
+        write_at(&dir, "scenes/s.json", &corrected);
+        let report = run_in(inspect(Some(out.clone()), None), dir.path());
+        assert_eq!(report.code, EXIT_SUCCESS, "{}", report.stderr);
+        let after = fs::read(&out).expect("reads the second preview");
+        assert_ne!(before, after, "the preview reflects the correction");
     }
 }
