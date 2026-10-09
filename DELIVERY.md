@@ -24,11 +24,11 @@ Rust (stable, pinned by rust-toolchain.toml), cargo workspace. serde + schemars 
 - crates/vectr-core/ — engine: parse, validate, resolve, style, compile, export, fonts
 - crates/vectr-cli/ — binary vectr
 - crates/vectr-mcp/ — binary vectr-mcp (Phase 3)
-- crates/vectr-eval/ — binary vectr-eval (Phase 4)
+- crates/vectr-eval/ — binary vectr-eval (Phase 5)
 - schema/ — published JSON Schema artifacts
 - assets/fonts/ — Inter + Noto Sans + SIL OFL licence texts
 - skills/vectr/ — agent skill and authoring guide (Phase 3)
-- corpus/ — evaluation corpus (Phase 4)
+- corpus/ — evaluation corpus (Phase 5)
 - tests/, fixtures/ — integration and acceptance tests, test scenes
 - docs/ — docs submodule (read-only)
 - .delivery/ — task routes (gitignored)
@@ -67,20 +67,7 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | Phase 1 — First Graphic | 2026-10-08 | FEAT-001, FEAT-002, FEAT-003, FEAT-004, FEAT-005, FEAT-011, FEAT-012, FEAT-013, FEAT-016, FEAT-024 shipped; C-001–C-004 implemented; A-001–A-004 sourced. |
 | Phase 2 — Style Core | 2026-10-08 | FEAT-027, FEAT-007, FEAT-008, FEAT-009, FEAT-010 shipped; the element paint model unified with linear/radial gradients; recipe selection wired through the CLI; C-001–C-003 re-implemented at revision 5. |
 | Phase 3 — Any Model Can Author | 2026-10-08 | FEAT-017, FEAT-018, FEAT-019, FEAT-020 shipped; validated alpha colour model (FEAT-005) and the shading-request warning (FEAT-007); scope extended to very complex illustrations (FEAT-003, FEAT-011) with complex-scene coverage; multi-scene projects with identifier addressing and a default scene, matched by the MCP surface (FEAT-016, FEAT-019); CLI and MCP share one project loader and one authoring guide; crates self-contained for packaging, both binaries and the skill distributed; released as 0.1.0-pre.1 on crates.io and GitHub Releases (checksummed and signed); the gate covers the acceptance crate's fmt/lints and a determinism check; C-001–C-005 implemented. |
-
-### Active phase: Phase 4 — Reuse & Incremental Authoring
-| Task | Feature | Owner | Status | Contract |
-|---|---|---|---|---|
-| T-072 | FEAT-030 | backend-engineer | Done | C-001, C-002, C-003 |
-| T-076 | FEAT-030 | backend-engineer | Done | C-001, C-002, C-003 |
-| T-077 | FEAT-030 | qa-engineer | Done | C-001, C-002, C-003 |
-| T-073 | FEAT-031 | backend-engineer | Done | C-002, C-004 |
-| T-074 | FEAT-031 | ai-engineer | Done | C-005 |
-| T-078 | FEAT-031 | qa-engineer | Done | C-005 |
-| T-075 | FEAT-029 | ai-engineer | Done | C-002, C-004, C-005 |
-| T-079 | FEAT-031 | backend-engineer | Done | C-002, C-004 |
-| T-081 | FEAT-031 | qa-engineer | Done | C-002, C-004 |
-| T-080 | FEAT-031 | ai-engineer | Done | C-005 |
+| Phase 4 — Reuse & Incremental Authoring | 2026-10-09 | FEAT-030, FEAT-031, FEAT-029 shipped: reusable part definitions, part-scoped rendering, and the incremental build-up method; the element model settled as one shape with a single literal-or-reference form and parameters as the only adjustment mechanism; part style resolves from the project's default palette and a part identifier resolves in one shared namespace; C-001–C-005 re-implemented at revisions 7/7/6/8/4. |
 
 ## Decisions log
 | # | Decision | Rationale | By |
