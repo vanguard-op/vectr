@@ -9,11 +9,19 @@ is in the skill's on-demand references, read only when the step needs them:
 | Reference | Read it when |
 |---|---|
 | `rules.md` | While authoring: the rules the schema does not state. |
-| `reusable-parts.md` | When a request needs a reusable part: definitions and instances. |
+| `reusable-parts.md` | When a section is a reusable part: definitions and instances. |
 | `depth-and-structure.md` | When a request implies depth or several parts. |
 | `inspect-and-correct.md` | After a render: comparing it to the request and correcting it. |
 | `defaults.md` | When the request leaves something open. |
 | `licensing.md` | Before shipping generated graphics. |
+
+The skill ships worked examples as files under `examples/`, one per document,
+kept apart from `assets/` so an example is never mistaken for a copyable asset:
+`examples/habit-logo.json` (a simple mark), `examples/alpine-lake.json` (a
+compositionally complex illustration), `examples/pine.json` and
+`examples/cloud.json` (reusable definitions it places), and
+`examples/skyline.json` (one definition placed twice). Read them when a step
+points at one.
 
 This guide targets `vectr` 0.1.0-pre.2 and scene `formatVersion` `0.2`.
 
@@ -31,9 +39,6 @@ different contract may not compile. The same applies if `vectr schema` fails
 with `E_SCHEMA_VERSION` — the installed tool and the published contract
 disagree; report it rather than working around it. Over MCP, read
 `serverInfo.version` from the `initialize` response instead of shelling out.
-
-The scene language is at `formatVersion` `"0.2"`; the published schema carries
-`x-vectr-formatVersion: "0.2"`.
 
 ## 1. What a project holds
 
@@ -65,39 +70,58 @@ omitting both `scene` and `draft` uses the default. It also accepts a scene
 document sent inline as `draft` — a JSON object or JSON text — used as a draft
 instead of a project scene: it never becomes or reads the default, and its
 assets resolve against `project` or the server's project context. A call that
-names both `scene` and `draft` is malformed, since the two are mutually
-exclusive.
+names both `scene` and `draft` is malformed (`E_MALFORMED`), since the two are
+mutually exclusive.
 
 Run the tools from inside the project so the root is found. If there is no
 project yet, scaffold one with `vectr init [dir]`; it writes the configuration,
 a starter scene at `scenes/example.json` that the project names as its default,
 a default recipe, the entity folders
 `scenes/ palettes/ strokes/ gradients/ recipes/ definitions/ assets/ dist/`, and
-this guide at the project root. Running it again reports the project as already
-initialized and leaves every file untouched.
+a minimal agent guide at the project root. Running it again reports the project
+as already initialized and leaves every file untouched.
 
-## 2. The workflow
+## 2. The method: sketch the whole, then refine its sections
 
-1. Read the schema for the types you will write (`vectr schema`).
-2. Author the scene as JSON.
-3. Validate it (`vectr validate`). Correct and re-validate until it passes.
-4. Compile with `--check` to confirm the project's references resolve
-   (`vectr compile <scene> --check`).
-5. Render a PNG preview and look at it against the request
-   (`vectr export <scene> --format png`).
-6. If it does not match, correct the scene and re-render, then export the final
-   SVG and PNG (`vectr export <scene> --format svg`).
+Every request runs the same method, whatever its complexity. A section is any
+unit the work divides into — a group, an instance, or a scene — and a reusable
+definition is one kind of section, not the required unit. Complexity changes the
+number of turns the loop takes, never the method.
 
-Never render before validation passes, and never export from a scene that failed
-to compile. A failed step stops the pipeline; there is no partial output.
+1. **Sketch the whole at low fidelity.** Put the broad sections in their rough
+   places and validate the sketch. The sketch fixes the composition before any
+   one section is detailed.
+2. **Take up one section.** Refine it as one unit, then validate it.
+3. **Verify it in isolation.** Render the section on its own and inspect it
+   against the request; correct it and re-render until it is right.
+4. **Integrate it.** Place the verified section into the whole, and render the
+   whole so far. Verify it before taking up the next section.
+5. **Repeat** steps 2 to 4 for each section, then validate the whole scene and
+   export.
 
-A simple mark follows those six steps once. A request that names several distinct
-objects, repeats an object, or spans background and foreground layers is a
-complex graphic: build it up in verified parts instead of authoring it in one
-pass — decompose it into named parts, author each part as a reusable definition,
-verify it on its own, then compose the verified parts one at a time, verifying
-the scene after each addition. **Build a complex graphic up in verified parts**
-(section 6) is that method.
+The sections, the kind of each section, the recipe, the palette, and the depth
+handling are deduced from the prompt, which describes the picture and prescribes
+no structure. When the request leaves the sections open, use the documented
+default decomposition: background and sky; the midground masses (land, water,
+large structures); the repeating or reused objects (trees, clouds, ripples,
+steps); then the foreground detail (reeds, stones, flowers, text). A request
+that does not decompose cleanly still gets this decomposition rather than a
+stall.
+
+Author and verify a section that depends on another after the part it sits on,
+and record that order. Never advance the whole past an unverified section: if a
+section fails verification, correct it and re-verify it before it is integrated.
+A composition failure names the composition step, not the parts. The whole is
+complete when every section is placed and no part dropped, and it compiles
+deterministically. If an increment expands past the tool's element limit, the
+error names the increment and refuses the whole rather than truncating it;
+reduce the section's repetition or nesting, or split it, and re-verify.
+
+A section is verified by structural validation and by rendering it on its own
+(`render-part` / `vectr render`); an increment is verified by rendering the whole
+so far. When a section is placed more than once, author each part as a reusable
+definition once and place it wherever it is needed without re-authoring it; read
+`reusable-parts.md`.
 
 Prefer the MCP tools when the host exposes them; otherwise use the CLI. Both
 produce identical results. In the CLI, `<scene>` is a scene identifier resolved
@@ -110,22 +134,12 @@ the project's default scene.
 | Validate | `validate` `{scene?, draft?, project?}` | `vectr validate <scene> [--json]` |
 | Compile | `compile` `{scene?, draft?, project?}` | `vectr compile <scene> [--check] [--out <file>]` |
 | Render | `render` `{scene?, draft?, project?, format, out?, width?, height?, density?, background?}` | `vectr export <scene> --format svg\|png [--out <file>] [--width <n>] [--height <n>] [--density <n>] [--background <color\|transparent>]` |
-| Render a part | `render-part` `{part, project?, format, out?, width?, height?, density?, background?}` | `vectr render <part> --format svg\|png [--out <file>] [--width <n>] [--height <n>] [--density <n>] [--background <color\|transparent>]` |
+| Render a section | `render-part` `{part, project?, format, out?, width?, height?, density?, background?}` | `vectr render <part> --format svg\|png [--out <file>] [--width <n>] [--height <n>] [--density <n>] [--background <color\|transparent>]` |
 | Scaffold | — | `vectr init [dir]` |
 
-`render-part` and `vectr render` preview one part on its own — a reusable
+`render-part` and `vectr render` preview one section on its own — a reusable
 definition or a named element subtree, addressed by its identifier — framed to
 the part's own bounds or to a requested size; the CLI prints the frame it used.
-
-An MCP tool addresses a scene by the same rules as the CLI. `scene` is the
-identifier; omitting both `scene` and `draft` uses the project's default, and a
-project that names no default is an error rather than a choice among its scenes.
-An MCP tool also accepts a scene document sent inline as `draft` — a JSON object
-or JSON text — used instead of a project scene: it never becomes or reads the
-default, and its assets resolve against `project` or the server's project
-context. Naming both `scene` and `draft` in one call is malformed. A project
-scene renders to `dist/<id>.<ext>` by default; a draft has no identifier, so it
-renders to `dist/scene.<ext>` unless `out` names a path.
 
 An MCP tool failure is a result with `isError: true` and a body
 `{code, message, location, diagnostics}`; read the whole `diagnostics` list, not
@@ -160,15 +174,13 @@ closest names listed. The whole contract is large, so for a basic scene read
 rather than dumping everything into context. Over MCP the same reads are
 `schema` with `{"type": "Element"}` or `{"form": "compact"}`.
 
-### Rules the schema does not state
-
 Read `rules.md` while you author: it carries the rules the engine enforces that
 the schema does not spell out — the stricter-than-`required` parser, the shared
 element/definition id namespace, paints as tokens or gradients, the stroke
 profile-plus-paint pair, paint order, text anchoring, recipes, constraints, and
 parameter references.
 
-## 4. Author the scene
+## 4. Sketch the whole at low fidelity
 
 Start from the skeleton below or from the starter scene (`scenes/example.json`,
 identifier `example`), and edit it. The skeleton of every valid scene:
@@ -190,8 +202,7 @@ Keep `id`s short and stable: each element's `id` is unique across the project,
 sharing one namespace with the project's reusable definitions, and a child's
 `parentId` names it. Every element repeats `sceneId` with the scene's `id`. Save
 the scene as `scenes/<id>.json` — the file is named for the scene's `id` — and
-address it by that identifier on the command line (the skeleton below becomes
-`scenes/habit-logo.json`, addressed as `habit-logo`).
+address it by that identifier on the command line.
 
 Use a named palette rather than hard-coding colour per element, so the whole
 graphic restyles by editing one value. `palettes/brand.json`:
@@ -237,83 +248,6 @@ A stroke profile carries geometry only. `strokes/hairline.json`:
 }
 ```
 
-### Worked example
-
-A logo request — "a rounded badge, a check dot, and the word Habit" — as a
-scene. It validates, compiles, and exports as written:
-
-```json
-{
-  "id": "habit-logo",
-  "projectId": "project",
-  "name": "Habit logo",
-  "formatVersion": "0.2",
-  "paletteId": "brand",
-  "title": "Habit tracker logo",
-  "canvas": { "width": 512, "height": 512, "background": "transparent" },
-  "elements": [
-    {
-      "id": "mark",
-      "sceneId": "habit-logo",
-      "order": 0,
-      "kind": "group",
-      "name": "Mark",
-      "geometry": {},
-      "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
-      "opacity": 1,
-      "visible": true
-    },
-    {
-      "id": "badge",
-      "sceneId": "habit-logo",
-      "parentId": "mark",
-      "order": 0,
-      "kind": "rect",
-      "name": "Badge",
-      "geometry": { "x": 96, "y": 96, "width": 320, "height": 320, "rx": 72, "ry": 72 },
-      "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
-      "fill": { "kind": "token", "ref": "accent" },
-      "opacity": 1,
-      "visible": true
-    },
-    {
-      "id": "dot",
-      "sceneId": "habit-logo",
-      "parentId": "mark",
-      "order": 1,
-      "kind": "ellipse",
-      "name": "Check dot",
-      "geometry": { "x": 216, "y": 176, "width": 80, "height": 80 },
-      "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
-      "fill": { "kind": "token", "ref": "paper" },
-      "opacity": 1,
-      "visible": true
-    },
-    {
-      "id": "label",
-      "sceneId": "habit-logo",
-      "parentId": "mark",
-      "order": 2,
-      "kind": "text",
-      "name": "Label",
-      "geometry": {
-        "text": "Habit",
-        "fontSize": 56,
-        "x": 256,
-        "y": 336,
-        "align": "center",
-        "lineHeight": 64,
-        "letterSpacing": 0
-      },
-      "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
-      "fill": { "kind": "token", "ref": "ink" },
-      "opacity": 1,
-      "visible": true
-    }
-  ]
-}
-```
-
 Geometry notes worth keeping in mind:
 
 - A `rect` and an `ellipse` are placed by the `x`/`y` origin of their bounding
@@ -333,247 +267,53 @@ Geometry notes worth keeping in mind:
   `axis` (`x`, `y`, or `isometric`). A grid is a row placed inside a group and
   translated into further rows.
 
-### Author for depth and structure
+## 5. Refine one section at a time
 
-When a request implies depth or several parts, read `depth-and-structure.md`
-before authoring: it directs conveying depth through structure, placing parts
-relatively, decomposing along real parts joined at shared anchors, and
-researching a named subject. Check the render against it in
+Take up one section and refine it in its own frame. A section may be a group, an
+instance, or a scene:
+
+- **A group.** Refine the elements that move together as one section: give them
+  a common `group` parent and set their `parentId`. The group's `transform`
+  carries the whole section.
+- **An instance.** When a section is a reusable part, author it once as a
+  definition (`definitions/<id>.json`), verify it on its own, then place it with
+  an `instance` element, binding the parameters this use varies. Read
+  `reusable-parts.md`.
+- **A scene.** A section that is a whole drawing of its own is authored as its
+  own scene document, placed nowhere, and exported on its own.
+
+For a request that implies depth or several parts, read
+`depth-and-structure.md` before refining: it directs back-to-front paint order
+and depth grouping, relative placement by transform, parts joined at shared
+anchors, and researching a named subject. Check the render against it in
 `inspect-and-correct.md`.
 
-### Worked example: a complex illustration
+Author each part in its own local frame and place it by a transform; reserve
+absolute coordinates for the canvas and the root placement. Name the anchor each
+part joins at and give both parts the same value there, so the composition meets
+rather than leaving a seam. Inspect the composed result at each anchor for a gap
+or an overlap, and correct the anchor rather than nudging one part by eye.
 
-A detailed request is not a reason to simplify, and the language carries
-complexity through composition rather than a wider set of shape kinds: build
-the illustration from its parts by grouping them and layering the composition
-elements over them. Never reduce a detailed request to a single mark or drop
-the parts it names; a detailed request is authored in full. A request this size
-is built with the build-up method below:
-the repeated and reused pieces — the pine, the cloud, the ripple, the step — are
-the parts to author as definitions and verify on their own before they are
-composed. The scene below is that composition, with the pine authored once as a
-reusable definition.
+## 6. Worked examples
 
-"An alpine lake at dawn — mountains with snow, a pine forest, a lake with reeds
-and a trail of stepping stones, and a low sun" becomes the scene below. It
-exercises nested groups; a cloud row and two pine rows (`repeat`); a snow cap
-(`boolean` intersect) and a glacier (`boolean` subtract); a lake (`boolean`
-union) with ripples and reeds placed along guides (`alongPath`); a sun halo
-(`offset`); an isometric boardwalk (`projection`); and a planting row laid out
-by an `equalSpacing` constraint. It validates, compiles, and exports as written
-against the palette above; read the schema for a composition kind only when you
-are about to use it.
+The skill ships worked examples as files under `examples/`, one per document.
+Read the one closest to the request and adapt it, rather than starting from
+nothing:
 
-It also shows the `depth-and-structure.md` directives in practice. The pine is authored in its own
-local frame with its trunk base at the origin, then placed by an `instance`
-transform on the shore line — the shared anchor every pine joins at — rather
-than by absolute coordinates per tree. The far row scales the same part to 0.55
-and binds its `foliage` parameter to the hazier `pine-far` token, so distance
-reads through relative scale and an atmospheric colour; the near row takes the
-default. Each depth layer is its own group with increasing `order`, so a nearer
-part occludes a farther one. `definitions/pine.json`:
+| File | What it shows |
+|---|---|
+| `examples/habit-logo.json` | A simple mark: a group holding a rounded badge, a check dot, and a wordmark, all painted from palette tokens. |
+| `examples/alpine-lake.json` | A compositionally complex illustration: nested groups, `repeat`, `boolean`, `alongPath`, `offset`, `projection`, and a constraint, with depth layers ordered back to front and parts placed by instance transforms. |
+| `examples/pine.json` | The reusable definition the complex illustration places, authored with its trunk base at the origin so every placement joins the shore at a shared anchor. |
+| `examples/skyline.json` | One definition placed twice with different parameter bindings. |
+| `examples/cloud.json` | The reusable definition `skyline.json` places. |
 
-```json
-{
-  "id": "pine",
-  "projectId": "project",
-  "name": "Pine",
-  "parameters": [
-    { "name": "foliage", "type": "token", "default": "pine" }
-  ],
-  "origin": { "x": 0, "y": 0 },
-  "elements": [
-    {
-      "id": "pine-trunk",
-      "definitionId": "pine",
-      "order": 0,
-      "kind": "rect",
-      "name": "Trunk",
-      "geometry": { "x": -4, "y": -46, "width": 8, "height": 46 },
-      "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
-      "fill": { "kind": "token", "ref": "trunk" },
-      "opacity": 1,
-      "visible": true
-    },
-    {
-      "id": "pine-canopy-low",
-      "definitionId": "pine",
-      "order": 1,
-      "kind": "polygon",
-      "name": "Lower canopy",
-      "geometry": { "points": [[0, -140], [-36, -20], [36, -20]] },
-      "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
-      "fill": { "param": "foliage" },
-      "opacity": 1,
-      "visible": true
-    },
-    {
-      "id": "pine-canopy-high",
-      "definitionId": "pine",
-      "order": 2,
-      "kind": "polygon",
-      "name": "Upper canopy",
-      "geometry": { "points": [[0, -96], [-42, 0], [42, 0]] },
-      "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
-      "fill": { "kind": "token", "ref": "pine-dark" },
-      "opacity": 1,
-      "visible": true
-    }
-  ]
-}
-```
-
-The scene, `scenes/alpine-lake.json`:
-
-```json
-{
-  "id": "alpine-lake",
-  "projectId": "project",
-  "name": "Alpine lake at dawn",
-  "formatVersion": "0.2",
-  "paletteId": "brand",
-  "title": "Alpine lake at dawn",
-  "canvas": {"width": 800, "height": 600, "background": "transparent"},
-  "elements": [
-    {"id": "sky", "sceneId": "alpine-lake", "order": 0, "kind": "rect", "geometry": {"x": 0, "y": 0, "width": 800, "height": 600}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "name": "Sky", "fill": {"kind": "token", "ref": "sky"}},
-    {"id": "sun", "sceneId": "alpine-lake", "order": 1, "kind": "group", "geometry": {}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "name": "Sun"},
-    {"id": "halo", "sceneId": "alpine-lake", "order": 0, "kind": "offset", "geometry": {"distance": 30}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 0.55, "visible": true, "parentId": "sun", "name": "Halo", "fill": {"kind": "token", "ref": "dawn"}},
-    {"id": "halo-src", "sceneId": "alpine-lake", "order": 0, "kind": "ellipse", "geometry": {"x": 600, "y": 60, "width": 110, "height": 110}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "halo", "name": "Halo source"},
-    {"id": "sun-disc", "sceneId": "alpine-lake", "order": 1, "kind": "ellipse", "geometry": {"x": 600, "y": 60, "width": 110, "height": 110}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "sun", "name": "Disc", "fill": {"kind": "token", "ref": "sun"}},
-    {"id": "clouds", "sceneId": "alpine-lake", "order": 2, "kind": "repeat", "geometry": {"count": 2, "spacing": 250}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "name": "Clouds"},
-    {"id": "cloud-puff", "sceneId": "alpine-lake", "order": 0, "kind": "group", "geometry": {}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "clouds", "name": "Cloud"},
-    {"id": "cloud-a", "sceneId": "alpine-lake", "order": 0, "kind": "ellipse", "geometry": {"x": 90, "y": 120, "width": 150, "height": 50}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "cloud-puff", "fill": {"kind": "token", "ref": "paper"}},
-    {"id": "cloud-b", "sceneId": "alpine-lake", "order": 1, "kind": "ellipse", "geometry": {"x": 150, "y": 100, "width": 130, "height": 60}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "cloud-puff", "fill": {"kind": "token", "ref": "paper"}},
-    {"id": "cloud-c", "sceneId": "alpine-lake", "order": 2, "kind": "ellipse", "geometry": {"x": 210, "y": 130, "width": 140, "height": 45}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "cloud-puff", "fill": {"kind": "token", "ref": "paper"}},
-    {"id": "haze", "sceneId": "alpine-lake", "order": 3, "kind": "group", "geometry": {}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "name": "Haze"},
-    {"id": "haze-band", "sceneId": "alpine-lake", "order": 0, "kind": "rect", "geometry": {"x": 0, "y": 300, "width": 800, "height": 72}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 0.4, "visible": true, "parentId": "haze", "fill": {"kind": "token", "ref": "mist"}},
-    {"id": "peaks", "sceneId": "alpine-lake", "order": 4, "kind": "group", "geometry": {}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "name": "Peaks"},
-    {"id": "peak-far", "sceneId": "alpine-lake", "order": 0, "kind": "polygon", "geometry": {"points": [[40, 350], [260, 150], [480, 350]]}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "peaks", "fill": {"kind": "token", "ref": "ridge"}},
-    {"id": "peak-near", "sceneId": "alpine-lake", "order": 1, "kind": "polygon", "geometry": {"points": [[300, 350], [520, 120], [740, 350]]}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "peaks", "fill": {"kind": "token", "ref": "rock"}},
-    {"id": "snow", "sceneId": "alpine-lake", "order": 2, "kind": "boolean", "geometry": {"operation": "intersect"}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "peaks", "name": "Snow cap", "fill": {"kind": "token", "ref": "snow"}},
-    {"id": "snow-mask", "sceneId": "alpine-lake", "order": 0, "kind": "polygon", "geometry": {"points": [[455, 205], [520, 120], [585, 205], [520, 235]]}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "snow"},
-    {"id": "snow-clip", "sceneId": "alpine-lake", "order": 1, "kind": "polygon", "geometry": {"points": [[430, 350], [520, 120], [610, 350]]}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "snow"},
-    {"id": "glacier", "sceneId": "alpine-lake", "order": 3, "kind": "boolean", "geometry": {"operation": "subtract"}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "peaks", "name": "Glacier", "fill": {"kind": "token", "ref": "paper"}},
-    {"id": "ice-mass", "sceneId": "alpine-lake", "order": 0, "kind": "polygon", "geometry": {"points": [[70, 370], [130, 300], [200, 370]]}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "glacier"},
-    {"id": "ice-cut", "sceneId": "alpine-lake", "order": 1, "kind": "polygon", "geometry": {"points": [[110, 370], [150, 300], [150, 370]]}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "glacier"},
-    {"id": "ridge", "sceneId": "alpine-lake", "order": 5, "kind": "group", "geometry": {}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "name": "Near shore"},
-    {"id": "hillside", "sceneId": "alpine-lake", "order": 0, "kind": "polygon", "geometry": {"points": [[0, 430], [220, 320], [430, 430], [640, 360], [800, 320], [800, 600], [0, 600]]}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "ridge", "fill": {"kind": "token", "ref": "pine-dark"}},
-    {"id": "pond", "sceneId": "alpine-lake", "order": 6, "kind": "group", "geometry": {}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "name": "Lake"},
-    {"id": "pond-shape", "sceneId": "alpine-lake", "order": 0, "kind": "boolean", "geometry": {"operation": "union"}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "pond", "name": "Water", "fill": {"kind": "token", "ref": "water"}},
-    {"id": "pond-a", "sceneId": "alpine-lake", "order": 0, "kind": "ellipse", "geometry": {"x": 110, "y": 420, "width": 320, "height": 100}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "pond-shape"},
-    {"id": "pond-b", "sceneId": "alpine-lake", "order": 1, "kind": "ellipse", "geometry": {"x": 330, "y": 420, "width": 320, "height": 100}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "pond-shape"},
-    {"id": "ripples", "sceneId": "alpine-lake", "order": 1, "kind": "alongPath", "geometry": {"pathData": "M160 468 L620 468", "count": 5}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "pond", "name": "Ripples"},
-    {"id": "ripple", "sceneId": "alpine-lake", "order": 0, "kind": "ellipse", "geometry": {"x": -22, "y": -5, "width": 44, "height": 10}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 0.8, "visible": true, "parentId": "ripples", "fill": {"kind": "token", "ref": "water-light"}},
-    {"id": "reeds", "sceneId": "alpine-lake", "order": 2, "kind": "alongPath", "geometry": {"pathData": "M138 512 L246 446", "count": 6}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "pond", "name": "Reeds"},
-    {"id": "reed-clump", "sceneId": "alpine-lake", "order": 0, "kind": "group", "geometry": {}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "reeds", "name": "Clump"},
-    {"id": "reed", "sceneId": "alpine-lake", "order": 0, "kind": "rect", "geometry": {"x": -3, "y": -46, "width": 6, "height": 46}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "reed-clump", "fill": {"kind": "token", "ref": "reed"}},
-    {"id": "forest-far", "sceneId": "alpine-lake", "order": 7, "kind": "group", "geometry": {}, "transform": {"translateX": 70.0, "translateY": 416.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "name": "Far pines"},
-    {"id": "pines-far", "sceneId": "alpine-lake", "order": 0, "kind": "repeat", "geometry": {"count": 5, "spacing": 130}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "forest-far", "name": "Far row"},
-    {"id": "pine-far", "sceneId": "alpine-lake", "order": 0, "kind": "instance", "geometry": {}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 0.55, "scaleY": 0.55}, "opacity": 0.7, "visible": true, "parentId": "pines-far", "name": "Pine", "definitionRef": "pine", "bindings": [{"name": "foliage", "value": "pine-far"}]},
-    {"id": "forest", "sceneId": "alpine-lake", "order": 8, "kind": "group", "geometry": {}, "transform": {"translateX": 40.0, "translateY": 434.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "name": "Forest"},
-    {"id": "pines", "sceneId": "alpine-lake", "order": 0, "kind": "repeat", "geometry": {"count": 6, "spacing": 108}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "forest", "name": "Pines"},
-    {"id": "pine-near", "sceneId": "alpine-lake", "order": 0, "kind": "instance", "geometry": {}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "pines", "name": "Pine", "definitionRef": "pine"},
-    {"id": "shrub-a", "sceneId": "alpine-lake", "order": 9, "kind": "group", "geometry": {}, "transform": {"translateX": 540.0, "translateY": 438.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "name": "Shrub A"},
-    {"id": "shrub-a-leaf", "sceneId": "alpine-lake", "order": 0, "kind": "ellipse", "geometry": {"x": -26, "y": -18, "width": 52, "height": 36}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "shrub-a", "fill": {"kind": "token", "ref": "pine"}},
-    {"id": "shrub-b", "sceneId": "alpine-lake", "order": 10, "kind": "group", "geometry": {}, "transform": {"translateX": 600.0, "translateY": 438.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "name": "Shrub B"},
-    {"id": "shrub-b-leaf", "sceneId": "alpine-lake", "order": 0, "kind": "ellipse", "geometry": {"x": -26, "y": -18, "width": 52, "height": 36}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "shrub-b", "fill": {"kind": "token", "ref": "pine"}},
-    {"id": "shrub-c", "sceneId": "alpine-lake", "order": 11, "kind": "group", "geometry": {}, "transform": {"translateX": 660.0, "translateY": 438.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "name": "Shrub C"},
-    {"id": "shrub-c-leaf", "sceneId": "alpine-lake", "order": 0, "kind": "ellipse", "geometry": {"x": -26, "y": -18, "width": 52, "height": 36}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "shrub-c", "fill": {"kind": "token", "ref": "pine"}},
-    {"id": "flowers", "sceneId": "alpine-lake", "order": 12, "kind": "group", "geometry": {}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "name": "Wildflowers"},
-    {"id": "flower-0", "sceneId": "alpine-lake", "order": 0, "kind": "ellipse", "geometry": {"x": 646, "y": 470, "width": 16, "height": 16}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "flowers", "fill": {"kind": "token", "ref": "accent"}},
-    {"id": "flower-1", "sceneId": "alpine-lake", "order": 1, "kind": "ellipse", "geometry": {"x": 676, "y": 488, "width": 16, "height": 16}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "flowers", "fill": {"kind": "token", "ref": "accent"}},
-    {"id": "flower-2", "sceneId": "alpine-lake", "order": 2, "kind": "ellipse", "geometry": {"x": 704, "y": 468, "width": 16, "height": 16}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "flowers", "fill": {"kind": "token", "ref": "accent"}},
-    {"id": "trail", "sceneId": "alpine-lake", "order": 13, "kind": "alongPath", "geometry": {"pathData": "M50 566 C 250 520 430 596 760 506", "count": 9}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "name": "Trail"},
-    {"id": "step", "sceneId": "alpine-lake", "order": 0, "kind": "ellipse", "geometry": {"x": -16, "y": -8, "width": 32, "height": 16}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "trail", "fill": {"kind": "token", "ref": "stone"}},
-    {"id": "pier", "sceneId": "alpine-lake", "order": 14, "kind": "projection", "geometry": {"axis": "isometric"}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "name": "Pier"},
-    {"id": "pier-deck", "sceneId": "alpine-lake", "order": 0, "kind": "rect", "geometry": {"x": 560, "y": 430, "width": 140, "height": 26}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "pier", "fill": {"kind": "token", "ref": "trunk"}},
-    {"id": "caption", "sceneId": "alpine-lake", "order": 15, "kind": "text", "geometry": {"text": "Alpine Lake", "fontSize": 42, "x": 48, "y": 76, "align": "start", "lineHeight": 48, "letterSpacing": 0}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "name": "Title", "fill": {"kind": "token", "ref": "ink"}}
-  ],
-  "constraints": [
-    {"id": "shrub-row", "sceneId": "alpine-lake", "kind": "equalSpacing", "elementIds": ["shrub-a", "shrub-b", "shrub-c"], "axis": "x", "value": 44}
-  ]
-}
-```
-
-Whether a part is a definition or an element in the scene, compose in this
-order:
-
-1. Block in the large shapes first — sky, peaks, shore, lake — as siblings with
-   increasing `order`, and validate.
-2. Group what belongs together (the sun, the lake, the forest) and add the
-   detail inside each group, where the group's transform carries it.
-3. Reach for a composition element for repetition, booleans, paths, and
-   outlines, and give every operand `parentId` equal to the composition's `id`.
-4. Render and inspect. A small shape lost behind a larger one is an `order`
-   problem; a repeated row that drifts is a `spacing` problem; a copy facing the
-   wrong way along a guide is an `alongPath` direction problem; a copy far from
-   where you expected is a composition-relative coordinate problem.
-
-## 5. Reusable parts: definitions and instances
-
-When a request needs a reusable part, read `reusable-parts.md`: it teaches a
-definition document, the `instance` element that places it, parameter bindings,
-and reuse across scenes, with worked examples.
-
-## 6. Build a complex graphic up in verified parts
-
-A detailed illustration is reliable when each part is correct before it is
-composed. This is the method for a complex request; a simple mark does not need
-it. Work one part at a time, and never compose a part that has not been
-verified. Read `depth-and-structure.md` alongside it: the depth,
-relative-placement, shared-anchor, and research directives are what each part is
-authored against.
-
-1. **Decompose.** Name the parts the drawing is made of and record the order.
-   Name each part's shared anchor as well as its order — the point where it meets
-   the part it sits against — so the composition meets there rather than leaving
-   a seam. When the request names no parts, use the documented default
-   decomposition: background and sky; the midground masses (land, water, large
-   structures); the repeating or reused objects (trees, clouds, ripples, steps);
-   then the foreground detail (reeds, stones, flowers, text). A request that does
-   not decompose cleanly still gets this decomposition rather than a stall.
-2. **Author one part as a definition.** Write `definitions/<part>.json`. Give it
-   a parameter for each value a use may vary, with a default, so one definition
-   serves every placement. `reusable-parts.md` teaches the definition document
-   and the `instance` that places it.
-3. **Verify the part in isolation.** Render it on its own and look at the
-   result:
-
-   ```sh
-   vectr render <part> --format png --out dist/<part>.png
-   ```
-
-   The render parses and validates the definition structurally, then draws the
-   part alone, framed to its own bounds; it prints the frame it used. Read the
-   diagnostics on failure — `E_SCHEMA`, `E_DEFINITION_CYCLE`, `E_BINDING`, and
-   the definition's own reference errors all name the element and its location.
-   Correct the definition and render it again until it is structurally sound and
-   matches the request. Do not compose a part that is not verified.
-4. **Compose the verified part.** Add an `instance` element to the scene,
-   binding the parameters this use varies and setting the placement transform.
-   Then validate and render the scene so far:
-
-   ```sh
-   vectr validate <scene>
-   vectr export <scene> --format png --out dist/<scene>.png
-   ```
-
-   Inspect the composition before adding the next part. If it does not match,
-   correct the instance's placement, binding, or anchor — the parts are already
-   verified, so a composition failure names the composition step, not the parts.
-5. **Repeat for each part.** Place a part already verified without re-authoring
-   it: another instance, or another scene in the same project, reuses the same
-   definition.
-6. **Verify the whole and export.** When every part is composed, validate and
-   compile the whole scene, then export the final SVG and PNG.
-
-Two ordering rules. Author and verify a part that depends on another — a boat on
-the lake, a tree on the hill — after the part it sits on, and record that order.
-If an increment expands past the tool's element limit, the error names the
-definition and refuses the whole rather than truncating it; reduce the part's
-repetition or nesting, or split it, and re-verify. The whole is complete when
-every part is placed and the scene validates, compiles, and renders
-deterministically with no part dropped.
+The complex illustration is the reference for the hard end of the range: it
+places parts relatively rather than by absolute coordinates, orders depth layers
+back to front, and joins parts at shared anchors. A detailed request is not a
+reason to simplify, and the language carries complexity through composition
+rather than a wider set of shape kinds. Never reduce a detailed request to a single mark or drop the parts it
+names; a detailed request is authored in full.
 
 ## 7. Validate, then compile
 
@@ -608,17 +348,18 @@ or `{"draft": {...}}` to validate an inline document. Exit codes: `0` success,
 `1` invalid scene, `2` usage or unreadable input, `3` compilation failure, `4`
 export dependency missing, `5` output I/O failure.
 
-## 8. Render and look at the result
+## 8. Render, inspect, and correct
 
-Render a preview you can see:
+Render the section you are refining on its own first, then the whole:
 
 ```sh
+vectr render pine --format png --out dist/pine.png          # the section alone
 vectr export habit-logo --format png --out dist/habit-logo.png --width 512 --height 512
 ```
 
-Then open the PNG and compare it against the request. Reading the image is the
-step that catches what a structural check cannot. Export the final deliverables
-once the preview matches:
+Open the PNG and compare it against the request. Reading the image is the step
+that catches what a structural check cannot. Export the final deliverables once
+the preview matches:
 
 ```sh
 vectr export habit-logo --format svg --out dist/habit-logo.svg
@@ -634,7 +375,9 @@ export.
 
 After each render, read `inspect-and-correct.md`: it maps a symptom in the render
 to its likely cause and the correction, and directs a re-render until the render
-matches the request.
+matches the request. When a section fails verification, correct it and re-verify
+it alone before integrating it; when the whole fails, correct the section's use
+or placement, not the verified parts.
 
 ## 9. When authoring fails
 
@@ -676,7 +419,7 @@ Validation diagnostics name the problem and its location. The usual findings:
 
 Correct the scene from the diagnostics and re-validate. **Retry once.** If the
 scene still fails after that correction, report the failure together with its
-diagnostics and produce no output. Never export from a scene that did not
+diagnostics and produce no output. **Never export** from a scene that did not
 validate and compile. If the authoring model is unavailable, stop and report
 that authoring cannot proceed and produce no output; never emit a placeholder
 asset.

@@ -5,9 +5,9 @@
 //! there: orientation, the project's local facts, and a pointer to the Vectr
 //! skill's on-demand references. It is deliberately *not* the authoring
 //! procedure — the procedure, the worked examples, the rules the schema does not
-//! state, the build-up method, the inspect-and-correct loop, the failure
-//! catalogue, and the defaults live in the skill's references and are read only
-//! when a step needs them (FEAT-020, D-043).
+//! state, the one method, the inspect-and-correct loop, the failure
+//! catalogue, and the defaults live in the skill's on-demand references and its
+//! `examples/`, and are read only when a step needs them (FEAT-020, D-043, D-047).
 //!
 //! The guide is carried inside the crate at `references/authoring-guide.md` and
 //! embedded verbatim at build time rather than restated in Rust, so the text

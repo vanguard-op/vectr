@@ -7,8 +7,9 @@ renders it. The schema is the source of truth for every type and allowed value.
 
 This file orients you and states this project's facts. It is not the authoring
 procedure: the procedure, the worked examples, the rules the schema does not
-state, the build-up method, the inspect-and-correct loop, and the defaults live
-in the Vectr skill's references, read on demand.
+state, the one method — sketch the whole, then refine its sections one at a time
+— the inspect-and-correct loop, and the defaults live in the Vectr skill's
+on-demand references and `examples/`, read on demand.
 
 ## This project
 
@@ -37,11 +38,10 @@ location and writes nothing.
 ## Where the depth lives
 
 When you author, read the Vectr skill's on-demand references. Start with
-`references/authoring-guide.md` — the procedure, the worked examples, and the
-failure catalogue — and follow its pointers to the reference for the step you
-are on: `rules.md`, `reusable-parts.md`, `depth-and-structure.md`,
-`inspect-and-correct.md`, `defaults.md`, and `licensing.md`. If the Vectr skill
-is not available to you, author from the published schema (`vectr schema`); the
-skill is not required.
+`references/authoring-guide.md` — the procedure and the failure catalogue — and
+follow its pointers to the reference for the step you are on: `rules.md`,
+`reusable-parts.md`, `depth-and-structure.md`, `inspect-and-correct.md`,
+`defaults.md`, and `licensing.md`. If the Vectr skill is not available to you,
+author from the published schema (`vectr schema`); the skill is not required.
 
 This guide targets `vectr` 0.1.0-pre.2 and scene `formatVersion` `0.2`.

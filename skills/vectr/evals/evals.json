@@ -4,7 +4,7 @@
     {
       "id": 1,
       "prompt": "make me a logo for a habit tracking app called Habit: a rounded badge with a check mark and the word Habit, in a purple",
-      "expected_output": "A Vectr scene document at formatVersion 0.2 with a palette token for the purple, a rounded rect badge, an ellipse or path check, and a text element. The skill validates it, compiles it, renders a PNG preview, inspects it, and exports SVG and PNG with no further instruction.",
+      "expected_output": "A Vectr scene document at formatVersion 0.2 with a palette token for the purple, a rounded rect badge, an ellipse or path check, and a text element, authored by the one method — sketch the whole, then refine its sections one at a time. The skill validates it, compiles it, renders a PNG preview, inspects it, and exports SVG and PNG with no further instruction.",
       "files": []
     },
     {
@@ -40,13 +40,13 @@
     {
       "id": 7,
       "prompt": "Build a rich, detailed illustration: a mountain lake at dawn with snow-capped peaks, a pine forest, reeds at the water's edge, a trail of stepping stones, and a low sun.",
-      "expected_output": "A compositionally complex Vectr scene: nested groups plus composition elements (repeat for the clouds and forest, boolean for the lake and snow cap, alongPath for the reeds and trail, offset for the sun halo, projection for the boardwalk) and at least one constraint, with every colour drawn from palette tokens. The skill validates, compiles, renders, and refines it, composing the full illustration rather than reducing it to a simple mark.",
+      "expected_output": "A compositionally complex Vectr scene: nested groups plus composition elements (repeat for the clouds and forest, boolean for the lake and snow cap, alongPath for the reeds and trail, offset for the sun halo, projection for the boardwalk) and at least one constraint, with every colour drawn from palette tokens. The skill sketches the whole at low fidelity first, then refines each section in turn and verifies it before the next, validating, compiling, and rendering the full illustration rather than reducing it to a simple mark.",
       "files": []
     },
     {
       "id": 8,
       "prompt": "Build a detailed scene for me: a wide valley at sunset with two mirrored mountain ridges, a river winding between them, a row of three identical pine trees, and a herd of four deer — two facing left and two facing right.",
-      "expected_output": "The skill follows the incremental build-up method rather than authoring one scene in a single pass: it decomposes the request into named parts, authors each part (the mirrored ridge, the winding river, the pine, the deer) as a reusable definition in definitions/<id>.json, verifies each part on its own with render-part / vectr render before composing it, then composes the verified parts into the scene one instance at a time — reusing the pine and deer definitions for the repeated and mirrored placements instead of re-authoring them — rendering the composition after each addition and exporting only once the whole validates and compiles.",
+      "expected_output": "The skill follows the one universal method rather than authoring one scene in a single pass: it sketches the whole at low fidelity, divides the request into sections deduced from the prompt (a group, an instance, or a scene), and refines each section in turn — validating it, rendering it on its own with render-part / vectr render before integrating it, and verifying the whole after each integration. A reusable definition is used only where a section is reused across placements (the mirrored ridge, the pine, the deer), so the pine and deer are authored once and placed wherever they are needed instead of being re-authored; the whole is exported only once every section is verified and it validates and compiles.",
       "files": []
     }
   ]

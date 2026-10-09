@@ -2,8 +2,8 @@
 
 Read this when a request implies depth or several parts. The hard end of the
 range is a coherent object, not a set of disjoint shapes. Four directives apply;
-each uses only the primitives the language already carries. Read them before a
-complex illustration, and check the render against them in the
+each uses only the primitives the language already carries. Read them before
+refining a section that carries depth, and check the render against them in the
 inspect-and-correct reference (`inspect-and-correct.md`).
 
 **Convey depth through structure, not photorealism.** Depth here is the

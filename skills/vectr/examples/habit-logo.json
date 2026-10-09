@@ -1,0 +1,69 @@
+{
+  "id": "habit-logo",
+  "projectId": "project",
+  "name": "Habit logo",
+  "formatVersion": "0.2",
+  "paletteId": "brand",
+  "title": "Habit tracker logo",
+  "canvas": { "width": 512, "height": 512, "background": "transparent" },
+  "elements": [
+    {
+      "id": "mark",
+      "sceneId": "habit-logo",
+      "order": 0,
+      "kind": "group",
+      "name": "Mark",
+      "geometry": {},
+      "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
+      "opacity": 1,
+      "visible": true
+    },
+    {
+      "id": "badge",
+      "sceneId": "habit-logo",
+      "parentId": "mark",
+      "order": 0,
+      "kind": "rect",
+      "name": "Badge",
+      "geometry": { "x": 96, "y": 96, "width": 320, "height": 320, "rx": 72, "ry": 72 },
+      "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
+      "fill": { "kind": "token", "ref": "accent" },
+      "opacity": 1,
+      "visible": true
+    },
+    {
+      "id": "dot",
+      "sceneId": "habit-logo",
+      "parentId": "mark",
+      "order": 1,
+      "kind": "ellipse",
+      "name": "Check dot",
+      "geometry": { "x": 216, "y": 176, "width": 80, "height": 80 },
+      "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
+      "fill": { "kind": "token", "ref": "paper" },
+      "opacity": 1,
+      "visible": true
+    },
+    {
+      "id": "label",
+      "sceneId": "habit-logo",
+      "parentId": "mark",
+      "order": 2,
+      "kind": "text",
+      "name": "Label",
+      "geometry": {
+        "text": "Habit",
+        "fontSize": 56,
+        "x": 256,
+        "y": 336,
+        "align": "center",
+        "lineHeight": 64,
+        "letterSpacing": 0
+      },
+      "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
+      "fill": { "kind": "token", "ref": "ink" },
+      "opacity": 1,
+      "visible": true
+    }
+  ]
+}

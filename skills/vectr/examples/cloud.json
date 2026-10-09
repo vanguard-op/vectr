@@ -1,0 +1,24 @@
+{
+  "id": "cloud",
+  "projectId": "project",
+  "name": "Cloud",
+  "parameters": [
+    { "name": "colour", "type": "token", "default": "paper" },
+    { "name": "size", "type": "number", "default": 120 }
+  ],
+  "origin": { "x": 0, "y": 0 },
+  "elements": [
+    {
+      "id": "cloud-body",
+      "definitionId": "cloud",
+      "order": 0,
+      "kind": "ellipse",
+      "name": "Cloud body",
+      "geometry": { "x": 0, "y": 0, "width": { "param": "size" }, "height": 40 },
+      "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
+      "fill": { "param": "colour" },
+      "opacity": 1,
+      "visible": true
+    }
+  ]
+}

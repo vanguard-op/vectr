@@ -1,0 +1,47 @@
+{
+  "id": "pine",
+  "projectId": "project",
+  "name": "Pine",
+  "parameters": [
+    { "name": "foliage", "type": "token", "default": "pine" }
+  ],
+  "origin": { "x": 0, "y": 0 },
+  "elements": [
+    {
+      "id": "pine-trunk",
+      "definitionId": "pine",
+      "order": 0,
+      "kind": "rect",
+      "name": "Trunk",
+      "geometry": { "x": -4, "y": -46, "width": 8, "height": 46 },
+      "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
+      "fill": { "kind": "token", "ref": "trunk" },
+      "opacity": 1,
+      "visible": true
+    },
+    {
+      "id": "pine-canopy-low",
+      "definitionId": "pine",
+      "order": 1,
+      "kind": "polygon",
+      "name": "Lower canopy",
+      "geometry": { "points": [[0, -140], [-36, -20], [36, -20]] },
+      "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
+      "fill": { "param": "foliage" },
+      "opacity": 1,
+      "visible": true
+    },
+    {
+      "id": "pine-canopy-high",
+      "definitionId": "pine",
+      "order": 2,
+      "kind": "polygon",
+      "name": "Upper canopy",
+      "geometry": { "points": [[0, -96], [-42, 0], [42, 0]] },
+      "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
+      "fill": { "kind": "token", "ref": "pine-dark" },
+      "opacity": 1,
+      "visible": true
+    }
+  ]
+}

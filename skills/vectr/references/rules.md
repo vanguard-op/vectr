@@ -35,7 +35,7 @@ allowed values; these rules are enforced by the engine and are easy to miss.
   is `0`.
 - **Constraints** (`equalSpacing`, `align`, `attach`, `contain`, `snapToGrid`)
   are optional and resolve at compile time; two that cannot both hold fail
-  compilation. Leave them out for a simple scene.
+  compilation. Leave them out when nothing needs them.
 - **A definition is a project-scoped part, not a scene.** It has no `canvas`; it
   declares `parameters` and an `origin` and holds its own `elements`. Its
   elements carry `definitionId` where a scene's carry `sceneId` — exactly one of
