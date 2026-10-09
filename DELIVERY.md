@@ -69,6 +69,11 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | Phase 3 — Any Model Can Author | 2026-10-08 | FEAT-017, FEAT-018, FEAT-019, FEAT-020 shipped; validated alpha colour model (FEAT-005) and the shading-request warning (FEAT-007); scope extended to very complex illustrations (FEAT-003, FEAT-011) with complex-scene coverage; multi-scene projects with identifier addressing and a default scene, matched by the MCP surface (FEAT-016, FEAT-019); CLI and MCP share one project loader and one authoring guide; crates self-contained for packaging, both binaries and the skill distributed; released as 0.1.0-pre.1 on crates.io and GitHub Releases (checksummed and signed); the gate covers the acceptance crate's fmt/lints and a determinism check; C-001–C-005 implemented. |
 | Phase 4 — Reuse & Incremental Authoring | 2026-10-09 | FEAT-030, FEAT-031, FEAT-029 shipped: reusable part definitions, part-scoped rendering, and the incremental build-up method; the element model settled as one shape with a single literal-or-reference form and parameters as the only adjustment mechanism; part style resolves from the project's default palette and a part identifier resolves in one shared namespace; C-001–C-005 re-implemented at revisions 7/7/6/8/4. |
 
+### Active phase: Phase 4 — Reuse & Incremental Authoring
+| Task | Feature | Owner | Status | Contract |
+|---|---|---|---|---|
+| T-083 | FEAT-016, FEAT-019, FEAT-029, FEAT-030, FEAT-031 | infra-engineer | In Progress | C-004, C-005 |
+
 ## Decisions log
 | # | Decision | Rationale | By |
 |---|---|---|---|
