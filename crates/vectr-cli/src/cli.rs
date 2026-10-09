@@ -68,7 +68,7 @@ Usage:
   vectr init [dir]
   vectr validate [<scene>] [--json]
   vectr compile [<scene>] [--out <file>] [--check]
-  vectr export [<scene>] --format svg|png|pdf [--out <file>] [--width <n>] [--height <n>] [--density <n>] [--background <color|transparent>]
+  vectr export [<scene>] --format svg|png|pdf [--out <file>] [--width <n>] [--height <n>] [--density <n>] [--background <color|transparent>] [--profile <srgb|cmyk>]
   vectr inspect [<scene>] [--out <file>] [--width <n>] [--height <n>] [--density <n>] [--background <color|transparent>]
   vectr render <part> [--out <file>] [--format svg|png] [--width <n>] [--height <n>] [--density <n>] [--background <color|transparent>]
   vectr schema [--type <name>] [--compact]
@@ -123,6 +123,8 @@ pub enum Command {
         density: Option<f64>,
         /// Background override, or `transparent`.
         background: Option<String>,
+        /// The print colour profile a PDF export targets (FEAT-014).
+        profile: Option<Profile>,
     },
     /// Render a whole-scene preview for inspection (FEAT-022).
     Inspect {
@@ -183,6 +185,30 @@ impl Format {
             Format::Svg => "svg",
             Format::Png => "png",
             Format::Pdf => "pdf",
+        }
+    }
+}
+
+/// The print colour profile a PDF export targets (FEAT-014).
+///
+/// The profile is a PDF-only concern: `srgb` carries per-paint transparency,
+/// while `cmyk` is a print space that cannot, so the exporter flattens it. The
+/// CLI names the two profiles the contract freezes and leaves the emission to
+/// the engine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Profile {
+    /// Device RGB with transparency.
+    Srgb,
+    /// Device CMYK with transparency flattened.
+    Cmyk,
+}
+
+impl Profile {
+    /// The profile name the exporter understands.
+    fn name(self) -> &'static str {
+        match self {
+            Profile::Srgb => "srgb",
+            Profile::Cmyk => "cmyk",
         }
     }
 }
@@ -311,6 +337,7 @@ pub fn run_in(command: Command, cwd: &Path) -> Report {
             height,
             density,
             background,
+            profile,
         } => {
             // PDF is a gated capability, off by default (FEAT-014); the gate is
             // checked before the scene is read, so a disabled export writes
@@ -336,6 +363,7 @@ pub fn run_in(command: Command, cwd: &Path) -> Report {
                         height,
                         density,
                         background.as_deref(),
+                        profile,
                     )
                 }
                 Err(report) => report,
@@ -491,6 +519,7 @@ fn parse_export(args: Vec<OsString>) -> Result<Command, String> {
     let mut height: Option<f64> = None;
     let mut density: Option<f64> = None;
     let mut background: Option<String> = None;
+    let mut profile: Option<Profile> = None;
 
     let mut i = 0;
     while i < args.len() {
@@ -512,6 +541,8 @@ fn parse_export(args: Vec<OsString>) -> Result<Command, String> {
                     density = Some(parse_number(value, "density")?);
                 } else if let Some(value) = text.strip_prefix("--background=") {
                     background = Some(value.to_string());
+                } else if let Some(value) = text.strip_prefix("--profile=") {
+                    profile = Some(parse_profile(value)?);
                 } else {
                     match text {
                         "--format" => {
@@ -545,6 +576,11 @@ fn parse_export(args: Vec<OsString>) -> Result<Command, String> {
                                     .into_owned(),
                             )
                         }
+                        "--profile" => {
+                            profile = Some(parse_profile(
+                                &take_value(&args, &mut i, "--profile")?.to_string_lossy(),
+                            )?)
+                        }
                         t if t.starts_with('-') && t != "-" => {
                             return Err(format!("unknown option `{t}` for `export`"))
                         }
@@ -556,7 +592,7 @@ fn parse_export(args: Vec<OsString>) -> Result<Command, String> {
         i += 1;
     }
 
-    let format = format.ok_or_else(|| "`export` needs `--format svg|png`".to_string())?;
+    let format = format.ok_or_else(|| "`export` needs `--format svg|png|pdf`".to_string())?;
     Ok(Command::Export {
         scene,
         format,
@@ -565,6 +601,7 @@ fn parse_export(args: Vec<OsString>) -> Result<Command, String> {
         height,
         density,
         background,
+        profile,
     })
 }
 
@@ -832,6 +869,20 @@ fn parse_format(value: &str) -> Result<Format, String> {
     }
 }
 
+/// Parses the print colour profile the contract names, case-insensitively.
+///
+/// The profile is refused at the command line rather than passed through, so an
+/// unusable value fails as a usage error before any scene is read (FEAT-014).
+fn parse_profile(value: &str) -> Result<Profile, String> {
+    match value.to_ascii_lowercase().as_str() {
+        "srgb" => Ok(Profile::Srgb),
+        "cmyk" => Ok(Profile::Cmyk),
+        _ => Err(format!(
+            "`--profile` must be `srgb` or `cmyk`, got `{value}`"
+        )),
+    }
+}
+
 /// Parses the `render` command's format: a part preview is a vector or raster
 /// image, so PDF is not one of its targets (C-004).
 fn parse_render_format(value: &str) -> Result<Format, String> {
@@ -947,6 +998,7 @@ fn compile_scene(cwd: &Path, scene: &ProjectScene, out: Option<&Path>, check: bo
     write_report(&target, text.as_bytes(), &warnings)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn export_scene(
     scene: &ProjectScene,
     format: Format,
@@ -955,11 +1007,20 @@ fn export_scene(
     height: Option<f64>,
     density: Option<f64>,
     background: Option<&str>,
+    profile: Option<Profile>,
 ) -> Report {
     if format != Format::Png && density.is_some() {
         return Report::failure(
             EXIT_USAGE,
             "error: `--density` applies only to PNG output\n".to_string(),
+        );
+    }
+    // The profile names a print colour space, so it is meaningful only for the
+    // PDF target; naming it elsewhere is refused rather than ignored (FEAT-014).
+    if format != Format::Pdf && profile.is_some() {
+        return Report::failure(
+            EXIT_USAGE,
+            "error: `--profile` applies only to PDF output\n".to_string(),
         );
     }
 
@@ -1016,6 +1077,7 @@ fn export_scene(
         height,
         density,
         background,
+        profile,
         &mut warnings,
     ) {
         Ok(bytes) => bytes,
@@ -1247,6 +1309,7 @@ fn render_part(
         height,
         density,
         background,
+        None,
         &mut warnings,
     ) {
         Ok(bytes) => bytes,
@@ -1293,6 +1356,7 @@ fn output_frame(
 ///
 /// Shared by `export` and `render`, so both surface the same exporter warnings
 /// and classify a missing dependency the same way (C-004).
+#[allow(clippy::too_many_arguments)]
 fn export_bytes(
     model: &RenderModel,
     format: Format,
@@ -1300,6 +1364,7 @@ fn export_bytes(
     height: Option<f64>,
     density: Option<f64>,
     background: Option<&str>,
+    profile: Option<Profile>,
     warnings: &mut String,
 ) -> Result<Vec<u8>, Report> {
     match format {
@@ -1342,7 +1407,7 @@ fn export_bytes(
             let options = PdfOptions {
                 page_width: width,
                 page_height: height,
-                profile: None,
+                profile: profile.map(Profile::name).map(str::to_string),
                 background: background.map(str::to_string),
             };
             match export_pdf_reporting(model, &options) {
@@ -1588,6 +1653,17 @@ mod tests {
     use super::*;
     use crate::testing::TempDir;
     use std::fs;
+
+    /// Serializes the tests that toggle the PDF rollout flag, which lives in the
+    /// process environment and is shared by every test in this binary.
+    static PDF_FLAG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Holds the PDF-flag lock for the duration of a test.
+    fn pdf_flag() -> std::sync::MutexGuard<'static, ()> {
+        PDF_FLAG_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     /// Writes a project whose `defaultSceneId` is `id`, holding one scene at
     /// `scenes/<id>.json`.
@@ -1901,6 +1977,7 @@ mod tests {
                 height: Some(64.0),
                 density: Some(2.0),
                 background: Some("transparent".to_string()),
+                profile: None,
             }
         );
     }
@@ -1919,8 +1996,46 @@ mod tests {
                 height: None,
                 density: None,
                 background: None,
+                profile: None,
             }
         );
+    }
+
+    #[test]
+    fn export_parses_the_print_profile_in_both_flag_forms() {
+        let expected = |profile: Option<Profile>| Command::Export {
+            scene: Some("logo".to_string()),
+            format: Format::Pdf,
+            out: None,
+            width: None,
+            height: None,
+            density: None,
+            background: None,
+            profile,
+        };
+        assert_eq!(
+            parse_args(&["export", "logo", "--format", "pdf", "--profile", "cmyk"]).unwrap(),
+            expected(Some(Profile::Cmyk))
+        );
+        assert_eq!(
+            parse_args(&["export", "logo", "--format=pdf", "--profile=srgb"]).unwrap(),
+            expected(Some(Profile::Srgb))
+        );
+    }
+
+    #[test]
+    fn export_refuses_an_unknown_profile_or_a_missing_value() {
+        assert!(parse_args(&[
+            "export",
+            "logo",
+            "--format",
+            "pdf",
+            "--profile",
+            "adobe-rgb"
+        ])
+        .is_err());
+        assert!(parse_args(&["export", "logo", "--format", "pdf", "--profile"]).is_err());
+        assert!(parse_args(&["export", "logo", "--format", "pdf", "--profile="]).is_err());
     }
 
     #[test]
@@ -2203,6 +2318,7 @@ mod tests {
                 height: None,
                 density: None,
                 background: None,
+                profile: None,
             },
             dir.path(),
         );
@@ -2226,6 +2342,7 @@ mod tests {
                 height: None,
                 density: None,
                 background: None,
+                profile: None,
             },
             dir.path(),
         );
@@ -2236,6 +2353,7 @@ mod tests {
 
     #[test]
     fn pdf_export_is_gated_and_writes_a_vector_document() {
+        let _guard = pdf_flag();
         let dir = TempDir::new("export-pdf");
         write_at(&dir, "vectr.project.json", "{}");
         write_at(&dir, "palettes/brand.json", PALETTE);
@@ -2253,6 +2371,7 @@ mod tests {
                 height: None,
                 density: None,
                 background: None,
+                profile: None,
             },
             dir.path(),
         );
@@ -2270,6 +2389,7 @@ mod tests {
                 height: None,
                 density: None,
                 background: None,
+                profile: None,
             },
             dir.path(),
         );
@@ -2284,6 +2404,135 @@ mod tests {
         assert!(
             text.contains("1 0 0 rg"),
             "the resolved fill colour: {text}"
+        );
+    }
+
+    #[test]
+    fn a_profile_on_a_non_pdf_export_is_a_usage_error() {
+        let dir = TempDir::new("export-profile-svg");
+        project(&dir, "scene-1", VALID_SCENE);
+        let out = dir.path().join("out.svg");
+        let report = run_in(
+            Command::Export {
+                scene: None,
+                format: Format::Svg,
+                out: Some(out.clone()),
+                width: None,
+                height: None,
+                density: None,
+                background: None,
+                profile: Some(Profile::Cmyk),
+            },
+            dir.path(),
+        );
+        assert_eq!(report.code, EXIT_USAGE);
+        assert!(
+            report.stderr.contains("applies only to PDF output"),
+            "{}",
+            report.stderr
+        );
+        assert!(
+            !out.exists(),
+            "no output is written for an inapplicable profile"
+        );
+    }
+
+    #[test]
+    fn a_pdf_export_honours_the_requested_profile() {
+        let _guard = pdf_flag();
+        let dir = TempDir::new("export-pdf-profile");
+        write_at(&dir, "vectr.project.json", "{}");
+        write_at(&dir, "palettes/brand.json", PALETTE);
+        write_at(&dir, "scenes/brand.json", PALETTE_SCENE);
+
+        std::env::set_var(ENABLE_PDF_ENV, "1");
+        let cmyk_out = dir.path().join("cmyk.pdf");
+        let cmyk = run_in(
+            Command::Export {
+                scene: Some("brand".to_string()),
+                format: Format::Pdf,
+                out: Some(cmyk_out.clone()),
+                width: None,
+                height: None,
+                density: None,
+                background: None,
+                profile: Some(Profile::Cmyk),
+            },
+            dir.path(),
+        );
+        let srgb_out = dir.path().join("srgb.pdf");
+        let srgb = run_in(
+            Command::Export {
+                scene: Some("brand".to_string()),
+                format: Format::Pdf,
+                out: Some(srgb_out.clone()),
+                width: None,
+                height: None,
+                density: None,
+                background: None,
+                profile: Some(Profile::Srgb),
+            },
+            dir.path(),
+        );
+        std::env::remove_var(ENABLE_PDF_ENV);
+
+        assert_eq!(cmyk.code, EXIT_SUCCESS, "{}", cmyk.stderr);
+        let cmyk_bytes = fs::read(&cmyk_out).expect("reads the pdf");
+        let cmyk_text = String::from_utf8_lossy(&cmyk_bytes);
+        assert!(
+            cmyk_text.contains(" k\n"),
+            "the CMYK colour operator: {cmyk_text}"
+        );
+        assert!(
+            !cmyk_text.contains(" rg\n"),
+            "no device RGB under CMYK: {cmyk_text}"
+        );
+
+        assert_eq!(srgb.code, EXIT_SUCCESS, "{}", srgb.stderr);
+        let srgb_bytes = fs::read(&srgb_out).expect("reads the pdf");
+        let srgb_text = String::from_utf8_lossy(&srgb_bytes);
+        assert!(
+            srgb_text.contains(" rg\n"),
+            "device RGB under sRGB: {srgb_text}"
+        );
+    }
+
+    #[test]
+    fn a_cmyk_profile_flattens_transparency_with_a_notice() {
+        let _guard = pdf_flag();
+        let dir = TempDir::new("export-pdf-flatten");
+        write_at(&dir, "vectr.project.json", "{}");
+        // An alpha token, so the paint carries transparency the CMYK space
+        // cannot represent (FEAT-005, FEAT-014).
+        write_at(
+            &dir,
+            "palettes/brand.json",
+            r##"{"id":"brand","projectId":"project","name":"Brand","tokens":[{"name":"accent","value":"#ff000080"}]}"##,
+        );
+        write_at(&dir, "scenes/brand.json", PALETTE_SCENE);
+        let out = dir.path().join("cmyk.pdf");
+
+        std::env::set_var(ENABLE_PDF_ENV, "1");
+        let report = run_in(
+            Command::Export {
+                scene: Some("brand".to_string()),
+                format: Format::Pdf,
+                out: Some(out.clone()),
+                width: None,
+                height: None,
+                density: None,
+                background: None,
+                profile: Some(Profile::Cmyk),
+            },
+            dir.path(),
+        );
+        std::env::remove_var(ENABLE_PDF_ENV);
+
+        assert_eq!(report.code, EXIT_SUCCESS, "{}", report.stderr);
+        assert!(
+            report.stderr.contains("W_PDF_TRANSPARENCY_FLATTENED"),
+            "the flattening is reported: {}",
+            report.stderr
         );
     }
 
@@ -2309,6 +2558,7 @@ mod tests {
                 height: None,
                 density: Some(2.0),
                 background: None,
+                profile: None,
             },
             dir.path(),
         );
@@ -2329,6 +2579,7 @@ mod tests {
                 height: None,
                 density: None,
                 background: Some("not-a-colour".to_string()),
+                profile: None,
             },
             dir.path(),
         );
@@ -2356,6 +2607,7 @@ mod tests {
                 height: None,
                 density: None,
                 background: Some("red".to_string()),
+                profile: None,
             },
             dir.path(),
         );
@@ -2425,6 +2677,7 @@ mod tests {
                 height: None,
                 density: None,
                 background: None,
+                profile: None,
             },
             dir.path(),
         );
