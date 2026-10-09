@@ -12,6 +12,23 @@
 //! finalizes a text node's glyph geometry (FEAT-024), [`schema`] publishes the
 //! language contract for discovery (FEAT-017), and [`export`] writes that model
 //! to an output format (FEAT-012).
+//!
+//! # Embedding
+//!
+//! This crate is the embeddable engine (FEAT-021): an application links it
+//! directly and compiles and exports in process, with no separate process and
+//! no filesystem or network access of its own. The entry points are [`parse`]
+//! and [`validate`] for the document, [`compile`] and [`compile_with_style`]
+//! for the render model, and [`export_svg`] and [`export_png`] for output. A
+//! failure is always a [`Diagnostics`] carrying a severity, a stable code, and
+//! a location — the same detail the command line prints — never a panic and
+//! never a partial result (NFR-011).
+//!
+//! The API holds no shared mutable state, so it is safe to call from multiple
+//! threads at once; identical input and seed yield byte-identical output
+//! (NFR-010). PNG export sits behind the default `rasterizer` feature, so a
+//! build without it reports the missing capability rather than failing
+//! silently.
 
 pub mod compiler;
 pub mod composition;
@@ -56,11 +73,12 @@ pub use render::{
     ResolvedFont, ResolvedNode, ResolvedStop, TextRun,
 };
 pub use scene::{
-    parse, parse_definition, validate, validate_definition, Binding, BindingValue, BoolValue,
-    Canvas, Constraint, ConstraintKind, Definition, Diagnostic, DiagnosticCode, Diagnostics,
-    Element, ElementKind, Geometry, Location, NumberValue, Origin, PaintKind, PaintValue, ParamRef,
-    Parameter, ParameterType, ParameterValue, Procedure, ProjectionAxis, Scene, Severity,
-    StringValue, TextAlign, Transform, CURRENT_FORMAT_VERSION, MAX_SCENE_BYTES,
+    is_color, parse, parse_definition, validate, validate_color, validate_definition, Binding,
+    BindingValue, BoolValue, Canvas, Constraint, ConstraintKind, Definition, Diagnostic,
+    DiagnosticCode, Diagnostics, Element, ElementKind, Geometry, Location, NumberValue, Origin,
+    PaintKind, PaintValue, ParamRef, Parameter, ParameterType, ParameterValue, Procedure,
+    ProjectionAxis, Scene, Severity, StringValue, TextAlign, Transform, CURRENT_FORMAT_VERSION,
+    MAX_SCENE_BYTES,
 };
 pub use schema::{schema, schema_for, SchemaForm, SCHEMA_VERSION, UNKNOWN_SCHEMA_TYPE};
 pub use style::{
