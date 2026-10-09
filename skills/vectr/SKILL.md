@@ -57,9 +57,9 @@ produce identical results.
 | Step | MCP tool | CLI |
 |---|---|---|
 | Read the contract | `schema` `{form?, type?}` | `vectr schema [--compact] [--type <name>]` |
-| Validate | `validate` `{scene, project?}` | `vectr validate <scene> [--json]` |
-| Compile | `compile` `{scene, project?}` | `vectr compile <scene> [--check] [--out <file>]` |
-| Render | `render` `{scene, format, out?, width?, height?, density?, background?}` | `vectr export <scene> --format svg\|png [--out <file>] [--width <n>] [--height <n>] [--density <n>] [--background <color\|transparent>]` |
+| Validate | `validate` `{scene?, draft?, project?}` | `vectr validate <scene> [--json]` |
+| Compile | `compile` `{scene?, draft?, project?}` | `vectr compile <scene> [--check] [--out <file>]` |
+| Render | `render` `{scene?, draft?, project?, format, out?, width?, height?, density?, background?}` | `vectr export <scene> --format svg\|png [--out <file>] [--width <n>] [--height <n>] [--density <n>] [--background <color\|transparent>]` |
 | Scaffold | — | `vectr init [dir]` |
 
 An MCP tool failure is a result with `isError: true` and a body
@@ -67,10 +67,15 @@ An MCP tool failure is a result with `isError: true` and a body
 just `message`. A CLI failure exits non-zero, prints a diagnostic with its
 location, and writes nothing: `1` invalid scene, `2` usage or unreadable input,
 `3` compilation failure, `4` export dependency missing, `5` output I/O failure.
-The `<scene>` argument is a scene identifier resolved among the project's scenes
-(`scenes/<id>.json`), not a file path; omit it to use the project's
-`defaultSceneId`. The `scene` argument to an MCP tool is either the scene
-document as JSON text or a path to one.
+
+Both the CLI's `<scene>` argument and an MCP tool's `scene` argument are a scene
+identifier resolved among the project's scenes (`scenes/<id>.json`), not a file
+path; omit it to use the project's `defaultSceneId`. An MCP tool also accepts an
+inline scene document through `draft` (a JSON object or JSON text), used as a
+draft instead of a project scene: it never becomes or reads the default, and its
+assets resolve against `project` or the server's project context. Naming both
+`scene` and `draft` in one call is malformed; a project that names no default
+reports that no scene was selected rather than choosing among its scenes.
 
 ## Output contract
 

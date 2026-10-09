@@ -312,7 +312,7 @@ mod tests {
         let scope = Scope::new(vec![dir]);
         let server = Server::new(&scope);
         let response = server
-            .handle(&json!({ "jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": { "name": "compile", "arguments": { "scene": RECT_SCENE } } }))
+            .handle(&json!({ "jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": { "name": "compile", "arguments": { "draft": RECT_SCENE } } }))
             .expect("a response");
         assert_eq!(response["result"]["isError"], false);
         assert!(response["result"]["structuredContent"]["model"]["nodes"]
@@ -327,7 +327,7 @@ mod tests {
         let server = Server::new(&scope);
         let invalid = RECT_SCENE.replace(r#""opacity": 1"#, r#""opacity": 2"#);
         let response = server
-            .handle(&json!({ "jsonrpc": "2.0", "id": 6, "method": "tools/call", "params": { "name": "compile", "arguments": { "scene": invalid } } }))
+            .handle(&json!({ "jsonrpc": "2.0", "id": 6, "method": "tools/call", "params": { "name": "compile", "arguments": { "draft": invalid } } }))
             .expect("a response");
         assert_eq!(response["result"]["isError"], true);
         assert_eq!(response["result"]["structuredContent"]["code"], "E_SCHEMA");

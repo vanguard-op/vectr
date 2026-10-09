@@ -1,11 +1,15 @@
 //! Acceptance tests for the MCP server (FEAT-019, C-005).
 //!
 //! Drives the built `vectr-mcp` binary as an agent host would. Over stdio: the
-//! server publishes its four tools with input and output schemas, compiles and
-//! renders a valid scene, returns a structured error for an invalid scene or an
-//! unsupported capability, refuses to leave the filesystem scope, and leaves no
-//! partial or temporary output behind. Over its opt-in loopback HTTP transport:
-//! concurrent calls stay independent.
+//! server publishes its four tools with input and output schemas; a scene is
+//! addressed exactly as the command line addresses it — by its identifier among
+//! a project's scenes, or the project's default when none is named — and an
+//! inline draft is accepted instead of a project scene without ever becoming or
+//! reading the default; a valid scene compiles and renders, an invalid scene or
+//! an unsupported capability is a structured error, a call naming both a scene
+//! and a draft is malformed, the server refuses to leave the filesystem scope,
+//! and it leaves no partial or temporary output behind. Over its opt-in loopback
+//! HTTP transport: concurrent calls stay independent.
 
 mod common;
 
@@ -15,7 +19,7 @@ use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use common::*;
 use serde_json::{json, Value};
@@ -43,6 +47,50 @@ fn scene_with_rects(count: usize) -> String {
         })
         .collect();
     scene(elements).to_string()
+}
+
+/// A scene whose one filled rect resolves the named palette's `accent` token, so
+/// a test can tell which scene's assets a tool resolved (FEAT-016, FEAT-019).
+fn colored_scene(id: &str, palette_id: &str) -> Value {
+    let mut card = rect("r1", 0, 0.0, 0.0, 10.0, 10.0);
+    card["fill"] = token_paint("accent");
+    let mut document = scene(vec![card]);
+    document["id"] = json!(id);
+    document["paletteId"] = json!(palette_id);
+    document["elements"][0]["sceneId"] = json!(id);
+    document
+}
+
+/// A project holding two scenes, `red` and `blue`, each resolving its own
+/// palette, and optionally naming a default scene (FEAT-016, FEAT-019).
+///
+/// The two scenes are laid out per D-032: one document per scene under
+/// `scenes/`, named for the scene's identifier.
+fn two_scene_project(tag: &str, default_scene: Option<&str>) -> TempDir {
+    let dir = TempDir::new(tag);
+    let mut config = json!({});
+    if let Some(id) = default_scene {
+        config["defaultSceneId"] = json!(id);
+    }
+    dir.write("vectr.project.json", &config.to_string());
+    dir.write("palettes/red.json", &palette("red", &[("accent", "#ff0000")]));
+    dir.write(
+        "palettes/blue.json",
+        &palette("blue", &[("accent", "#0000ff")]),
+    );
+    dir.write("scenes/red.json", &colored_scene("red", "red").to_string());
+    dir.write(
+        "scenes/blue.json",
+        &colored_scene("blue", "blue").to_string(),
+    );
+    dir
+}
+
+/// The resolved fill colour of the first node in a compile result.
+fn first_fill(result: &Value) -> &str {
+    result["structuredContent"]["model"]["nodes"][0]["paint"]["fill"]["value"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the first node carries a resolved fill: {result}"))
 }
 
 #[test]
@@ -100,6 +148,31 @@ fn an_mcp_client_lists_four_tools_with_their_schemas_and_the_server_version() {
             tool["name"]
         );
     }
+
+    // The scene-addressing arguments are discoverable: every scene tool
+    // publishes `scene`, `draft` and `project`, and neither `scene` nor `draft`
+    // is required, so omitting both applies the default-scene rule (FEAT-019).
+    for tool in tools.iter().filter(|tool| tool["name"] != "schema") {
+        let properties = &tool["inputSchema"]["properties"];
+        for name in ["scene", "draft", "project"] {
+            assert!(
+                properties.get(name).is_some(),
+                "{} publishes `{name}`: {tool}",
+                tool["name"]
+            );
+        }
+        let required = tool["inputSchema"]["required"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            !required
+                .iter()
+                .any(|name| name == "scene" || name == "draft"),
+            "{} does not require a scene or draft, so the default applies: {tool}",
+            tool["name"]
+        );
+    }
 }
 
 #[test]
@@ -111,7 +184,7 @@ fn a_valid_scene_compiles_through_mcp_and_returns_the_render_model() {
         &[mcp_tool_call(
             1,
             "compile",
-            json!({ "scene": scene_with_rects(1) }),
+            json!({ "draft": scene_with_rects(1) }),
         )],
     );
     assert_eq!(run.code, 0, "{}", run.stderr);
@@ -123,12 +196,34 @@ fn a_valid_scene_compiles_through_mcp_and_returns_the_render_model() {
 }
 
 #[test]
+fn a_valid_draft_sent_as_a_json_object_compiles_through_mcp() {
+    // A draft may be a scene document as a JSON object or as JSON text; both go
+    // through the same strict parser (C-005).
+    let dir = TempDir::new("mcp-draft-object");
+    let document: Value = serde_json::from_str(&scene_with_rects(2)).expect("a scene object");
+    let run = run_mcp_session(
+        dir.path(),
+        &[],
+        &[mcp_tool_call(1, "compile", json!({ "draft": document }))],
+    );
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let result = &response(&run, 1)["result"];
+    assert_eq!(result["isError"], false, "{:?}", run.responses);
+    assert_eq!(
+        result["structuredContent"]["model"]["nodes"]
+            .as_array()
+            .map(Vec::len),
+        Some(2)
+    );
+}
+
+#[test]
 fn a_project_scene_resolves_its_style_assets_through_mcp() {
     // The MCP server loads a scene's project assets through the shared project
     // loader, so a fill token and a stroke profile resolve exactly as they do
-    // through the CLI (FEAT-016, FEAT-019). The inline-scene path is covered
+    // through the CLI (FEAT-016, FEAT-019). The inline-draft path is covered
     // above; this is the project path, where the palette and stroke documents
-    // live beside the scene.
+    // live beside the scene and the scene is addressed by its identifier.
     let dir = TempDir::new("mcp-project");
     dir.write("vectr.project.json", "{}");
     dir.write(
@@ -143,16 +238,12 @@ fn a_project_scene_resolves_its_style_assets_through_mcp() {
     card["fill"] = token_paint("accent");
     card["stroke"] = stroke("hairline", "accent");
     let document = scene_with(vec![card], None, Some("brand"));
-    dir.write("scenes/logo.json", &document.to_string());
+    write_scene_as(&dir, "logo", document);
 
     let run = run_mcp_session(
         dir.path(),
         &[],
-        &[mcp_tool_call(
-            1,
-            "compile",
-            json!({ "scene": "scenes/logo.json" }),
-        )],
+        &[mcp_tool_call(1, "compile", json!({ "scene": "logo" }))],
     );
     assert_eq!(run.code, 0, "{}", run.stderr);
     let result = &response(&run, 1)["result"];
@@ -187,7 +278,7 @@ fn the_cli_and_the_mcp_server_resolve_a_project_identically() {
     card["fill"] = token_paint("accent");
     card["stroke"] = stroke("hairline", "accent");
     let document = scene_with(vec![card], None, Some("brand"));
-    dir.write("scenes/logo.json", &document.to_string());
+    write_scene_as(&dir, "logo", document);
 
     let cli = run_vectr(dir.path(), &["compile", "logo", "--out", "dist/model.json"]);
     assert_eq!(code(&cli), 0, "{}", stderr(&cli));
@@ -200,11 +291,7 @@ fn the_cli_and_the_mcp_server_resolve_a_project_identically() {
     let run = run_mcp_session(
         dir.path(),
         &[],
-        &[mcp_tool_call(
-            1,
-            "compile",
-            json!({ "scene": "scenes/logo.json" }),
-        )],
+        &[mcp_tool_call(1, "compile", json!({ "scene": "logo" }))],
     );
     assert_eq!(run.code, 0, "{}", run.stderr);
     let result = &response(&run, 1)["result"];
@@ -218,6 +305,283 @@ fn the_cli_and_the_mcp_server_resolve_a_project_identically() {
 }
 
 #[test]
+fn a_named_scene_addresses_one_scene_and_resolves_only_its_assets() {
+    // A project holding more than one scene: naming one scene by its identifier
+    // operates on that scene only, resolving that scene's project assets
+    // (FEAT-019).
+    let dir = two_scene_project("mcp-named-scene", Some("red"));
+
+    let run = run_mcp_session(
+        dir.path(),
+        &[],
+        &[mcp_tool_call(1, "compile", json!({ "scene": "blue" }))],
+    );
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let result = &response(&run, 1)["result"];
+    assert_eq!(result["isError"], false, "{:?}", run.responses);
+    assert_eq!(
+        first_fill(result),
+        "#0000ff",
+        "the named scene's own palette resolved"
+    );
+}
+
+#[test]
+fn an_omitted_scene_uses_the_project_default() {
+    let dir = two_scene_project("mcp-default", Some("blue"));
+    let run = run_mcp_session(
+        dir.path(),
+        &[],
+        &[mcp_tool_call(1, "compile", json!({}))],
+    );
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let result = &response(&run, 1)["result"];
+    assert_eq!(result["isError"], false, "{:?}", run.responses);
+    assert_eq!(
+        first_fill(result),
+        "#0000ff",
+        "the default scene's palette resolved"
+    );
+}
+
+#[test]
+fn a_named_scene_overrides_the_project_default() {
+    let dir = two_scene_project("mcp-override", Some("red"));
+    let run = run_mcp_session(
+        dir.path(),
+        &[],
+        &[mcp_tool_call(1, "compile", json!({ "scene": "blue" }))],
+    );
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let result = &response(&run, 1)["result"];
+    assert_eq!(result["isError"], false, "{:?}", run.responses);
+    assert_eq!(
+        first_fill(result),
+        "#0000ff",
+        "the named scene overrides the default"
+    );
+}
+
+#[test]
+fn a_project_that_names_no_default_reports_no_scene_selected() {
+    // A project that names no default scene must not choose among its scenes;
+    // it returns a structured error that no scene was selected (FEAT-019).
+    let dir = two_scene_project("mcp-no-default", None);
+    let run = run_mcp_session(
+        dir.path(),
+        &[],
+        &[mcp_tool_call(1, "validate", json!({}))],
+    );
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let result = &response(&run, 1)["result"];
+    assert_eq!(result["isError"], true, "{:?}", run.responses);
+    let body = &result["structuredContent"];
+    assert_eq!(body["code"], "E_SCENE");
+    let message = body["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("no scene") && message.contains("default"),
+        "the error reports that no scene was selected: {message}"
+    );
+}
+
+#[test]
+fn a_scene_identifier_no_document_provides_is_a_structured_error_naming_the_scene() {
+    let dir = two_scene_project("mcp-missing-scene", Some("red"));
+    let run = run_mcp_session(
+        dir.path(),
+        &[],
+        &[mcp_tool_call(1, "compile", json!({ "scene": "absent" }))],
+    );
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let result = &response(&run, 1)["result"];
+    assert_eq!(result["isError"], true, "{:?}", run.responses);
+    let body = &result["structuredContent"];
+    assert_eq!(body["code"], "E_SCENE");
+    assert!(
+        body["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("absent")),
+        "the missing scene is named: {body}"
+    );
+}
+
+#[test]
+fn a_default_that_resolves_to_no_document_is_a_structured_error_naming_the_scene() {
+    let dir = two_scene_project("mcp-missing-default", Some("ghost"));
+    let run = run_mcp_session(
+        dir.path(),
+        &[],
+        &[mcp_tool_call(1, "compile", json!({}))],
+    );
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let result = &response(&run, 1)["result"];
+    assert_eq!(result["isError"], true, "{:?}", run.responses);
+    let body = &result["structuredContent"];
+    assert_eq!(body["code"], "E_SCENE");
+    assert!(
+        body["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("ghost")),
+        "the missing default scene is named: {body}"
+    );
+}
+
+#[test]
+fn a_call_naming_both_a_scene_and_a_draft_is_malformed() {
+    // A scene identifier and an inline document are mutually exclusive; naming
+    // both is a malformed call, not a choice of one (FEAT-019).
+    let dir = two_scene_project("mcp-both", Some("red"));
+    let run = run_mcp_session(
+        dir.path(),
+        &[],
+        &[mcp_tool_call(
+            1,
+            "compile",
+            json!({ "scene": "red", "draft": scene_with_rects(1) }),
+        )],
+    );
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let result = &response(&run, 1)["result"];
+    assert_eq!(result["isError"], true, "{:?}", run.responses);
+    let body = &result["structuredContent"];
+    assert_eq!(body["code"], "E_MALFORMED");
+    assert!(
+        body["message"].as_str().is_some_and(|m| !m.is_empty()),
+        "the malformed call is explained: {body}"
+    );
+}
+
+#[test]
+fn an_inline_draft_is_used_as_a_draft_and_leaves_the_default_unchanged() {
+    // A draft is not a scene of the project: it never becomes the default and
+    // never reads or writes it (FEAT-019).
+    let dir = two_scene_project("mcp-draft-default", Some("red"));
+
+    let run = run_mcp_session(
+        dir.path(),
+        &[],
+        &[mcp_tool_call(
+            1,
+            "compile",
+            json!({ "draft": scene_with_rects(3) }),
+        )],
+    );
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let result = &response(&run, 1)["result"];
+    assert_eq!(result["isError"], false, "{:?}", run.responses);
+    assert_eq!(
+        result["structuredContent"]["model"]["nodes"]
+            .as_array()
+            .map(Vec::len),
+        Some(3),
+        "the inline document was compiled"
+    );
+
+    // The draft's own document is never written into the project.
+    assert!(
+        !dir.path().join("scenes/s.json").exists(),
+        "a draft never becomes a project scene"
+    );
+    // The project configuration is untouched, and the default still resolves.
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("vectr.project.json")).expect("reads the config"),
+        r#"{"defaultSceneId":"red"}"#
+    );
+    let default = run_mcp_session(
+        dir.path(),
+        &[],
+        &[mcp_tool_call(1, "compile", json!({}))],
+    );
+    assert_eq!(default.code, 0, "{}", default.stderr);
+    assert_eq!(
+        first_fill(&response(&default, 1)["result"]),
+        "#ff0000",
+        "the default scene is unchanged by the draft"
+    );
+}
+
+#[test]
+fn an_inline_draft_resolves_its_assets_against_the_project() {
+    let dir = two_scene_project("mcp-draft-assets", Some("red"));
+    // The draft names the blue palette the project provides, though the project
+    // default is red.
+    let draft = colored_scene("d", "blue");
+    let run = run_mcp_session(
+        dir.path(),
+        &[],
+        &[mcp_tool_call(1, "compile", json!({ "draft": draft }))],
+    );
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let result = &response(&run, 1)["result"];
+    assert_eq!(result["isError"], false, "{:?}", run.responses);
+    assert_eq!(
+        first_fill(result),
+        "#0000ff",
+        "the draft resolves the project's palette: {result}"
+    );
+}
+
+#[test]
+fn an_inline_draft_whose_asset_reference_resolves_nowhere_names_the_reference() {
+    // A draft naming a palette the project does not provide is a structured
+    // error naming the reference (FEAT-019).
+    let dir = two_scene_project("mcp-draft-missing-asset", Some("red"));
+    let draft = colored_scene("d", "absent");
+    let run = run_mcp_session(
+        dir.path(),
+        &[],
+        &[mcp_tool_call(1, "validate", json!({ "draft": draft }))],
+    );
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let result = &response(&run, 1)["result"];
+    assert_eq!(result["isError"], true, "{:?}", run.responses);
+    let body = &result["structuredContent"];
+    assert_eq!(body["code"], "E_PROJECT_ASSET");
+    assert!(
+        body["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("absent")),
+        "the unresolved reference is named: {body}"
+    );
+    assert!(
+        body["diagnostics"]
+            .as_array()
+            .is_some_and(|findings| !findings.is_empty()),
+        "the finding is reported: {body}"
+    );
+}
+
+#[test]
+fn an_inline_draft_whose_element_reference_resolves_nowhere_names_its_location() {
+    // An element-level reference that resolves nowhere names both the reference
+    // and the element that carries it (FEAT-019).
+    let dir = two_scene_project("mcp-draft-undefined-ref", Some("red"));
+    let mut draft = colored_scene("d", "blue");
+    draft["elements"][0]["stroke"] = stroke("outline", "accent");
+    let run = run_mcp_session(
+        dir.path(),
+        &[],
+        &[mcp_tool_call(1, "compile", json!({ "draft": draft }))],
+    );
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let result = &response(&run, 1)["result"];
+    assert_eq!(result["isError"], true, "{:?}", run.responses);
+    let body = &result["structuredContent"];
+    assert_eq!(body["code"], "E_UNDEFINED_STROKE");
+    assert!(
+        body["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("outline")),
+        "the unresolved reference is named: {body}"
+    );
+    assert_eq!(
+        body["location"]["elementId"], "r1",
+        "the reference is located: {body}"
+    );
+    assert_eq!(body["location"]["jsonPath"], "/stroke/profileId");
+}
+
+#[test]
 fn a_valid_scene_renders_through_mcp_and_writes_the_file() {
     let dir = TempDir::new("mcp-render");
     let run = run_mcp_session(
@@ -226,7 +590,7 @@ fn a_valid_scene_renders_through_mcp_and_writes_the_file() {
         &[mcp_tool_call(
             1,
             "render",
-            json!({ "scene": scene_with_rects(1), "format": "svg", "out": "dist/logo.svg" }),
+            json!({ "draft": scene_with_rects(1), "format": "svg", "out": "dist/logo.svg" }),
         )],
     );
     assert_eq!(run.code, 0, "{}", run.stderr);
@@ -241,6 +605,30 @@ fn a_valid_scene_renders_through_mcp_and_writes_the_file() {
 }
 
 #[test]
+fn a_project_scene_render_defaults_its_output_to_the_scene_identifier() {
+    // A rendered project scene with no `out` writes `<project>/dist/<id>.<ext>`,
+    // so the output is named for the addressed scene (FEAT-019).
+    let dir = two_scene_project("mcp-render-default", Some("red"));
+    let run = run_mcp_session(
+        dir.path(),
+        &[],
+        &[mcp_tool_call(
+            1,
+            "render",
+            json!({ "scene": "blue", "format": "svg" }),
+        )],
+    );
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let result = &response(&run, 1)["result"];
+    assert_eq!(result["isError"], false, "{:?}", run.responses);
+    let path = result["structuredContent"]["path"]
+        .as_str()
+        .expect("the written path is returned");
+    assert!(path.ends_with("dist/blue.svg"), "{path}");
+    assert!(dir.path().join("dist/blue.svg").is_file());
+}
+
+#[test]
 fn an_invalid_scene_is_a_structured_tool_error() {
     let dir = TempDir::new("mcp-invalid");
     let mut document: Value = serde_json::from_str(&scene_with_rects(1)).expect("a scene");
@@ -252,7 +640,7 @@ fn an_invalid_scene_is_a_structured_tool_error() {
         &[mcp_tool_call(
             1,
             "compile",
-            json!({ "scene": document.to_string() }),
+            json!({ "draft": document.to_string() }),
         )],
     );
     assert_eq!(run.code, 0, "{}", run.stderr);
@@ -280,7 +668,7 @@ fn an_unsupported_capability_is_a_structured_error_and_the_server_survives() {
             mcp_tool_call(
                 1,
                 "render",
-                json!({ "scene": scene_with_rects(1), "format": "pdf", "out": "dist/out.pdf" }),
+                json!({ "draft": scene_with_rects(1), "format": "pdf", "out": "dist/out.pdf" }),
             ),
             mcp_request(2, "tools/list", json!({})),
         ],
@@ -340,7 +728,7 @@ fn an_output_outside_the_filesystem_scope_is_refused_without_writing() {
         &[mcp_tool_call(
             1,
             "render",
-            json!({ "scene": scene_with_rects(1), "format": "svg", "out": target.to_string_lossy() }),
+            json!({ "draft": scene_with_rects(1), "format": "svg", "out": target.to_string_lossy() }),
         )],
     );
     assert_eq!(run.code, 0, "{}", run.stderr);
@@ -365,7 +753,7 @@ fn an_allow_flag_widens_the_filesystem_scope() {
         &[mcp_tool_call(
             1,
             "render",
-            json!({ "scene": scene_with_rects(1), "format": "svg", "out": target.to_string_lossy() }),
+            json!({ "draft": scene_with_rects(1), "format": "svg", "out": target.to_string_lossy() }),
         )],
     );
     assert_eq!(run.code, 0, "{}", run.stderr);
@@ -384,12 +772,12 @@ fn no_partial_or_temporary_output_is_left_behind() {
             mcp_tool_call(
                 1,
                 "render",
-                json!({ "scene": scene_with_rects(1), "format": "pdf", "out": "dist/out.pdf" }),
+                json!({ "draft": scene_with_rects(1), "format": "pdf", "out": "dist/out.pdf" }),
             ),
             mcp_tool_call(
                 2,
                 "render",
-                json!({ "scene": scene_with_rects(1), "format": "svg", "out": "dist/ok.svg" }),
+                json!({ "draft": scene_with_rects(1), "format": "svg", "out": "dist/ok.svg" }),
             ),
         ],
     );
@@ -488,6 +876,69 @@ fn post(addr: &str, body: &str) -> (u16, String) {
     (status, payload)
 }
 
+/// Sends one JSON-RPC request and closes the connection without reading the
+/// reply, as a client that disconnects mid-call does.
+fn post_and_disconnect(addr: &str, body: &str) {
+    let mut stream = TcpStream::connect(addr).expect("connects to the server");
+    let request = format!(
+        "POST /mcp HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream
+        .write_all(request.as_bytes())
+        .expect("writes the request");
+    // Dropping the stream closes it before the reply is read.
+}
+
+/// The `dist/` entries whose name contains `.tmp-`, the atomic write's
+/// temporary file prefix.
+fn temporary_leftovers(dist: &Path) -> Vec<String> {
+    std::fs::read_dir(dist)
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .filter(|name| name.contains(".tmp-"))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[test]
+fn a_client_that_disconnects_mid_render_leaves_no_partial_output() {
+    // A disconnect while a render is in flight must not leave a truncated or
+    // partial file behind: the output is written atomically, so it is either
+    // absent or a complete document (FEAT-019, NFR-011).
+    let dir = TempDir::new("mcp-disconnect");
+    let (_server, authority) = start_http_server(dir.path());
+    let body = mcp_tool_call(
+        1,
+        "render",
+        json!({ "draft": scene_with_rects(4), "format": "svg", "out": "dist/aborted.svg" }),
+    )
+    .to_string();
+
+    post_and_disconnect(&authority, &body);
+
+    // Wait for the server to finish the call it was sent.
+    let target = dir.path().join("dist/aborted.svg");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !target.exists() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(20));
+    }
+
+    if let Ok(text) = std::fs::read_to_string(&target) {
+        assert!(
+            text.contains("<svg") && text.contains("</svg>"),
+            "a disconnected client leaves a complete document, never a partial one: {text}"
+        );
+    }
+    assert!(
+        temporary_leftovers(&dir.path().join("dist")).is_empty(),
+        "no temporary file is left behind"
+    );
+}
+
 #[test]
 fn concurrent_calls_are_independent_over_the_http_transport() {
     let dir = TempDir::new("mcp-concurrent");
@@ -497,7 +948,7 @@ fn concurrent_calls_are_independent_over_the_http_transport() {
         .map(|count| {
             let authority = authority.clone();
             thread::spawn(move || {
-                let body = mcp_tool_call(1, "compile", json!({ "scene": scene_with_rects(count) }))
+                let body = mcp_tool_call(1, "compile", json!({ "draft": scene_with_rects(count) }))
                     .to_string();
                 let (status, payload) = post(&authority, &body);
                 assert_eq!(status, 200, "worker {count}: {payload}");
