@@ -22,6 +22,12 @@
 # "Environments & Promotion": a release is built from the exact revision that
 # passed continuous integration).
 #
+# The check compares version values, not line endings: a CRLF checkout (a
+# Windows machine, or a clone with core.autocrlf=true) reads identically to an
+# LF one, so the same revision passes the gate on every supported platform
+# (NFR-010). `.gitattributes` also normalizes the working tree to LF; this
+# script stays correct even when a file reaches it with CRLF.
+#
 # The format version also appears in the shipped skill's scene template and its
 # evaluation prompts (skills/vectr/assets, skills/vectr/evals), which this
 # script does not own; the acceptance suite validates the template against the
@@ -42,15 +48,16 @@ esac
 
 # The single sources. Cargo.toml's first `version = "..."` is the
 # `[workspace.package]` version every crate inherits; version.rs declares the
-# one format version the build writes and reads (C-001).
-version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)"
+# one format version the build writes and reads (C-001). Both reads drop CR so
+# a CRLF checkout yields the same value as an LF one (NFR-010).
+version="$(tr -d '\r' < Cargo.toml | sed -n 's/^version = "\(.*\)"/\1/p' | head -n1)"
 [[ -n "$version" ]] || {
   echo "error: could not read the workspace version from Cargo.toml" >&2
   exit 1
 }
 
-format_version="$(sed -n 's/^pub const CURRENT_FORMAT_VERSION: &str = "\(.*\)";$/\1/p' \
-  crates/vectr-core/src/scene/version.rs | head -n1)"
+format_version="$(tr -d '\r' < crates/vectr-core/src/scene/version.rs \
+  | sed -n 's/^pub const CURRENT_FORMAT_VERSION: &str = "\(.*\)";$/\1/p' | head -n1)"
 [[ -n "$format_version" ]] || {
   echo "error: could not read CURRENT_FORMAT_VERSION from crates/vectr-core/src/scene/version.rs" >&2
   exit 1
@@ -60,38 +67,46 @@ status=0
 
 # apply <file> <sed-expression>... — rewrite <file> in place so it matches the
 # single source. Under --check, print the difference and record a failure
-# instead. `cmp` keeps an already-correct file untouched, so the script is
+# instead. The file is normalized to LF before the sed runs and before the
+# comparison, so a CRLF checkout neither reads as drift nor produces a spurious
+# diff; `cmp` keeps an already-correct file untouched, so the script is
 # idempotent and a write run shows only the files that actually changed.
 apply() {
   local file="$1"
   shift
-  local tmp
+  local tmp current
   tmp="$(mktemp)"
-  sed -E "$@" "$file" > "$tmp"
-  if cmp -s "$file" "$tmp"; then
-    rm -f "$tmp"
+  current="$(mktemp)"
+  tr -d '\r' < "$file" > "$current"
+  sed -E "$@" "$current" > "$tmp"
+  if cmp -s "$current" "$tmp"; then
+    rm -f "$tmp" "$current"
     return 0
   fi
   if (( check )); then
     echo "error: ${file} has drifted from the single-sourced version" >&2
-    diff -u "$file" "$tmp" >&2 || true
-    rm -f "$tmp"
+    diff -u -L "$file" -L "$file" "$current" "$tmp" >&2 || true
+    rm -f "$tmp" "$current"
     status=1
     return 0
   fi
   # Write through the original file so its mode survives: `mv` would replace it
   # with mktemp's 0600, stripping the executable bit from a script.
   cat "$tmp" > "$file"
-  rm -f "$tmp"
+  rm -f "$tmp" "$current"
   echo "updated ${file}"
 }
 
 # apply_lock <file> <member-names> — set the version of each named workspace
 # member's `[[package]]` entry, leaving every third-party version untouched.
+# The lock is normalized to LF first so awk sees whole lines (its `$` anchor
+# fails on a trailing CR) and the comparison is line-ending agnostic.
 apply_lock() {
   local file="$1" members="$2"
-  local tmp
+  local tmp current
   tmp="$(mktemp)"
+  current="$(mktemp)"
+  tr -d '\r' < "$file" > "$current"
   awk -v version="$version" -v members="$members" '
     BEGIN { n = split(members, m, " ") }
     /^name = / {
@@ -103,20 +118,20 @@ apply_lock() {
     }
     /^version = / && member { sub(/version = ".*"/, "version = \"" version "\"") }
     { print }
-  ' "$file" > "$tmp"
-  if cmp -s "$file" "$tmp"; then
-    rm -f "$tmp"
+  ' "$current" > "$tmp"
+  if cmp -s "$current" "$tmp"; then
+    rm -f "$tmp" "$current"
     return 0
   fi
   if (( check )); then
     echo "error: ${file} has drifted from the single-sourced version" >&2
-    diff -u "$file" "$tmp" >&2 || true
-    rm -f "$tmp"
+    diff -u -L "$file" -L "$file" "$current" "$tmp" >&2 || true
+    rm -f "$tmp" "$current"
     status=1
     return 0
   fi
   cat "$tmp" > "$file"
-  rm -f "$tmp"
+  rm -f "$tmp" "$current"
   echo "updated ${file}"
 }
 
