@@ -1,6 +1,6 @@
 name: Release
 
-# Builds, checksums and attests the distributable artifacts, publishes the
+# Builds, checksums and signs the distributable artifacts, publishes the
 # product crates to crates.io, and opens the GitHub Release. Vectr is
 # distributed rather than hosted, so there is no service to deploy (release.md,
 # "Environments & Promotion").
@@ -10,9 +10,20 @@ name: Release
 # revision has a successful CI run, and every job below needs it. The version
 # tag is the release owner's approval.
 #
-# Required repository secret: CARGO_REGISTRY_TOKEN, a crates.io API token with
-# publish scope for the vectr-* crates (NFR-025). The binaries and the skill
-# archive are checksummed and signed with build-provenance attestations.
+# Release integrity (NFR-025): the release is signed and its checksums are
+# published. GitHub artifact attestations are only available for public
+# repositories or GitHub Enterprise Cloud organizations, and this repository is
+# private on a Free plan, so the release is signed with a maintainer GPG key
+# instead. `scripts/sign-release.sh` signs the combined SHA256SUMS and exports
+# the matching public key; both are attached to the release, and the same
+# command runs locally.
+#
+# Required repository secrets:
+#   CARGO_REGISTRY_TOKEN — a crates.io API token with publish scope for the
+#     vectr-* crates (D-006).
+#   GPG_PRIVATE_KEY — the ASCII-armored private key that signs the release
+#     (NFR-025). Never committed (NFR-026).
+#   GPG_PASSPHRASE — that key's passphrase, when it has one.
 
 on:
   push:
@@ -21,8 +32,6 @@ on:
 
 permissions:
   contents: write
-  id-token: write
-  attestations: write
 
 jobs:
   verify:
@@ -77,11 +86,6 @@ jobs:
         shell: bash
         run: scripts/package.sh "${{ matrix.target }}" dist
 
-      - name: Attest build provenance
-        uses: actions/attest-build-provenance@v2
-        with:
-          subject-path: dist/*
-
       - uses: actions/upload-artifact@v4
         with:
           name: binaries-${{ matrix.target }}
@@ -98,11 +102,6 @@ jobs:
       - name: Package the skill archive and checksum (NFR-025)
         run: scripts/package-skill.sh dist
 
-      - name: Attest build provenance
-        uses: actions/attest-build-provenance@v2
-        with:
-          subject-path: dist/*
-
       - uses: actions/upload-artifact@v4
         with:
           name: skill
@@ -115,6 +114,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # The action writes the SBOM to an existing directory; nothing else in
+      # this job creates it, so a missing `dist/` fails the release here.
+      - name: Prepare the dist directory
+        run: mkdir -p dist
       - name: Generate CycloneDX SBOM
         uses: anchore/sbom-action@v0
         with:
@@ -169,10 +172,11 @@ jobs:
             ! -name '*.sha256' ! -name '*.json' -printf '%f\n' | sort) > SHA256SUMS
           cat SHA256SUMS
 
-      - name: Attest release bundle
-        uses: actions/attest-build-provenance@v2
-        with:
-          subject-path: dist/*
+      - name: Sign the release checksums (NFR-025)
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: scripts/sign-release.sh dist/SHA256SUMS
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
