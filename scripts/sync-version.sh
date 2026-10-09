@@ -9,7 +9,7 @@
 #
 # The derived copies are the crate dependency pins, the acceptance crate and
 # both lockfiles, the README, the agent skill, its on-demand references
-# (references/*.md) and its worked examples (examples/*.json), and the crate's
+# (references/*.md) and its worked examples (examples/*.md), and the crate's
 # minimal agent guide (the scaffold's AGENTS.md template). Bumping a release
 # means editing the one source and running this script, never editing the copies
 # by hand.
@@ -34,7 +34,7 @@
 # evaluation prompts (skills/vectr/assets, skills/vectr/evals), which this
 # script does not own; the acceptance suite validates the template against the
 # built tool, so a stale copy is caught there. The skill's worked examples
-# (skills/vectr/examples/*.json) are scenes this script does own and sweep, so a
+# (skills/vectr/examples/*.md) are scenes this script does own and sweep, so a
 # format-version bump reaches the shipped examples rather than leaving one that
 # no longer validates against the built tool.
 set -euo pipefail
@@ -169,8 +169,14 @@ apply skills/vectr/SKILL.md \
 p_guide_targets='s|(This guide targets `vectr` )[^ ]*|\1'"$version"'|'
 p_guide_prints='s|(# prints: vectr )[^ ]*|\1'"$version"'|'
 p_guide_written='s|(versions: this guide was written for )[^,]*|\1'"$version"'|'
-apply skills/vectr/references/authoring-guide.md \
-  -e "$p_guide_targets" -e "$p_guide_prints" -e "$p_guide_written"
+# The skill's depth lives in its on-demand references rather than one guide
+# (FEAT-020, D-042), so a release-version literal in any of them must be synced
+# too. A reference that carries no literal is a no-op, so the whole directory is
+# swept rather than a hand-kept list a new reference could fall outside of.
+for reference in skills/vectr/references/*.md; do
+  apply "$reference" \
+    -e "$p_guide_targets" -e "$p_guide_prints" -e "$p_guide_written"
+done
 # The crate carries the minimal agent guide the scaffold writes as AGENTS.md,
 # not the skill's full authoring guide: it states the tool version only in its
 # target line, so only that pattern applies (FEAT-020, D-043).
@@ -184,8 +190,8 @@ apply_lock tests/acceptance/Cargo.lock "vectr-acceptance vectr-core"
 
 # --- scene format version --------------------------------------------------
 
-# The skill's guide and the skill state the format version in prose and in the
-# worked scenes; the README's scene example carries it too.
+# The skill's entry point and its on-demand references state the format version
+# in prose and in the worked scenes; the README's scene example carries it too.
 f_json='s|("formatVersion": ")[^"]*(")|\1'"$format_version"'\2|g'
 f_fv_quoted='s|(`formatVersion` `")[^"]*(")|\1'"$format_version"'\2|g'
 f_xattr='s|(`x-vectr-formatVersion: ")[^"]*(")|\1'"$format_version"'\2|g'
@@ -209,10 +215,12 @@ done
 
 # The skill's worked examples are scenes under `examples/`, one file each
 # (FEAT-020, D-047); a scene states the format version, so a bump must reach
-# them or a shipped example stops validating against the built tool. A
-# definition example carries no format-version literal, so sweeping the whole
-# directory is a no-op for it and stays correct as examples are added.
-for example in skills/vectr/examples/*.json; do
+# them or a shipped example stops validating against the built tool. The
+# examples ship as markdown documents that embed the scene, so the JSON literal
+# inside each is swept; a definition example carries no format-version literal,
+# so the whole directory is a no-op for it and stays correct as examples are
+# added.
+for example in skills/vectr/examples/*.md; do
   apply "$example" -e "$f_json"
 done
 # The minimal agent guide states the format version only in its target line
