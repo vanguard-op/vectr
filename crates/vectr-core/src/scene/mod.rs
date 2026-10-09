@@ -14,10 +14,10 @@ mod version;
 pub use color::{is_color, validate_color, INVALID_COLOR};
 pub use diagnostic::{Diagnostic, DiagnosticCode, Diagnostics, Location, Severity};
 pub use model::{
-    Axis, Binding, BindingValue, BoolValue, BooleanOperation, Canvas, Constraint, ConstraintKind,
-    Definition, Element, ElementKind, Geometry, NumberValue, Origin, Paint, PaintKind, PaintValue,
-    ParamRef, Parameter, ParameterType, ParameterValue, Procedure, ProjectionAxis, Scene,
-    StringValue, Stroke, TextAlign, Transform,
+    default_name_pattern, Axis, Binding, BindingValue, BoolValue, BooleanOperation, Canvas,
+    Constraint, ConstraintKind, Definition, Element, ElementKind, Geometry, IconEntry, IconSet,
+    NumberValue, Origin, Paint, PaintKind, PaintValue, ParamRef, Parameter, ParameterType,
+    ParameterValue, Procedure, ProjectionAxis, Scene, StringValue, Stroke, TextAlign, Transform,
 };
 pub use version::{
     is_supported, is_supported_version, parse_version, supported_range, CURRENT_FORMAT_VERSION,
@@ -180,6 +180,152 @@ pub fn validate_definition(definition: &Definition) -> Diagnostics {
     // checked by expansion (FEAT-018, FEAT-030).
     validate_elements(&mut diagnostics, &definition.elements);
     validate_element_identity(&mut diagnostics, &definition.elements);
+
+    diagnostics
+}
+
+/// Reads an icon set from a JSON document (C-002, FEAT-025).
+///
+/// On success the returned [`IconSet`] is structurally valid and passes
+/// [`validate_icon_set`]; parsing refuses rather than returning one carrying a
+/// duplicate icon name, an empty icon list, or an unusable naming pattern
+/// (NFR-011).
+pub fn parse_icon_set(source: &str) -> Result<IconSet, Diagnostics> {
+    ensure_within_size(source.len())?;
+
+    let value: serde_json::Value = serde_json::from_str(source)
+        .map_err(|error| diagnostics_from_serde(DiagnosticCode::PARSE, &error))?;
+    if !value.is_object() {
+        return Err(Diagnostics::from(Diagnostic::error(
+            DiagnosticCode::PARSE,
+            "not an icon-set document: the top level must be a JSON object",
+        )));
+    }
+
+    let set: IconSet = serde_json::from_str(source)
+        .map_err(|error| diagnostics_from_serde(DiagnosticCode::SCHEMA, &error))?;
+
+    let findings = validate_icon_set(&set);
+    if findings.has_errors() {
+        return Err(findings);
+    }
+    Ok(set)
+}
+
+/// Checks a parsed icon set against the language contract (C-002, FEAT-025).
+///
+/// Returns every finding, errors and warnings alike, in a deterministic order.
+/// The document-level rules the schema names are enforced here: a set declares
+/// at least one icon, two icons cannot share a name, and the naming pattern must
+/// carry the `{name}` placeholder (docs/Vectr/schema.md, "IconSet").
+pub fn validate_icon_set(set: &IconSet) -> Diagnostics {
+    let mut diagnostics = Diagnostics::new();
+
+    if set.id.is_empty() {
+        diagnostics.push(
+            Diagnostic::error(DiagnosticCode::SCHEMA, "`id` must not be empty").at_path("/id"),
+        );
+    }
+    validate_name(&mut diagnostics, &set.name, "/name", "icon-set name");
+    validate_required_number(&mut diagnostics, set.canvas.width, "/canvas/width", "width");
+    validate_required_number(
+        &mut diagnostics,
+        set.canvas.height,
+        "/canvas/height",
+        "height",
+    );
+    validate_color(
+        &mut diagnostics,
+        &set.canvas.background,
+        "canvas background",
+        "/canvas/background",
+    );
+
+    if set.stroke_profile_id.is_empty() {
+        diagnostics.push(
+            Diagnostic::error(
+                DiagnosticCode::SCHEMA,
+                "`strokeProfileId` must not be empty",
+            )
+            .at_path("/strokeProfileId"),
+        );
+    }
+
+    // The naming scheme must yield a distinct file name per icon, so the
+    // placeholder is required and the pattern and each name must stay a plain
+    // file name rather than escaping the output directory (FEAT-025, NFR-024).
+    if !set.name_pattern.contains("{name}") {
+        diagnostics.push(
+            Diagnostic::error(
+                DiagnosticCode::SCHEMA,
+                format!(
+                    "namePattern `{}` must contain the placeholder `{{name}}`",
+                    set.name_pattern
+                ),
+            )
+            .at_path("/namePattern"),
+        );
+    }
+    if set.name_pattern.contains('/') || set.name_pattern.contains('\\') {
+        diagnostics.push(
+            Diagnostic::error(
+                DiagnosticCode::SCHEMA,
+                "`namePattern` must not contain a path separator",
+            )
+            .at_path("/namePattern"),
+        );
+    }
+
+    if set.icons.is_empty() {
+        diagnostics.push(
+            Diagnostic::error(
+                DiagnosticCode::SCHEMA,
+                format!("icon set `{}` must declare at least one icon", set.id),
+            )
+            .at_path("/icons"),
+        );
+    }
+
+    let mut seen: HashSet<&str> = HashSet::with_capacity(set.icons.len());
+    for (index, icon) in set.icons.iter().enumerate() {
+        let base = format!("/icons/{index}");
+        if icon.name.is_empty() {
+            diagnostics.push(
+                Diagnostic::error(DiagnosticCode::SCHEMA, "an icon name must not be empty")
+                    .at_path(format!("{base}/name")),
+            );
+        } else if icon.name.contains('/')
+            || icon.name.contains('\\')
+            || icon.name == "."
+            || icon.name == ".."
+        {
+            diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::SCHEMA,
+                    format!("icon name `{}` must be a plain file name", icon.name),
+                )
+                .at_path(format!("{base}/name")),
+            );
+        }
+        if !seen.insert(icon.name.as_str()) {
+            diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::DUPLICATE_NAME,
+                    format!(
+                        "duplicate icon name `{}` in icon set `{}`",
+                        icon.name, set.id
+                    ),
+                )
+                .at_path(format!("{base}/name")),
+            );
+        }
+        if icon.definition_ref.is_empty() {
+            diagnostics.push(
+                Diagnostic::error(DiagnosticCode::SCHEMA, "`definitionRef` must not be empty")
+                    .at_path(format!("{base}/definitionRef")),
+            );
+        }
+    }
 
     diagnostics
 }

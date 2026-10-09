@@ -270,6 +270,8 @@ mod tests {
             "StyleRecipe",
             "Gradient",
             "Constraint",
+            "IconSet",
+            "IconEntry",
             "Asset",
         ] {
             assert!(definitions.contains_key(entity), "missing `{entity}`");

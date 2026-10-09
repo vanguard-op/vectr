@@ -32,6 +32,8 @@
     "RecipeParameters",
     "Gradient",
     "GradientStop",
+    "IconSet",
+    "IconEntry",
     "Asset",
     "ProjectConfig",
     "ProjectOutput",
@@ -443,6 +445,41 @@
         "opacity": { "type": "number", "minimum": 0, "maximum": 1, "description": "Stop opacity, from 0 to 1; defaults to 1." }
       },
       "required": ["offset", "token"],
+      "additionalProperties": false
+    },
+    "IconSet": {
+      "title": "IconSet",
+      "description": "A project-scoped document that generates a set of icons sharing one canvas, palette, recipe, stroke profile, and naming scheme. Each icon is a reusable Definition the set places, rendered on its own under the set's shared style rather than the project's isolated-definition defaults, and exported as a separately named file.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Stable identifier for the icon set, unique within its project." },
+        "projectId": { "type": "string", "description": "References the ProjectConfig this icon set belongs to." },
+        "name": { "type": "string", "maxLength": 120, "description": "Human-readable icon-set name." },
+        "canvas": { "$ref": "#/$defs/Canvas" },
+        "paletteId": { "type": "string", "description": "References the Palette whose tokens the set's icons resolve against; when absent, the project's defaultPaletteId applies." },
+        "recipeId": { "type": "string", "description": "References the StyleRecipe the set's icons render under; when absent, the project's defaultRecipeId applies." },
+        "strokeProfileId": { "type": "string", "description": "References the StrokeProfile every icon in the set draws with; an icon element's stroke resolves to this profile, and a stroke that names a different profile is a validation error." },
+        "namePattern": { "type": "string", "description": "The naming scheme for the set's exported files: a pattern containing the placeholder {name}, replaced by each icon's name; defaults to {name}. A pattern that does not contain {name} is a validation error." },
+        "icons": {
+          "type": "array",
+          "minItems": 1,
+          "description": "The icons in the set, each an entry naming the definition that draws it. Every icon is rendered on its own under the set's shared canvas, palette, recipe, and stroke profile, and exported to a file named by namePattern. An empty list is a validation error.",
+          "items": { "$ref": "#/$defs/IconEntry" }
+        }
+      },
+      "required": ["id", "projectId", "name", "canvas", "strokeProfileId", "icons"],
+      "additionalProperties": false
+    },
+    "IconEntry": {
+      "title": "IconEntry",
+      "description": "One icon in a set: a named placement of a reusable definition.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "The icon's name, unique within the set and substituted for {name} in namePattern to name the exported file." },
+        "definitionRef": { "type": "string", "description": "References the Definition that draws the icon." },
+        "accessibleName": { "type": "string", "description": "Accessible name carried into the icon's exported output, distinct from the icon's name." }
+      },
+      "required": ["name", "definitionRef"],
       "additionalProperties": false
     },
     "Asset": {

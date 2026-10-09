@@ -9,6 +9,7 @@
 //! `vectr-project` crate, shared with the MCP server.
 
 mod cli;
+mod icon_set;
 mod init;
 mod output;
 

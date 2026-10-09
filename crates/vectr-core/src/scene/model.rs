@@ -801,6 +801,80 @@ pub struct Origin {
     pub y: f64,
 }
 
+/// A project-scoped document that generates a set of icons sharing one canvas,
+/// palette, recipe, stroke profile, and naming scheme (C-001, FEAT-025).
+///
+/// Each icon is a reusable [`Definition`] the set places. The set renders every
+/// icon on its own under the shared canvas and style rather than the project's
+/// isolated-definition defaults, and exports each to a file named by
+/// [`IconSet::file_name_for`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct IconSet {
+    /// Stable identifier for the icon set, unique within its project.
+    pub id: String,
+    /// References the project this icon set belongs to.
+    pub project_id: String,
+    /// Human-readable icon-set name, at most 120 characters.
+    pub name: String,
+    /// The drawing surface shared by every icon in the set.
+    pub canvas: Canvas,
+    /// References the palette the set's icons resolve against; when absent, the
+    /// project's `defaultPaletteId` applies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub palette_id: Option<String>,
+    /// References the recipe the set's icons render under; when absent, the
+    /// project's `defaultRecipeId` applies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipe_id: Option<String>,
+    /// References the stroke profile every icon in the set draws with; an icon
+    /// element's stroke must name this profile.
+    pub stroke_profile_id: String,
+    /// The naming scheme for the set's exported files: a pattern containing the
+    /// placeholder `{name}`, replaced by each icon's name. Defaults to `{name}`.
+    #[serde(default = "default_name_pattern")]
+    pub name_pattern: String,
+    /// The icons in the set; an empty list is invalid.
+    pub icons: Vec<IconEntry>,
+}
+
+impl IconSet {
+    /// The naming pattern, which defaults to `{name}` when none is declared.
+    pub fn name_pattern(&self) -> &str {
+        &self.name_pattern
+    }
+
+    /// The file name one icon exports to: the naming pattern with `{name}`
+    /// replaced by the icon's name and the format extension appended.
+    pub fn file_name_for(&self, icon: &IconEntry, extension: &str) -> String {
+        format!(
+            "{}.{}",
+            self.name_pattern.replace("{name}", &icon.name),
+            extension
+        )
+    }
+}
+
+/// The default icon naming pattern (C-001, FEAT-025).
+pub fn default_name_pattern() -> String {
+    "{name}".to_string()
+}
+
+/// One icon in a set: a named placement of a reusable definition (C-001).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct IconEntry {
+    /// The icon's name, unique within the set and substituted for `{name}` in
+    /// the set's naming pattern to name the exported file.
+    pub name: String,
+    /// References the reusable definition that draws the icon.
+    pub definition_ref: String,
+    /// Accessible name carried into the icon's exported output, distinct from
+    /// the icon's name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accessible_name: Option<String>,
+}
+
 /// A number that is either a literal or a parameter reference (C-001).
 ///
 /// Deserialization is hand-written rather than an untagged enum so an invalid

@@ -39,6 +39,7 @@ use vectr_core::{
     SvgOptions,
 };
 
+use crate::icon_set;
 use crate::init;
 use crate::output::write_atomic;
 use vectr_project::{
@@ -62,6 +63,10 @@ pub const EXIT_OUTPUT: i32 = 5;
 /// by default (FEAT-014).
 pub const ENABLE_PDF_ENV: &str = "VECTR_ENABLE_PDF_EXPORT";
 
+/// The environment variable that enables icon-set mode, a rollout flag that is
+/// off by default (FEAT-025).
+pub const ENABLE_ICON_SET_ENV: &str = "VECTR_ENABLE_ICON_SET_MODE";
+
 /// The usage block shared by the help text and every usage error.
 const USAGE: &str = "\
 Usage:
@@ -71,13 +76,15 @@ Usage:
   vectr export [<scene>] --format svg|png|pdf [--out <file>] [--width <n>] [--height <n>] [--density <n>] [--background <color|transparent>] [--profile <srgb|cmyk>]
   vectr inspect [<scene>] [--out <file>] [--width <n>] [--height <n>] [--density <n>] [--background <color|transparent>]
   vectr render <part> [--out <file>] [--format svg|png] [--width <n>] [--height <n>] [--density <n>] [--background <color|transparent>]
+  vectr icon-set export [<set>] [--format svg|png|pdf] [--out-dir <dir>]
   vectr schema [--type <name>] [--compact]
 
 <scene> is a scene identifier resolved among the project's scenes; the project
 is found from the working directory. Omitting it uses the project's default
 scene. <part> is a reusable definition's identifier, or an element subtree's
 identifier, resolved within the project; it is rendered on its own, framed to
-its own bounds.";
+its own bounds. <set> is an icon-set identifier resolved among the project's
+icon sets; omitting it uses the project's only icon set.";
 
 /// One parsed command line.
 #[derive(Debug, Clone, PartialEq)]
@@ -157,6 +164,15 @@ pub enum Command {
         density: Option<f64>,
         /// Background override, or `transparent`.
         background: Option<String>,
+    },
+    /// Export every icon in a set on its own (FEAT-025).
+    IconSetExport {
+        /// The icon-set identifier to read; the project's only set when absent.
+        set: Option<String>,
+        /// The output format for every icon.
+        format: Format,
+        /// Where to write the icons; the default `dist/` path when absent.
+        out_dir: Option<PathBuf>,
     },
     /// Print the language contract, or one of its types.
     Schema {
@@ -254,6 +270,7 @@ pub fn help_text() -> String {
          \x20 export    Export a scene as SVG, PNG or PDF.\n\
          \x20 inspect   Render a whole-scene preview for inspection.\n\
          \x20 render    Render one part on its own, framed to its bounds.\n\
+         \x20 icon-set  Export every icon in a set on its own.\n\
          \x20 schema    Print the language contract.\n\n\
          Exit codes:\n\
          \x20 0 success   1 invalid scene   2 usage or unreadable input\n\
@@ -290,6 +307,7 @@ pub fn parse(args: Vec<OsString>) -> Result<Command, String> {
         "export" => parse_export(rest),
         "inspect" => parse_inspect(rest),
         "render" => parse_render(rest),
+        "icon-set" => parse_icon_set(rest),
         "schema" => parse_schema(rest),
         _ if name.starts_with('-') => Err(format!("unknown option `{name}`")),
         _ => Err(format!("unknown command `{name}`")),
@@ -416,6 +434,30 @@ pub fn run_in(command: Command, cwd: &Path) -> Report {
                 density,
                 background.as_deref(),
             )
+        }
+        Command::IconSetExport {
+            set,
+            format,
+            out_dir,
+        } => {
+            // Icon-set mode is a gated capability, off by default (FEAT-025);
+            // the gate is checked before any set is read, so a disabled export
+            // writes nothing (NFR-011).
+            if let Some(report) = icon_set_disabled() {
+                return report;
+            }
+            // A PDF icon-set export is still a PDF export, so it also respects
+            // the PDF gate (FEAT-014).
+            if format == Format::Pdf {
+                if let Some(report) = pdf_disabled() {
+                    return report;
+                }
+            }
+            let out_dir = out_dir
+                .as_deref()
+                .map(|path| absolute(cwd, path))
+                .unwrap_or_else(|| cwd.join("dist"));
+            icon_set::export(cwd, set.as_deref(), format, &out_dir)
         }
         Command::Schema { type_name, compact } => schema_command(type_name.as_deref(), compact),
     }
@@ -774,6 +816,75 @@ fn parse_render(args: Vec<OsString>) -> Result<Command, String> {
     })
 }
 
+/// Parses the `icon-set` command: its `export` action plus the format and
+/// output directory (FEAT-025).
+///
+/// The set is an identifier resolved among the project's icon-set documents;
+/// the format defaults to SVG, and every icon is written under the output
+/// directory, `dist/` by default.
+fn parse_icon_set(args: Vec<OsString>) -> Result<Command, String> {
+    let mut args = args.into_iter();
+    let Some(action) = args.next() else {
+        return Err("`icon-set` needs an action, such as `export`".to_string());
+    };
+    let Some(action) = action.to_str() else {
+        return Err("the icon-set action is not valid UTF-8".to_string());
+    };
+    match action {
+        "-h" | "--help" => return Ok(Command::Help),
+        "export" => {}
+        other => {
+            return Err(format!(
+                "unknown action `{other}` for `icon-set`; expected `export`"
+            ))
+        }
+    }
+
+    let args: Vec<OsString> = args.collect();
+    let mut set: Option<String> = None;
+    let mut format = Format::Svg;
+    let mut out_dir: Option<PathBuf> = None;
+
+    let mut i = 0;
+    while i < args.len() {
+        let raw = args[i].clone();
+        let text = raw.to_str().map(str::to_owned);
+        match text.as_deref() {
+            None => set_icon_set_id(&mut set, raw)?,
+            Some("-h") | Some("--help") => return Ok(Command::Help),
+            Some(text) => {
+                if let Some(value) = text.strip_prefix("--format=") {
+                    format = parse_format(value)?;
+                } else if let Some(value) = text.strip_prefix("--out-dir=") {
+                    out_dir = Some(PathBuf::from(value));
+                } else {
+                    match text {
+                        "--format" => {
+                            format = parse_format(
+                                &take_value(&args, &mut i, "--format")?.to_string_lossy(),
+                            )?
+                        }
+                        "--out-dir" => {
+                            out_dir = Some(PathBuf::from(take_value(&args, &mut i, "--out-dir")?))
+                        }
+                        t if t.starts_with('-') && t != "-" => {
+                            return Err(format!("unknown option `{t}` for `icon-set export`"))
+                        }
+                        _ => set_icon_set_id(&mut set, raw)?,
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+
+    Ok(Command::IconSetExport {
+        set,
+        format,
+        out_dir,
+    })
+}
+
 /// Parses the `schema` command's `--type` and `--compact` flags.
 fn parse_schema(args: Vec<OsString>) -> Result<Command, String> {
     let mut type_name: Option<String> = None;
@@ -854,6 +965,18 @@ fn set_part(slot: &mut Option<String>, value: OsString) -> Result<(), String> {
     let id = value
         .into_string()
         .map_err(|_| "the part identifier is not valid UTF-8".to_string())?;
+    *slot = Some(id);
+    Ok(())
+}
+
+/// Records the single icon-set identifier `icon-set export` accepts.
+fn set_icon_set_id(slot: &mut Option<String>, value: OsString) -> Result<(), String> {
+    if slot.is_some() {
+        return Err("`icon-set export` accepts at most one set identifier".to_string());
+    }
+    let id = value
+        .into_string()
+        .map_err(|_| "the set identifier is not valid UTF-8".to_string())?;
     *slot = Some(id);
     Ok(())
 }
@@ -1520,7 +1643,7 @@ fn default_output(scene_id: &str, extension: &str) -> PathBuf {
 
 /// Classifies an export failure: a missing dependency outranks a usage error,
 /// which outranks a defined size limit.
-fn export_exit_code(diagnostics: &Diagnostics) -> i32 {
+pub(crate) fn export_exit_code(diagnostics: &Diagnostics) -> i32 {
     let mut code = EXIT_COMPILE;
     for error in diagnostics.errors() {
         if error.code == png_export::RASTERIZER {
@@ -1552,6 +1675,21 @@ fn pdf_disabled() -> Option<Report> {
     }
 }
 
+/// The report for a disabled icon-set export, when the rollout flag is off.
+///
+/// Icon-set mode is off by default (FEAT-025); the flag is read from the
+/// environment so the capability can be enabled without a rebuild.
+fn icon_set_disabled() -> Option<Report> {
+    if enabled_value(std::env::var(ENABLE_ICON_SET_ENV).ok().as_deref()) {
+        None
+    } else {
+        Some(Report::failure(
+            EXIT_USAGE,
+            format!("error: icon-set mode is disabled; set {ENABLE_ICON_SET_ENV}=1 to enable it\n"),
+        ))
+    }
+}
+
 /// Whether a flag value enables a gated capability.
 pub fn enabled_value(value: Option<&str>) -> bool {
     matches!(
@@ -1562,7 +1700,7 @@ pub fn enabled_value(value: Option<&str>) -> bool {
 
 /// Classifies a project-asset loading failure: a missing font is a dependency,
 /// any other unreadable project asset is missing input.
-fn asset_exit_code(diagnostics: &Diagnostics) -> i32 {
+pub(crate) fn asset_exit_code(diagnostics: &Diagnostics) -> i32 {
     dependency_exit_code(diagnostics, EXIT_USAGE)
 }
 
@@ -3379,5 +3517,261 @@ mod tests {
         assert_eq!(report.code, EXIT_SUCCESS, "{}", report.stderr);
         let after = fs::read(&out).expect("reads the second preview");
         assert_ne!(before, after, "the preview reflects the correction");
+    }
+
+    // -----------------------------------------------------------------------
+    // Icon-set mode (FEAT-025)
+    // -----------------------------------------------------------------------
+
+    /// Serializes the tests that toggle the icon-set rollout flag, which lives
+    /// in the process environment and is shared by every test in this binary.
+    static ICON_SET_FLAG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Holds the icon-set-flag lock for the duration of a test.
+    fn icon_set_flag() -> std::sync::MutexGuard<'static, ()> {
+        ICON_SET_FLAG_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// A definition whose single rect is filled from the palette's `ink` token.
+    fn icon_definition(id: &str, width: f64) -> String {
+        format!(
+            r##"{{"id":"{id}","projectId":"project","name":"{id}","parameters":[],"origin":{{"x":0,"y":0}},"elements":[{{"id":"{id}-body","definitionId":"{id}","order":0,"kind":"rect","geometry":{{"x":0,"y":0,"width":{width},"height":10}},"transform":{{"translateX":0,"translateY":0,"rotate":0,"scaleX":1,"scaleY":1}},"fill":{{"kind":"token","ref":"ink"}},"opacity":1,"visible":true}}]}}"##
+        )
+    }
+
+    /// A project with a palette, a stroke profile, two icon definitions, and an
+    /// icon set placing both under a shared canvas (FEAT-025).
+    fn icon_set_project(dir: &TempDir) {
+        write_at(
+            dir,
+            "vectr.project.json",
+            r#"{"defaultPaletteId":"brand","defaultRecipeId":"flat"}"#,
+        );
+        write_at(
+            dir,
+            "palettes/brand.json",
+            r##"{"id":"brand","projectId":"project","name":"Brand","tokens":[{"name":"ink","value":"#111111"}]}"##,
+        );
+        write_at(
+            dir,
+            "strokes/line.json",
+            r#"{"id":"line","projectId":"project","name":"Line","width":2,"cap":"butt","join":"miter"}"#,
+        );
+        write_at(
+            dir,
+            "recipes/flat.json",
+            r#"{"id":"flat","projectId":"project","name":"flat","parameters":{}}"#,
+        );
+        write_at(dir, "definitions/plus.json", &icon_definition("plus", 10.0));
+        write_at(
+            dir,
+            "definitions/minus.json",
+            &icon_definition("minus", 8.0),
+        );
+        write_at(
+            dir,
+            "icon-sets/ui.json",
+            r##"{"id":"ui","projectId":"project","name":"UI","canvas":{"width":24,"height":24,"background":"transparent"},"paletteId":"brand","strokeProfileId":"line","namePattern":"icon-{name}","icons":[{"name":"plus","definitionRef":"plus"},{"name":"minus","definitionRef":"minus"}]}"##,
+        );
+    }
+
+    #[test]
+    fn icon_set_parses_the_action_and_defaults_to_svg() {
+        assert_eq!(
+            parse_args(&["icon-set", "export"]).unwrap(),
+            Command::IconSetExport {
+                set: None,
+                format: Format::Svg,
+                out_dir: None,
+            }
+        );
+    }
+
+    #[test]
+    fn icon_set_parses_every_option() {
+        assert_eq!(
+            parse_args(&[
+                "icon-set",
+                "export",
+                "ui",
+                "--format",
+                "png",
+                "--out-dir",
+                "dist/icons"
+            ])
+            .unwrap(),
+            Command::IconSetExport {
+                set: Some("ui".to_string()),
+                format: Format::Png,
+                out_dir: Some(PathBuf::from("dist/icons")),
+            }
+        );
+        assert_eq!(
+            parse_args(&["icon-set", "export", "--format=png", "--out-dir=out"]).unwrap(),
+            parse_args(&["icon-set", "export", "--format", "png", "--out-dir", "out"]).unwrap()
+        );
+    }
+
+    #[test]
+    fn icon_set_refuses_an_unknown_action_or_option() {
+        assert!(parse_args(&["icon-set"]).is_err());
+        assert!(parse_args(&["icon-set", "frobnicate"]).is_err());
+        assert!(parse_args(&["icon-set", "export", "--nope"]).is_err());
+        assert!(parse_args(&["icon-set", "export", "a", "b"]).is_err());
+        assert!(parse_args(&["icon-set", "export", "--format", "tiff"]).is_err());
+    }
+
+    #[test]
+    fn icon_set_export_is_gated_off_by_default() {
+        let _guard = icon_set_flag();
+        let dir = TempDir::new("icon-set-gated");
+        icon_set_project(&dir);
+        let out_dir = dir.path().join("icons");
+
+        std::env::remove_var(ENABLE_ICON_SET_ENV);
+        let report = run_in(
+            Command::IconSetExport {
+                set: Some("ui".to_string()),
+                format: Format::Svg,
+                out_dir: Some(out_dir.clone()),
+            },
+            dir.path(),
+        );
+        assert_eq!(report.code, EXIT_USAGE, "{}", report.stderr);
+        assert!(
+            !out_dir.exists(),
+            "nothing is written while the flag is off"
+        );
+    }
+
+    #[test]
+    fn icon_set_export_writes_each_icon_as_a_named_file() {
+        let _guard = icon_set_flag();
+        let dir = TempDir::new("icon-set-export");
+        icon_set_project(&dir);
+        let out_dir = dir.path().join("icons");
+
+        std::env::set_var(ENABLE_ICON_SET_ENV, "1");
+        let report = run_in(
+            Command::IconSetExport {
+                set: Some("ui".to_string()),
+                format: Format::Svg,
+                out_dir: Some(out_dir.clone()),
+            },
+            dir.path(),
+        );
+        std::env::remove_var(ENABLE_ICON_SET_ENV);
+
+        assert_eq!(report.code, EXIT_SUCCESS, "{}", report.stderr);
+        let plus = fs::read_to_string(out_dir.join("icon-plus.svg")).expect("plus icon");
+        let minus = fs::read_to_string(out_dir.join("icon-minus.svg")).expect("minus icon");
+        for svg in [&plus, &minus] {
+            assert!(
+                svg.contains("viewBox=\"0 0 24 24\""),
+                "shared canvas: {svg}"
+            );
+            assert!(svg.contains("#111111"), "shared palette: {svg}");
+        }
+        assert!(report.stdout.contains("icon-plus.svg"), "{}", report.stdout);
+        assert!(
+            report.stdout.contains("icon-minus.svg"),
+            "{}",
+            report.stdout
+        );
+    }
+
+    #[test]
+    fn icon_set_export_uses_the_only_set_when_none_is_named() {
+        let _guard = icon_set_flag();
+        let dir = TempDir::new("icon-set-only");
+        icon_set_project(&dir);
+
+        std::env::set_var(ENABLE_ICON_SET_ENV, "1");
+        let report = run_in(
+            Command::IconSetExport {
+                set: None,
+                format: Format::Svg,
+                out_dir: Some(dir.path().join("icons")),
+            },
+            dir.path(),
+        );
+        std::env::remove_var(ENABLE_ICON_SET_ENV);
+        assert_eq!(report.code, EXIT_SUCCESS, "{}", report.stderr);
+        assert!(dir.path().join("icons/icon-plus.svg").exists());
+    }
+
+    #[test]
+    fn icon_set_export_reports_a_set_identifier_no_document_provides() {
+        let _guard = icon_set_flag();
+        let dir = TempDir::new("icon-set-missing");
+        icon_set_project(&dir);
+
+        std::env::set_var(ENABLE_ICON_SET_ENV, "1");
+        let report = run_in(
+            Command::IconSetExport {
+                set: Some("absent".to_string()),
+                format: Format::Svg,
+                out_dir: Some(dir.path().join("icons")),
+            },
+            dir.path(),
+        );
+        std::env::remove_var(ENABLE_ICON_SET_ENV);
+        assert_eq!(report.code, EXIT_USAGE);
+        assert!(report.stderr.contains("absent"), "{}", report.stderr);
+        assert!(!dir.path().join("icons").exists());
+    }
+
+    #[test]
+    fn icon_set_export_reports_a_duplicate_icon_name_before_writing() {
+        let _guard = icon_set_flag();
+        let dir = TempDir::new("icon-set-duplicate");
+        icon_set_project(&dir);
+        write_at(
+            &dir,
+            "icon-sets/ui.json",
+            r##"{"id":"ui","projectId":"project","name":"UI","canvas":{"width":24,"height":24,"background":"transparent"},"paletteId":"brand","strokeProfileId":"line","icons":[{"name":"plus","definitionRef":"plus"},{"name":"plus","definitionRef":"minus"}]}"##,
+        );
+
+        std::env::set_var(ENABLE_ICON_SET_ENV, "1");
+        let report = run_in(
+            Command::IconSetExport {
+                set: Some("ui".to_string()),
+                format: Format::Svg,
+                out_dir: Some(dir.path().join("icons")),
+            },
+            dir.path(),
+        );
+        std::env::remove_var(ENABLE_ICON_SET_ENV);
+        assert_eq!(report.code, EXIT_USAGE);
+        assert!(
+            report.stderr.contains("E_DUPLICATE_NAME"),
+            "{}",
+            report.stderr
+        );
+        assert!(!dir.path().join("icons").exists());
+    }
+
+    #[test]
+    fn icon_set_export_writes_a_png_per_icon() {
+        let _guard = icon_set_flag();
+        let dir = TempDir::new("icon-set-png");
+        icon_set_project(&dir);
+        let out_dir = dir.path().join("icons");
+
+        std::env::set_var(ENABLE_ICON_SET_ENV, "1");
+        let report = run_in(
+            Command::IconSetExport {
+                set: Some("ui".to_string()),
+                format: Format::Png,
+                out_dir: Some(out_dir.clone()),
+            },
+            dir.path(),
+        );
+        std::env::remove_var(ENABLE_ICON_SET_ENV);
+        assert_eq!(report.code, EXIT_SUCCESS, "{}", report.stderr);
+        let bytes = fs::read(out_dir.join("icon-plus.png")).expect("plus png");
+        assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n", "PNG signature");
     }
 }

@@ -45,6 +45,7 @@ pub mod export {
 }
 
 pub mod fonts;
+pub mod icon_set;
 pub mod primitives;
 pub mod render;
 pub mod scene;
@@ -67,18 +68,21 @@ pub use export::svg::{export_svg, export_svg_reporting, SvgExport, SvgOptions};
 pub use fonts::{
     outline_text, FontLibrary, OutlinedText, FALLBACK_FONT_ID, FONT_MISSING, MISSING_GLYPH,
 };
+pub use icon_set::{
+    export_icon_set, ExportOptions, IconExport, IconFormat, ICON_DETAIL, ICON_STROKE,
+};
 pub use primitives::{Ellipse, Line, Polygon, Rect, Shape};
 pub use render::{
     GradientPaint, NodePaint, NodeStroke, Paint, RenderCanvas, RenderMeta, RenderModel,
     ResolvedFont, ResolvedNode, ResolvedStop, TextRun,
 };
 pub use scene::{
-    is_color, parse, parse_definition, validate, validate_color, validate_definition, Binding,
-    BindingValue, BoolValue, Canvas, Constraint, ConstraintKind, Definition, Diagnostic,
-    DiagnosticCode, Diagnostics, Element, ElementKind, Geometry, Location, NumberValue, Origin,
-    PaintKind, PaintValue, ParamRef, Parameter, ParameterType, ParameterValue, Procedure,
-    ProjectionAxis, Scene, Severity, StringValue, TextAlign, Transform, CURRENT_FORMAT_VERSION,
-    MAX_SCENE_BYTES,
+    is_color, parse, parse_definition, parse_icon_set, validate, validate_color,
+    validate_definition, validate_icon_set, Binding, BindingValue, BoolValue, Canvas, Constraint,
+    ConstraintKind, Definition, Diagnostic, DiagnosticCode, Diagnostics, Element, ElementKind,
+    Geometry, IconEntry, IconSet, Location, NumberValue, Origin, PaintKind, PaintValue, ParamRef,
+    Parameter, ParameterType, ParameterValue, Procedure, ProjectionAxis, Scene, Severity,
+    StringValue, TextAlign, Transform, CURRENT_FORMAT_VERSION, MAX_SCENE_BYTES,
 };
 pub use schema::{schema, schema_for, SchemaForm, SCHEMA_VERSION, UNKNOWN_SCHEMA_TYPE};
 pub use style::{

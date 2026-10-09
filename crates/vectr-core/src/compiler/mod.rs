@@ -578,7 +578,7 @@ fn frame_part(model: &mut RenderModel, part: &str) {
 /// Geometry is measured in world coordinates, with a node's stroke half-width
 /// included so a stroked part is not clipped by its own outline. A text node is
 /// outlined against the model's fonts, so a part made of text frames correctly.
-fn model_bounds(model: &RenderModel) -> Option<([f64; 2], [f64; 2])> {
+pub(crate) fn model_bounds(model: &RenderModel) -> Option<([f64; 2], [f64; 2])> {
     let fonts = FontLibrary::new(&model.fonts);
     let mut bounds: Option<([f64; 2], [f64; 2])> = None;
     for node in &model.nodes {
