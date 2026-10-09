@@ -72,7 +72,8 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | Task | Feature | Owner | Status | Contract |
 |---|---|---|---|---|
 | T-069 | FEAT-016, FEAT-019 | qa-engineer | Done | C-001, C-002, C-003, C-004, C-005 |
-| T-070 | FEAT-016, FEAT-019 | infra-engineer | In Progress | C-004, C-005 |
+| T-070 | FEAT-016, FEAT-019 | infra-engineer | Done | C-004, C-005 |
+| T-071 | FEAT-016, FEAT-019 | infra-engineer | In Progress | C-004, C-005 |
 
 ## Decisions log
 | # | Decision | Rationale | By |
@@ -128,3 +129,8 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 - cargo clippy --workspace --all-targets -- -D warnings
 - cargo run -p vectr-cli -- validate <scene-id>
 - cargo run -p vectr-cli -- export <scene-id> --format svg --out dist/scene.svg
+- bash scripts/check.sh
+- bash scripts/deny.sh
+- bash scripts/font-inventory.sh
+- bash scripts/package.sh <target-triple> [out-dir]
+- bash scripts/publish-crates.sh
