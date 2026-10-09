@@ -43,7 +43,12 @@ gnupg_home="$(mktemp -d)"
 pass_file=""
 cleanup() {
   rm -rf "$gnupg_home"
-  [[ -n "$pass_file" ]] && rm -f "$pass_file"
+  if [[ -n "$pass_file" ]]; then
+    rm -f "$pass_file"
+  fi
+  # Always succeed: under `set -e` the exit status of the trap's last command
+  # becomes the script's status, so a short-circuiting `[[ ... ]] && rm` here
+  # would make a successful signing exit non-zero and block the release.
 }
 trap cleanup EXIT
 chmod 700 "$gnupg_home"
