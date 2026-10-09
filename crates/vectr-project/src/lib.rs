@@ -8,10 +8,11 @@
 //! documents read in the same order, with the same diagnostics (NFR-010,
 //! NFR-011).
 //!
-//! The [`authoring_guide`] the scaffold writes into a new project (FEAT-020)
-//! lives here too, embedded from the skill's reference carried inside the
-//! crate. Both front ends can hand a coding agent the one procedure without
-//! shipping a second copy of it.
+//! The minimal [`authoring_guide`] the scaffold writes into a new project
+//! (FEAT-020) lives here too, embedded from a copy carried inside the crate. It
+//! orients a coding agent and states the project's local facts, then points at
+//! the skill's on-demand references; the authoring procedure itself is not
+//! embedded, so the always-read guide stays small (D-042, D-043).
 //!
 //! A command addresses a scene by its identifier rather than by a file path;
 //! [`resolve_scene`] turns the identifier a command named — or the project's
@@ -23,6 +24,8 @@ mod part;
 mod scene;
 
 pub use assets::{project_root, project_root_from, ProjectAssets, STYLE_ASSET};
-pub use guide::{authoring_guide, AUTHORING_GUIDE_FILE};
+pub use guide::{
+    authoring_guide, AGENT_GUIDE_BUDGET_BYTES, AUTHORING_GUIDE_FILE, SKILL_ENTRY_BUDGET_BYTES,
+};
 pub use part::{resolve_part, ResolvedPart};
 pub use scene::{project_scenes, resolve_scene, ProjectScene, SCENE, SCENE_DIR};

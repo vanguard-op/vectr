@@ -252,6 +252,7 @@ graphic restyles by editing one value. `palettes/brand.json`:
     { "name": "rock", "value": "#64748b", "description": "Near peak" },
     { "name": "snow", "value": "#f8fafc", "description": "Snow" },
     { "name": "pine", "value": "#15803d", "description": "Pine foliage" },
+    { "name": "pine-far", "value": "#2f6b4f", "description": "Distant foliage" },
     { "name": "pine-dark", "value": "#14532d", "description": "Deep foliage and shore" },
     { "name": "trunk", "value": "#7c2d12", "description": "Trunks and timber" },
     { "name": "water", "value": "#0284c7", "description": "Lake water" },
@@ -371,6 +372,85 @@ Geometry notes worth keeping in mind:
   `axis` (`x`, `y`, or `isometric`). A grid is a row placed inside a group and
   translated into further rows.
 
+### Author for depth and structure
+
+The hard end of the range is a coherent object, not a set of disjoint shapes.
+Four directives apply whenever a request implies depth or several parts; each
+uses only the primitives the language already carries. Read them before a
+complex illustration, and check the render against them in **Inspect and
+correct**.
+
+**Convey depth through structure, not photorealism.** Depth here is the
+structural depth the language carries — projection, paint order, grouping,
+relative scale, and the palette's atmospheric tokens — never vanishing-point or
+photorealistic rendering, which is outside the product's scope.
+
+- Paint order is depth. Order siblings back to front: the farthest mass takes
+  the lowest `order` and a nearer part a higher one, so a nearer part occludes a
+  farther one. Put each depth layer in its own `group` and give the groups
+  increasing `order` — sky, far ridge, midground, foreground — so a layer moves
+  as one.
+- Diminish scale with distance. A nearer part is larger than a farther one;
+  carry the difference in each part's `transform` (`scaleX`/`scaleY` and
+  position) rather than drawing every part the same size.
+- Recede distant masses with the palette's atmospheric tokens. A far ridge
+  takes a hazier token than a near one (`mist` over `ridge` over `rock`), and a
+  lower `opacity` fades a mass further, so distance reads through colour rather
+  than detail.
+- Project a constructed object. An object shown in three dimensions goes onto
+  the `projection` element's `axis` (`x`, `y`, or `isometric`) or into the
+  `isometric` recipe, rather than stacking unprojected flat shapes; project only
+  through an explicit `projection` element.
+
+If the chosen recipe cannot carry the requested depth, carry the structural
+depth it does support and do not fake photorealism.
+
+**Place parts relatively, not by absolute coordinates.** Author each part in its
+own local frame and place it by a transform; reserve absolute coordinates for
+the canvas and the root placement.
+
+- Author a reusable part with its `origin` at the anchor it joins at — a base, a
+  pivot, a shared edge — and draw its elements around that origin (negative
+  coordinates are fine).
+- Place the part with an `instance` `transform` (`translateX`/`translateY`,
+  `rotate`, `scaleX`/`scaleY`) rather than editing its geometry for each use.
+- Position a child relative to its parent or composition: a child's coordinates
+  are in its parent group's local frame, and inside `repeat`, `alongPath`, or
+  `projection` they are composition-relative — the first copy sits at the
+  element's origin and each further copy is placed by the composition.
+- State sibling relationships as constraints (`equalSpacing`, `align`,
+  `attach`) instead of hand-computing positions, so the relationship survives an
+  edit.
+
+**Decompose along real parts and join them at shared anchors.** Decompose an
+object along what it is actually made of, not into arbitrary slices, and author
+each part so it joins its neighbour at a shared anchor.
+
+- Name the anchor each part joins at and record it with the decomposition: a
+  pine's trunk base meets the shore and its canopy meets the trunk top; a boat's
+  hull meets the waterline; a snow cap meets the peak's apex.
+- Give the shared anchor a value both parts agree on — the same point in the
+  parent frame, or the definition's `origin` — so the parts meet rather than
+  leaving a seam.
+- When a part has no natural anchor to share, add an explicit anchor point or an
+  `attach` constraint rather than leaving a visible gap.
+- Inspect the composed result at each anchor for a gap or an overlap, and
+  correct the anchor rather than nudging one part by eye.
+
+**Research a named subject before authoring.** When the request names a concrete
+subject and the host exposes research tools, research its real proportions,
+anatomy, and distinguishing features first, and use what you find to choose the
+decomposition.
+
+- Research before decomposing: the real parts and their proportions decide the
+  decomposition and the anchors, not a guess.
+- If the host exposes no research capability, or the lookup returns nothing
+  usable, author from your own knowledge, state in one line that the subject
+  could not be researched, and proceed rather than stalling or refusing. A
+  research failure never fails the scene.
+- A subject that is unknown or fictional is authored from the description rather
+  than stalling for research.
+
 ### Worked example: a complex illustration
 
 A detailed request is not a reason to simplify, and the language carries
@@ -380,17 +460,79 @@ elements over them. Never reduce a detailed request to a single mark or drop
 the parts it names. A request this size is built with the build-up method below:
 the repeated and reused pieces — the pine, the cloud, the ripple, the step — are
 the parts to author as definitions and verify on their own before they are
-composed. The scene below is that composition in one document.
+composed. The scene below is that composition, with the pine authored once as a
+reusable definition.
 
 "An alpine lake at dawn — mountains with snow, a pine forest, a lake with reeds
 and a trail of stepping stones, and a low sun" becomes the scene below. It
-exercises nested groups; a cloud row and a pine forest (`repeat`); a snow cap
+exercises nested groups; a cloud row and two pine rows (`repeat`); a snow cap
 (`boolean` intersect) and a glacier (`boolean` subtract); a lake (`boolean`
 union) with ripples and reeds placed along guides (`alongPath`); a sun halo
 (`offset`); an isometric boardwalk (`projection`); and a planting row laid out
 by an `equalSpacing` constraint. It validates, compiles, and exports as written
 against the palette above; read the schema for a composition kind only when you
 are about to use it.
+
+It also shows the directives above in practice. The pine is authored in its own
+local frame with its trunk base at the origin, then placed by an `instance`
+transform on the shore line — the shared anchor every pine joins at — rather
+than by absolute coordinates per tree. The far row scales the same part to 0.55
+and binds its `foliage` parameter to the hazier `pine-far` token, so distance
+reads through relative scale and an atmospheric colour; the near row takes the
+default. Each depth layer is its own group with increasing `order`, so a nearer
+part occludes a farther one. `definitions/pine.json`:
+
+```json
+{
+  "id": "pine",
+  "projectId": "project",
+  "name": "Pine",
+  "parameters": [
+    { "name": "foliage", "type": "token", "default": "pine" }
+  ],
+  "origin": { "x": 0, "y": 0 },
+  "elements": [
+    {
+      "id": "pine-trunk",
+      "definitionId": "pine",
+      "order": 0,
+      "kind": "rect",
+      "name": "Trunk",
+      "geometry": { "x": -4, "y": -46, "width": 8, "height": 46 },
+      "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
+      "fill": { "kind": "token", "ref": "trunk" },
+      "opacity": 1,
+      "visible": true
+    },
+    {
+      "id": "pine-canopy-low",
+      "definitionId": "pine",
+      "order": 1,
+      "kind": "polygon",
+      "name": "Lower canopy",
+      "geometry": { "points": [[0, -140], [-36, -20], [36, -20]] },
+      "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
+      "fill": { "param": "foliage" },
+      "opacity": 1,
+      "visible": true
+    },
+    {
+      "id": "pine-canopy-high",
+      "definitionId": "pine",
+      "order": 2,
+      "kind": "polygon",
+      "name": "Upper canopy",
+      "geometry": { "points": [[0, -96], [-42, 0], [42, 0]] },
+      "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
+      "fill": { "kind": "token", "ref": "pine-dark" },
+      "opacity": 1,
+      "visible": true
+    }
+  ]
+}
+```
+
+The scene, `scenes/alpine-lake.json`:
 
 ```json
 {
@@ -432,28 +574,29 @@ are about to use it.
     {"id": "ripples", "sceneId": "alpine-lake", "order": 1, "kind": "alongPath", "geometry": {"pathData": "M160 468 L620 468", "count": 5}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "pond", "name": "Ripples"},
     {"id": "ripple", "sceneId": "alpine-lake", "order": 0, "kind": "ellipse", "geometry": {"x": -22, "y": -5, "width": 44, "height": 10}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 0.8, "visible": true, "parentId": "ripples", "fill": {"kind": "token", "ref": "water-light"}},
     {"id": "reeds", "sceneId": "alpine-lake", "order": 2, "kind": "alongPath", "geometry": {"pathData": "M138 512 L246 446", "count": 6}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "pond", "name": "Reeds"},
-    {"id": "reed", "sceneId": "alpine-lake", "order": 0, "kind": "rect", "geometry": {"x": -3, "y": -46, "width": 6, "height": 46}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "reeds", "fill": {"kind": "token", "ref": "reed"}},
-    {"id": "forest", "sceneId": "alpine-lake", "order": 7, "kind": "group", "geometry": {}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "name": "Forest"},
+    {"id": "reed-clump", "sceneId": "alpine-lake", "order": 0, "kind": "group", "geometry": {}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "reeds", "name": "Clump"},
+    {"id": "reed", "sceneId": "alpine-lake", "order": 0, "kind": "rect", "geometry": {"x": -3, "y": -46, "width": 6, "height": 46}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "reed-clump", "fill": {"kind": "token", "ref": "reed"}},
+    {"id": "forest-far", "sceneId": "alpine-lake", "order": 7, "kind": "group", "geometry": {}, "transform": {"translateX": 70.0, "translateY": 416.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "name": "Far pines"},
+    {"id": "pines-far", "sceneId": "alpine-lake", "order": 0, "kind": "repeat", "geometry": {"count": 5, "spacing": 130}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "forest-far", "name": "Far row"},
+    {"id": "pine-far", "sceneId": "alpine-lake", "order": 0, "kind": "instance", "geometry": {}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 0.55, "scaleY": 0.55}, "opacity": 0.7, "visible": true, "parentId": "pines-far", "name": "Pine", "definitionRef": "pine", "bindings": [{"name": "foliage", "value": "pine-far"}]},
+    {"id": "forest", "sceneId": "alpine-lake", "order": 8, "kind": "group", "geometry": {}, "transform": {"translateX": 40.0, "translateY": 434.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "name": "Forest"},
     {"id": "pines", "sceneId": "alpine-lake", "order": 0, "kind": "repeat", "geometry": {"count": 6, "spacing": 108}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "forest", "name": "Pines"},
-    {"id": "pine", "sceneId": "alpine-lake", "order": 0, "kind": "group", "geometry": {}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "pines", "name": "Pine"},
-    {"id": "trunk", "sceneId": "alpine-lake", "order": 0, "kind": "rect", "geometry": {"x": 76, "y": 388, "width": 8, "height": 46}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "pine", "fill": {"kind": "token", "ref": "trunk"}},
-    {"id": "canopy-low", "sceneId": "alpine-lake", "order": 1, "kind": "polygon", "geometry": {"points": [[80, 300], [46, 420], [114, 420]]}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "pine", "fill": {"kind": "token", "ref": "pine"}},
-    {"id": "canopy-high", "sceneId": "alpine-lake", "order": 2, "kind": "polygon", "geometry": {"points": [[80, 344], [40, 442], [120, 442]]}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "pine", "fill": {"kind": "token", "ref": "pine-dark"}},
-    {"id": "shrub-a", "sceneId": "alpine-lake", "order": 8, "kind": "group", "geometry": {}, "transform": {"translateX": 540.0, "translateY": 438.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "name": "Shrub A"},
+    {"id": "pine-near", "sceneId": "alpine-lake", "order": 0, "kind": "instance", "geometry": {}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "pines", "name": "Pine", "definitionRef": "pine"},
+    {"id": "shrub-a", "sceneId": "alpine-lake", "order": 9, "kind": "group", "geometry": {}, "transform": {"translateX": 540.0, "translateY": 438.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "name": "Shrub A"},
     {"id": "shrub-a-leaf", "sceneId": "alpine-lake", "order": 0, "kind": "ellipse", "geometry": {"x": -26, "y": -18, "width": 52, "height": 36}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "shrub-a", "fill": {"kind": "token", "ref": "pine"}},
-    {"id": "shrub-b", "sceneId": "alpine-lake", "order": 9, "kind": "group", "geometry": {}, "transform": {"translateX": 600.0, "translateY": 438.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "name": "Shrub B"},
+    {"id": "shrub-b", "sceneId": "alpine-lake", "order": 10, "kind": "group", "geometry": {}, "transform": {"translateX": 600.0, "translateY": 438.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "name": "Shrub B"},
     {"id": "shrub-b-leaf", "sceneId": "alpine-lake", "order": 0, "kind": "ellipse", "geometry": {"x": -26, "y": -18, "width": 52, "height": 36}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "shrub-b", "fill": {"kind": "token", "ref": "pine"}},
-    {"id": "shrub-c", "sceneId": "alpine-lake", "order": 10, "kind": "group", "geometry": {}, "transform": {"translateX": 660.0, "translateY": 438.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "name": "Shrub C"},
+    {"id": "shrub-c", "sceneId": "alpine-lake", "order": 11, "kind": "group", "geometry": {}, "transform": {"translateX": 660.0, "translateY": 438.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "name": "Shrub C"},
     {"id": "shrub-c-leaf", "sceneId": "alpine-lake", "order": 0, "kind": "ellipse", "geometry": {"x": -26, "y": -18, "width": 52, "height": 36}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "shrub-c", "fill": {"kind": "token", "ref": "pine"}},
-    {"id": "flowers", "sceneId": "alpine-lake", "order": 10, "kind": "group", "geometry": {}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "name": "Wildflowers"},
+    {"id": "flowers", "sceneId": "alpine-lake", "order": 12, "kind": "group", "geometry": {}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "name": "Wildflowers"},
     {"id": "flower-0", "sceneId": "alpine-lake", "order": 0, "kind": "ellipse", "geometry": {"x": 646, "y": 470, "width": 16, "height": 16}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "flowers", "fill": {"kind": "token", "ref": "accent"}},
     {"id": "flower-1", "sceneId": "alpine-lake", "order": 1, "kind": "ellipse", "geometry": {"x": 676, "y": 488, "width": 16, "height": 16}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "flowers", "fill": {"kind": "token", "ref": "accent"}},
     {"id": "flower-2", "sceneId": "alpine-lake", "order": 2, "kind": "ellipse", "geometry": {"x": 704, "y": 468, "width": 16, "height": 16}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "flowers", "fill": {"kind": "token", "ref": "accent"}},
-    {"id": "trail", "sceneId": "alpine-lake", "order": 11, "kind": "alongPath", "geometry": {"pathData": "M50 566 C 250 520 430 596 760 506", "count": 9}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "name": "Trail"},
+    {"id": "trail", "sceneId": "alpine-lake", "order": 13, "kind": "alongPath", "geometry": {"pathData": "M50 566 C 250 520 430 596 760 506", "count": 9}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "name": "Trail"},
     {"id": "step", "sceneId": "alpine-lake", "order": 0, "kind": "ellipse", "geometry": {"x": -16, "y": -8, "width": 32, "height": 16}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "trail", "fill": {"kind": "token", "ref": "stone"}},
-    {"id": "pier", "sceneId": "alpine-lake", "order": 12, "kind": "projection", "geometry": {"axis": "isometric"}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "name": "Pier"},
+    {"id": "pier", "sceneId": "alpine-lake", "order": 14, "kind": "projection", "geometry": {"axis": "isometric"}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "name": "Pier"},
     {"id": "pier-deck", "sceneId": "alpine-lake", "order": 0, "kind": "rect", "geometry": {"x": 560, "y": 430, "width": 140, "height": 26}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "pier", "fill": {"kind": "token", "ref": "trunk"}},
-    {"id": "caption", "sceneId": "alpine-lake", "order": 13, "kind": "text", "geometry": {"text": "Alpine Lake", "fontSize": 42, "x": 48, "y": 76, "align": "start", "lineHeight": 48, "letterSpacing": 0}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "name": "Title", "fill": {"kind": "token", "ref": "ink"}}
+    {"id": "caption", "sceneId": "alpine-lake", "order": 15, "kind": "text", "geometry": {"text": "Alpine Lake", "fontSize": 42, "x": 48, "y": 76, "align": "start", "lineHeight": 48, "letterSpacing": 0}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "name": "Title", "fill": {"kind": "token", "ref": "ink"}}
   ],
   "constraints": [
     {"id": "shrub-row", "sceneId": "alpine-lake", "kind": "equalSpacing", "elementIds": ["shrub-a", "shrub-b", "shrub-c"], "axis": "x", "value": 44}
@@ -606,14 +749,18 @@ default `size`:
 A detailed illustration is reliable when each part is correct before it is
 composed. This is the method for a complex request; a simple mark does not need
 it. Work one part at a time, and never compose a part that has not been
-verified.
+verified. Read **Author for depth and structure** alongside it: the depth,
+relative-placement, shared-anchor, and research directives are what each part is
+authored against.
 
 1. **Decompose.** Name the parts the drawing is made of and record the order.
-   When the request names no parts, use the documented default decomposition:
-   background and sky; the midground masses (land, water, large structures); the
-   repeating or reused objects (trees, clouds, ripples, steps); then the
-   foreground detail (reeds, stones, flowers, text). A request that does not
-   decompose cleanly still gets this decomposition rather than a stall.
+   Name each part's shared anchor as well as its order — the point where it meets
+   the part it sits against — so the composition meets there rather than leaving
+   a seam. When the request names no parts, use the documented default
+   decomposition: background and sky; the midground masses (land, water, large
+   structures); the repeating or reused objects (trees, clouds, ripples, steps);
+   then the foreground detail (reeds, stones, flowers, text). A request that does
+   not decompose cleanly still gets this decomposition rather than a stall.
 2. **Author one part as a definition.** Write `definitions/<part>.json`. Give it
    a parameter for each value a use may vary, with a default, so one definition
    serves every placement.
@@ -640,8 +787,8 @@ verified.
    ```
 
    Inspect the composition before adding the next part. If it does not match,
-   correct the instance's placement or binding — the parts are already verified,
-   so a composition failure names the composition step, not the parts.
+   correct the instance's placement, binding, or anchor — the parts are already
+   verified, so a composition failure names the composition step, not the parts.
 5. **Repeat for each part.** Place a part already verified without re-authoring
    it: another instance, or another scene in the same project, reuses the same
    definition.

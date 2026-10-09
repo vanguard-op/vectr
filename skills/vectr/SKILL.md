@@ -38,6 +38,15 @@ mark is authored in one pass; a complex graphic is built up in verified parts �
 each part authored as a reusable definition, verified on its own, then composed
 one at a time. The guide carries the method.
 
+For a request that implies depth or several parts, follow the guide's **Author
+for depth and structure**: order parts back to front and group them by depth
+layer, place parts relatively by transform rather than by absolute coordinates,
+join each part at a shared anchor, and — when the host exposes research tools
+and the request names a concrete subject — research the subject before
+authoring. If no research capability is available, author from your own
+knowledge and state that the subject could not be researched rather than
+stalling.
+
 ## Workflow
 
 Progress:
