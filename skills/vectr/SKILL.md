@@ -25,10 +25,8 @@ render model and exports as SVG or PNG. Read the schema, author the scene,
 validate, render, look at the render, and fix what is wrong. The schema and the
 tools are the source of truth; this skill is the workflow around them.
 
-**Read `references/authoring-guide.md` before authoring your first scene: it is
-the procedure.** This file only orients you — the workflow, the tool surface,
-and the version check. The depth for each step is in the references below, read
-only when the step needs them.
+This entry point is always read; the depth for each step is in the on-demand
+references below, loaded only when the step needs them.
 
 ## The one method
 
@@ -38,15 +36,14 @@ verifying each before the next.** A section is any unit the work divides into �
 a group, an instance, or a scene — deduced from the prompt, which describes the
 picture and prescribes no structure. A reusable definition is one kind of
 section, not the required unit. Complexity changes the number of turns, never
-the method. A detailed request is authored in full and is
-never simplified to a simple mark.
+the method. A detailed request is authored in full and is never simplified to a
+simple mark.
 
 A section is verified by structural validation and by rendering it on its own
 (`render-part` / `vectr render`); an increment by rendering the whole so far.
-Export only when the whole passes. For a request that implies depth or several
-parts, read `references/depth-and-structure.md`; if no research capability is
-available, author from your own knowledge and state that the subject could not
-be researched rather than stalling.
+Export only when the whole passes. If no research capability is available for a
+named subject, author from your own knowledge and state that the subject could
+not be researched rather than stalling.
 
 ## Workflow
 
@@ -84,17 +81,16 @@ definition or a named element subtree, addressed by its identifier — framed to
 its own bounds or to a requested size; the CLI prints the frame it used.
 
 An MCP tool failure is a result with `isError: true` and a body
-`{code, message, location, diagnostics}`; read the whole `diagnostics` list, not
-just `message`. A CLI failure exits non-zero, prints a diagnostic with its
-location, and writes nothing: `1` invalid scene, `2` usage or unreadable input,
-`3` compilation failure, `4` export dependency missing, `5` output I/O failure.
+`{code, message, location, diagnostics}`; read the whole `diagnostics` list. A
+CLI failure exits non-zero, prints a diagnostic with its location, and writes
+nothing: `1` invalid scene, `2` usage or unreadable input, `3` compilation
+failure, `4` export dependency missing, `5` output I/O failure.
 
 A scene argument — the CLI's `<scene>` or an MCP tool's `scene` — is an
 identifier resolved among the project's scenes (`scenes/<id>.json`), not a file
 path; omit it to use the project's `defaultSceneId`. An MCP tool also accepts an
-inline document through `draft`, used instead of a project scene: it never
-becomes or reads the default. Naming both `scene` and `draft` in one call is
-malformed; a project that names no default reports that no scene was selected.
+inline `draft` document instead of a project scene: it never becomes or reads
+the default, and naming both `scene` and `draft` is malformed.
 
 ## Output contract
 
@@ -107,12 +103,11 @@ default to `dist/<scene-id>.<ext>`; `--out`/`out` chooses another path.
 ## When authoring fails
 
 Validation and compilation return diagnostics that name each problem and its
-location — severity, code, message, and a JSON path or element id. Read them,
-correct the scene, and re-validate. **Retry authoring once**: if the scene still
-fails after that correction, report the failure with its diagnostics and produce
-no output; never export a partial or guessed result. If the authoring model
-itself is unavailable, report that authoring cannot proceed and produce no
-output. The guide lists the common findings and their fixes.
+location. Read them, correct the scene, and re-validate. **Retry authoring
+once**: if the scene still fails, report the failure with its diagnostics and
+produce no output; never export a partial or guessed result. If the authoring
+model is unavailable, report that authoring cannot proceed and produce no
+output. `references/failures.md` lists the common findings and their fixes.
 
 ## Version compatibility
 
@@ -126,14 +121,26 @@ installed tool disagree; report that the same way.
 
 ## References
 
+Read a reference only when its step needs it.
+
 | File | Read it when |
 |---|---|
-| `references/authoring-guide.md` | Before authoring your first scene: the procedure for turning a described graphic into a scene, and the failure catalogue. |
-| `references/rules.md` | While authoring: the rules the schema does not state. |
-| `references/reusable-parts.md` | When a section is a reusable part: definitions and instances. |
-| `references/depth-and-structure.md` | When a request implies depth or several parts. |
-| `references/inspect-and-correct.md` | After a render: comparing it to the request and correcting it. |
-| `references/defaults.md` | When the request leaves something open. |
+| `references/rules.md` | While authoring: the project layout, the language rules, and starter snippets. |
+| `references/reusable-parts.md` | A section is a reusable part: definitions and instances. |
+| `references/depth-and-structure.md` | The request implies depth or several parts. |
+| `references/inspect-and-correct.md` | After a render: compare it to the request and correct it. |
+| `references/defaults.md` | The request leaves something open. |
+| `references/failures.md` | Validation or compilation reports a finding. |
 | `references/licensing.md` | Before shipping generated graphics. |
 | `assets/scene.template.json` | As the starting point for a new scene. |
-| `examples/` | For a full worked example, one file each, from a simple mark to a compositionally complex illustration. |
+
+Worked examples, one file each, from a simple mark to a complex illustration.
+Read the one closest to the request and adapt it:
+
+| Example | What it shows |
+|---|---|
+| `examples/habit-logo.md` | A simple mark: badge, check, and wordmark in one group, painted from tokens. |
+| `examples/alpine-lake.md` | A compositionally complex illustration: nested groups, every composition primitive, depth ordered back to front, parts placed by instance transforms. |
+| `examples/pine.md` | The reusable definition the illustration places, its origin at the trunk base. |
+| `examples/skyline.md` | One definition placed twice with different bindings. |
+| `examples/cloud.md` | The reusable definition `skyline.md` places. |

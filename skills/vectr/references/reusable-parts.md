@@ -17,7 +17,7 @@ exactly one of the two, in the same element shape.
 A parameter-capable field holds `{"param": "<name>"}` in place of a literal; a
 `token` parameter replaces a whole paint, so `{"param": "colour"}` is a fill. A
 reference is valid only inside the definition that declares the parameter, and
-its type must match the field. `examples/cloud.json` is a worked definition with
+its type must match the field. `examples/cloud.md` is a worked definition with
 a `token` parameter (`colour`, default `paper`) and a `number` parameter
 (`size`, default `120`) used as an ellipse width:
 
@@ -74,10 +74,10 @@ placement on the next compile. A definition may itself place another definition,
 so parts compose into deeper wholes. A definition that no scene places renders
 nothing and warns (`W_UNUSED_DEFINITION`); it is not an error.
 
-`examples/skyline.json` is a worked scene that places the `cloud` definition
+`examples/skyline.md` is a worked scene that places the `cloud` definition
 twice with different bindings — the second varies `colour` and takes the default
-`size`. `examples/alpine-lake.json` places the `pine` definition from
-`examples/pine.json` across two depth layers, scaling the far row and binding
+`size`. `examples/alpine-lake.md` places the `pine` definition from
+`examples/pine.md` across two depth layers, scaling the far row and binding
 its `foliage` parameter to a hazier token; the definition's `origin` sits at the
 trunk base, the shared anchor every placement joins the shore at.
 

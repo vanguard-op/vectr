@@ -1,3 +1,42 @@
+# Alpine lake at dawn — a compositionally complex illustration
+
+## Request
+
+> Build a rich, detailed illustration: a mountain lake at dawn with snow-capped
+> peaks, a pine forest, reeds at the water's edge, a trail of stepping stones,
+> and a low sun.
+
+## Deduced plan
+
+The prompt describes a picture and prescribes no structure, so the sections, the
+kind of each, the recipe, the palette, and the depth handling are deduced from
+it.
+
+- **Sections, back to front:** sky; sun (halo and disc); clouds; haze band;
+  peaks (far ridge, near peak, snow cap, glacier); near shore; lake (water,
+  ripples, reeds); far pines; forest; shrubs; wildflowers; trail; pier; caption.
+- **Kind of each section.** The whole is one scene; each depth layer is a
+  `group` that moves as one; the pines are a reusable definition (`pine`,
+  `examples/pine.md`) placed twice, so the far and near forests reuse one
+  authored part instead of re-authoring a tree per row.
+- **Recipe and palette.** The project's default recipe; the `brand` palette
+  carries the atmospheric tokens (`mist`, `ridge`, `rock`, `pine-far`) that
+  recede distance through colour.
+- **Depth.** Paint order is depth: the sky takes the lowest `order` and the
+  caption the highest, and each layer group carries an increasing `order`.
+  Distant pines scale to `0.55` and fade to `0.7` opacity; the far ridge takes
+  `ridge` and the near peak `rock`; a `mist` haze band sits between them.
+- **Anchors.** `pine`'s `origin` sits at its trunk base, the shared anchor every
+  placement joins the shore at.
+- **Method.** The whole is sketched at low fidelity first, then each section is
+  refined, rendered on its own, and integrated before the next; the scene is
+  exported only once the whole passes.
+
+## Scene
+
+`scenes/alpine-lake.json`:
+
+```json
 {
   "id": "alpine-lake",
   "projectId": "project",
@@ -636,3 +675,22 @@
     { "id": "shrub-row", "sceneId": "alpine-lake", "kind": "equalSpacing", "elementIds": ["shrub-a", "shrub-b", "shrub-c"], "axis": "x", "value": 44 }
   ]
 }
+```
+
+## Definitions it uses
+
+- `pine` — `examples/pine.md`, placed in the far and near forests.
+
+## Notes
+
+- Composition primitives do the repetition and shaping rather than enumerating
+  primitives by hand: `repeat` for the clouds and the pine rows, `boolean` for
+  the lake union, the snow-cap intersect, and the glacier subtract, `alongPath`
+  for the ripples, reeds, and trail, `offset` for the sun halo, and `projection`
+  for the pier.
+- One `constraint` (`equalSpacing`) states the shrub row rather than
+  hand-computing three positions.
+- The snow cap and glacier are `boolean` compositions that carry their own
+  paint; their children supply the shapes.
+- The pier is the one constructed object shown in three dimensions, so it is
+  projected on the `isometric` axis rather than stacked flat.

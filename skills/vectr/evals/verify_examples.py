@@ -10,6 +10,11 @@ from the simple mark to the compositionally complex illustration, plus every
 reusable definition and the scene template — validates, compiles, and exports
 through the real toolchain.
 
+The authoring procedure is dissolved into the references, so there is no
+monolithic guide; the entry point carries the workflow and the references carry
+the depth for each step. Each worked example is a markdown document that carries
+its request, its deduced plan, its scene or definition, and notes.
+
 Nothing here grades authored scenes; measuring cross-model authoring quality is
 the evaluation harness's job. This only proves the shipped examples still work.
 
@@ -59,7 +64,7 @@ def parse_frontmatter(text: str) -> dict[str, str]:
     return fields
 
 
-def fenced_json_blocks(text: str) -> list[dict]:
+def fenced_json_blocks(text: str) -> list:
     blocks = []
     for match in re.finditer(r"```json\s*\n(.*?)```", text, re.DOTALL):
         try:
@@ -92,7 +97,8 @@ def is_definition(document: dict) -> bool:
 
 def check_static(skill_dir: Path) -> tuple[list[str], dict, dict, list[dict], list[dict]]:
     notes = []
-    frontmatter = parse_frontmatter((skill_dir / "SKILL.md").read_text())
+    entry = (skill_dir / "SKILL.md").read_text()
+    frontmatter = parse_frontmatter(entry)
     name = frontmatter.get("name")
     if name != skill_dir.name:
         raise CheckError(f"frontmatter name {name!r} does not match folder {skill_dir.name!r}")
@@ -116,11 +122,15 @@ def check_static(skill_dir: Path) -> tuple[list[str], dict, dict, list[dict], li
     references = sorted((skill_dir / "references").glob("*.md"))
     if not references:
         raise CheckError("the skill ships no references")
-    guide = "\n\n".join(path.read_text() for path in references)
 
-    # The always-read entry point carries pointers to the references it routes
-    # to; the depth is loaded only when a step needs it (FEAT-020, D-042).
-    entry = (skill_dir / "SKILL.md").read_text()
+    # The authoring procedure is dissolved into the references: no single
+    # monolithic guide remains (FEAT-020, D-046).
+    if (skill_dir / "references/authoring-guide.md").exists():
+        raise CheckError("the skill still ships a monolithic references/authoring-guide.md")
+
+    # The always-read entry point carries the workflow and points at every
+    # on-demand reference it routes to; the depth is loaded only when a step
+    # needs it (FEAT-020, D-042).
     for path in references:
         name = f"references/{path.name}"
         if name not in entry:
@@ -130,6 +140,11 @@ def check_static(skill_dir: Path) -> tuple[list[str], dict, dict, list[dict], li
     # model does not conflate an example with a copyable asset (FEAT-020, D-047).
     if "examples/" not in entry:
         raise CheckError("the skill entry point does not point at its `examples/` directory")
+
+    # The workflow is the entry point's spine and the references carry the depth
+    # for each step, so read them together as the authored material.
+    reference_text = "\n\n".join(path.read_text() for path in references)
+    guide = entry + "\n\n" + reference_text
 
     # The references together carry the whole workflow — a model reads the
     # procedure and only the depth the current step needs.
@@ -175,6 +190,11 @@ def check_static(skill_dir: Path) -> tuple[list[str], dict, dict, list[dict], li
             "the guide does not teach the MCP inline `draft` argument and its "
             "mutual exclusion with `scene`"
         )
+
+    # The references together carry the depth for each step: the
+    # inspect-and-correct loop, the bounded retry, the ambiguous-request
+    # defaults, and the licensing note are each a reference's depth, not the
+    # entry point's (FEAT-020, D-042).
     for section in (
         "Inspect and correct",
         "Retry once",
@@ -182,27 +202,33 @@ def check_static(skill_dir: Path) -> tuple[list[str], dict, dict, list[dict], li
         "Defaults for an ambiguous request",
         "Licensing",
     ):
-        if section not in guide:
-            raise CheckError(f"the guide is missing `{section}`")
+        if section not in reference_text:
+            raise CheckError(f"the references are missing `{section}`")
     if version and version not in guide:
         raise CheckError(f"the guide does not name the tool version {version!r}")
 
-    blocks = fenced_json_blocks(guide)
+    blocks = [b for b in fenced_json_blocks(guide) if isinstance(b, dict)]
     palette = next((b for b in blocks if "tokens" in b), None)
     stroke = next((b for b in blocks if {"cap", "join", "width"} <= set(b)), None)
     if palette is None or stroke is None:
-        raise CheckError("the authoring guide is missing a palette or stroke example")
+        raise CheckError("the references are missing a palette or stroke example")
 
-    # The worked examples are their own documents under `examples/`, one file
-    # each, kept apart from `assets/` (FEAT-020, D-047). A scene has a canvas; a
-    # reusable definition has parameters and an origin and no canvas.
+    # The worked examples are markdown documents under `examples/`, one file
+    # each, kept apart from `assets/` (FEAT-020, D-047). Each carries its
+    # request, its deduced plan, its document, and notes; the document is the
+    # single fenced JSON block that parses as a scene or a definition.
     example_dir = skill_dir / "examples"
     if not example_dir.is_dir():
         raise CheckError("the skill ships no `examples/` directory")
     scenes: list[dict] = []
     definitions: list[dict] = []
-    for path in sorted(example_dir.glob("*.json")):
-        document = json.loads(path.read_text())
+    for path in sorted(example_dir.glob("*.md")):
+        documents = [b for b in fenced_json_blocks(path.read_text()) if isinstance(b, dict)]
+        if len(documents) != 1:
+            raise CheckError(
+                f"the example `{path.name}` carries {len(documents)} JSON documents; expected one"
+            )
+        document = documents[0]
         if is_scene(document):
             scenes.append(document)
         elif is_definition(document):
@@ -214,7 +240,7 @@ def check_static(skill_dir: Path) -> tuple[list[str], dict, dict, list[dict], li
     if not definitions:
         raise CheckError("the examples must include a reusable definition")
     notes.append(
-        f"guide carries {len(blocks)} json snippets; examples/ carries "
+        f"references carry {len(blocks)} json snippets; examples/ carries "
         f"{len(scenes)} worked scenes and {len(definitions)} definitions"
     )
 
@@ -269,7 +295,7 @@ def check_toolchain(
         (project / "definitions").mkdir()
         (project / "scenes").mkdir()
         (project / "dist").mkdir()
-        # The examples are one project: it names the guide's palette as its
+        # The examples are one project: it names the references' palette as its
         # default so a definition rendered in isolation resolves its tokens
         # (FEAT-030, FEAT-031), and the first worked scene as the default scene.
         (project / "vectr.project.json").write_text(

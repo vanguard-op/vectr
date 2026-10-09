@@ -80,8 +80,8 @@ mod tests {
             "points at the skill's on-demand references"
         );
         assert!(
-            guide.contains("references/authoring-guide.md"),
-            "names the procedure reference to start from"
+            guide.contains("references/rules.md"),
+            "names the skill reference to start from"
         );
         assert!(guide.contains("vectr schema"), "points at the schema");
     }

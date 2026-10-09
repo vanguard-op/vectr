@@ -38,8 +38,9 @@ location and writes nothing.
 ## Where the depth lives
 
 When you author, read the Vectr skill's on-demand references. Start with
-`references/authoring-guide.md` — the procedure and the failure catalogue — and
-follow its pointers to the reference for the step you are on: `rules.md`,
+`references/rules.md` — the project layout and the rules the schema does not
+state — and `references/failures.md` — the common diagnostics and their fixes —
+and follow their pointers to the reference for the step you are on:
 `reusable-parts.md`, `depth-and-structure.md`, `inspect-and-correct.md`,
 `defaults.md`, and `licensing.md`. If the Vectr skill is not available to you,
 author from the published schema (`vectr schema`); the skill is not required.
