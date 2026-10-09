@@ -36,8 +36,7 @@ serde_json = { workspace = true }
 
 # Authoring-model providers (D-005): OpenAI, Anthropic, Google and the OpenCode
 # adapter, plus the offline replay provider the acceptance suite runs against.
-# Declared with its own feature set rather than `workspace = true`: the
-# workspace entry names reqwest 0.13's `rustls-tls`, which that release renamed
-# to `rustls`, so inheriting it fails to resolve (a change for the workspace
-# manifest's owner). The blocking client keeps the batch harness synchronous.
-reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls", "blocking"] }
+# The workspace entry carries the whole feature set the harness needs — `json`,
+# `rustls` and the synchronous `blocking` client — so the harness inherits it
+# and the version is declared once (C-006).
+reqwest = { workspace = true }
