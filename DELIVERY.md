@@ -6,7 +6,7 @@ docs/Vectr/ — git submodule, remote https://github.com/vanguard-op/vectr-docs.
 ## Team & file ownership
 | Member | Owns |
 |---|---|
-| lead | DELIVERY.md, CONTRACTS.md, ASSETS.md, .delivery/**, Cargo.lock |
+| lead | README.md, DELIVERY.md, CONTRACTS.md, ASSETS.md, .delivery/**, Cargo.lock |
 | infra-engineer | Cargo.toml, rust-toolchain.toml, deny.toml, .gitignore, .github/**, scripts/**, assets/fonts/** |
 | backend-engineer | crates/vectr-core/**, crates/vectr-cli/**, schema/** |
 | ai-engineer | crates/vectr-mcp/**, crates/vectr-eval/**, skills/** |
