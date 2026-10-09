@@ -34,7 +34,7 @@ fn skill_text() -> String {
     fs::read_to_string(workspace_root().join("skills/vectr/SKILL.md")).expect("SKILL.md")
 }
 
-/// The shipped authoring guide, which the scaffold embeds as `AGENTS.md`.
+/// The shipped authoring guide — the skill's on-demand reference (FEAT-020).
 fn guide_text() -> String {
     fs::read_to_string(workspace_root().join("skills/vectr/references/authoring-guide.md"))
         .expect("the authoring guide")

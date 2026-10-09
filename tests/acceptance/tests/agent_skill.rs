@@ -5,8 +5,8 @@
 //! that validates, compiles, and renders. The judged, cross-model half of that
 //! promise is measured by the evaluation harness; these checks pin the
 //! deterministic half: the package is well formed, it targets the installed
-//! tool, the scaffold's guide teaches the full workflow, and every example the
-//! skill and the scaffold ship actually runs through the real toolchain.
+//! tool, the scaffolded guide stays minimal and carries no procedure, and every
+//! example the skill ships actually runs through the real toolchain.
 
 mod common;
 
@@ -503,51 +503,214 @@ fn the_guides_reusable_definitions_render_on_their_own() {
     }
 }
 
+/// The scaffolded project's `vectr.project.json`, read as JSON.
+fn project_config(project: &Path) -> Value {
+    let text = fs::read_to_string(project.join("vectr.project.json")).expect("the project config");
+    serde_json::from_str(&text).expect("the project config is JSON")
+}
+
 #[test]
-fn the_scaffolded_authoring_guide_teaches_the_workflow_and_its_example_works() {
+fn the_scaffolded_guide_is_minimal_and_states_the_projects_local_facts() {
+    // FEAT-020's packaging amendment: the scaffold writes a small always-read
+    // guide (`AGENTS.md`) that orients a coding agent and states the project's
+    // local facts — its identifier, default scene, default palette, and default
+    // recipe, and the scene-addressing rule — then points at the skill's
+    // on-demand references. The full procedure is not embedded.
     let dir = TempDir::new("scaffold-guide");
     let init = run_vectr(dir.path(), &["init", "habit"]);
     assert_eq!(code(&init), 0, "{}", stderr(&init));
     let project = dir.path().join("habit");
     let guide = fs::read_to_string(project.join("AGENTS.md")).expect("the scaffolded guide");
+    let flat = flatten(&guide);
 
-    for step in [
-        "vectr schema",
-        "vectr validate",
-        "vectr compile",
-        "vectr export",
+    // Orientation: what a scene is and what the toolchain does with it.
+    assert!(
+        flat.contains("Vectr scenes"),
+        "the guide orients the agent: {flat}"
+    );
+    assert!(
+        flat.contains("published schema"),
+        "the guide points at the contract: {flat}"
+    );
+
+    // The project's local facts are the values `vectr init` actually wrote, so
+    // the guide cannot drift from the project it orients.
+    let config = project_config(&project);
+    for (field, label) in [
+        ("id", "identifier"),
+        ("defaultSceneId", "default scene"),
+        ("defaultPaletteId", "default palette"),
+        ("defaultRecipeId", "default recipe"),
     ] {
-        assert!(guide.contains(step), "the guide teaches `{step}`");
+        let value = config[field]
+            .as_str()
+            .unwrap_or_else(|| panic!("the scaffolded project names a {label}"));
+        assert!(
+            flat.contains(&format!("`{value}`")),
+            "the guide names the project's {label} `{value}`: {flat}"
+        );
     }
-    // The workflow's inspect step, its bounded retry, and the ambiguous-request
-    // defaults are what FEAT-020's acceptance criteria turn on.
-    assert!(
-        guide.contains("Inspect and correct"),
-        "the guide teaches inspection"
-    );
-    assert!(guide.contains("Retry once"), "the guide bounds the retry");
-    assert!(guide.contains("Defaults for an ambiguous request"));
-    assert!(guide.contains("Licensing"));
 
-    // The guide names the versions of the tool that wrote it.
-    let cli_version = cli_version(&dir);
+    // The scene-addressing rule: a command names a scene by its identifier and
+    // its document is `scenes/<id>.json` (FEAT-016, D-032).
     assert!(
-        guide.contains(&cli_version),
-        "the guide names the tool version"
-    );
-    assert!(
-        guide.contains(VERSION),
-        "the guide names the format version"
+        flat.contains("scenes/<id>.json"),
+        "the guide states the scene-addressing rule: {flat}"
     );
 
-    // The scaffold's own worked example runs end to end.
-    let blocks = fenced_json_blocks(&guide);
-    run_the_worked_example(
-        "scaffold-example",
-        palette_block(&blocks),
-        None,
-        &definition_blocks(&blocks),
-        scene_block(&blocks),
+    // The tool surface, and pointers to the schema and the skill's references.
+    assert!(
+        flat.contains("vectr validate"),
+        "the guide names `vectr validate`: {flat}"
+    );
+    assert!(
+        flat.contains("vectr schema"),
+        "the guide points at the schema: {flat}"
+    );
+    assert!(
+        flat.contains("references/authoring-guide.md"),
+        "the guide points at the skill's on-demand references: {flat}"
+    );
+
+    // The guide names the versions it targets, so a mismatch is caught before
+    // authoring (FEAT-020).
+    let version = cli_version(&dir);
+    assert!(
+        flat.contains(&version),
+        "the guide names the tool version `{version}`: {flat}"
+    );
+    assert!(
+        flat.contains(VERSION),
+        "the guide names the format version: {flat}"
+    );
+}
+
+#[test]
+fn the_scaffolded_guide_carries_no_procedure_worked_examples_or_asset_summary() {
+    // The guide is always-read material kept across the authoring loop, so it
+    // stays minimal: the procedure, the worked examples, the error catalogue,
+    // and any generated summary of the project's style assets live in the
+    // skill's on-demand references, discovered from the project's documents
+    // through the tools (FEAT-020, D-042, D-043).
+    let dir = TempDir::new("scaffold-guide-minimal");
+    let init = run_vectr(dir.path(), &["init", "habit"]);
+    assert_eq!(code(&init), 0, "{}", stderr(&init));
+    let project = dir.path().join("habit");
+    let guide = fs::read_to_string(project.join("AGENTS.md")).expect("the scaffolded guide");
+    let flat = flatten(&guide);
+
+    // No worked example: the guide embeds no fenced JSON scene or definition.
+    assert!(
+        fenced_json_blocks(&guide).is_empty(),
+        "the minimal guide embeds no worked example: {guide}"
+    );
+
+    // No embedded procedure: the steps, the bounded retry, the ambiguous-request
+    // defaults, and the error catalogue are not carried here.
+    for forbidden in [
+        "Inspect and correct",
+        "Retry once",
+        "Defaults for an ambiguous request",
+        "Licensing",
+        "E_SCHEMA",
+        "E_PARSE",
+        "E_FORMAT_VERSION",
+        "E_INVALID_COLOR",
+    ] {
+        assert!(
+            !flat.contains(forbidden),
+            "the minimal guide must not carry `{forbidden}`: {flat}"
+        );
+    }
+
+    // No generated summary of the project's style assets: the scaffold's own
+    // palette tokens are not written into the always-read guide; they are read
+    // from the project's documents through the tools.
+    let palette = fs::read_to_string(project.join("palettes/brand.json")).expect("the palette");
+    let palette: Value = serde_json::from_str(&palette).expect("the palette is JSON");
+    for token in palette["tokens"].as_array().expect("the palette tokens") {
+        let name = token["name"].as_str().expect("a token name");
+        assert!(
+            !flat.contains(name),
+            "the guide carries no summary of the palette token `{name}`: {flat}"
+        );
+    }
+    assert!(
+        flat.contains("through the tools"),
+        "the guide directs the agent to discover assets through the tools: {flat}"
+    );
+}
+
+#[test]
+fn a_scaffolded_project_without_the_skill_orients_from_the_schema() {
+    // FEAT-020's edge case: a project with no skill available still works. The
+    // minimal agent guide orients the agent and points at the published schema,
+    // the procedure is absent rather than embedded, and the guide states no
+    // requirement that the skill be present.
+    let dir = TempDir::new("scaffold-guide-no-skill");
+    let init = run_vectr(dir.path(), &["init", "habit"]);
+    assert_eq!(code(&init), 0, "{}", stderr(&init));
+    let project = dir.path().join("habit");
+    let guide = fs::read_to_string(project.join("AGENTS.md")).expect("the scaffolded guide");
+    let flat = flatten(&guide);
+
+    // The guide points at the schema as the contract to author against and
+    // states the skill is not required.
+    assert!(
+        flat.contains("vectr schema"),
+        "points at the schema: {flat}"
+    );
+    assert!(
+        flat.contains("the skill is not required"),
+        "states the skill is not required: {flat}"
+    );
+
+    // The procedure is absent, not condensed: no worked example and none of the
+    // procedure's own step names.
+    assert!(
+        fenced_json_blocks(&guide).is_empty(),
+        "no embedded worked example: {guide}"
+    );
+    for step in [
+        "Inspect and correct",
+        "Retry once",
+        "Defaults for an ambiguous request",
+    ] {
+        assert!(
+            !flat.contains(step),
+            "the procedure is absent, not condensed: `{step}`"
+        );
+    }
+}
+
+#[test]
+fn the_always_read_material_stays_within_its_documented_budget() {
+    // FEAT-020: the always-read material — the skill's entry point and the
+    // project's scaffolded agent guide — stays within the size budget nfr.md
+    // states (NFR-008, NFR-009), so no depth is loaded before the step that
+    // needs it. The crate constants encode those figures; pin them here so the
+    // bar cannot be loosened in the build to make a run pass.
+    assert_eq!(vectr_project::AGENT_GUIDE_BUDGET_BYTES, 3_072);
+    assert_eq!(vectr_project::SKILL_ENTRY_BUDGET_BYTES, 8_192);
+
+    let dir = TempDir::new("scaffold-guide-budget");
+    let init = run_vectr(dir.path(), &["init", "habit"]);
+    assert_eq!(code(&init), 0, "{}", stderr(&init));
+    let guide = fs::read_to_string(dir.path().join("habit/AGENTS.md")).expect("the guide");
+    assert!(
+        guide.len() <= vectr_project::AGENT_GUIDE_BUDGET_BYTES,
+        "the scaffolded agent guide is {} bytes, over the documented {}",
+        guide.len(),
+        vectr_project::AGENT_GUIDE_BUDGET_BYTES
+    );
+
+    let skill =
+        fs::read_to_string(workspace_root().join("skills/vectr/SKILL.md")).expect("SKILL.md");
+    assert!(
+        skill.len() <= vectr_project::SKILL_ENTRY_BUDGET_BYTES,
+        "the skill entry point is {} bytes, over the documented {}",
+        skill.len(),
+        vectr_project::SKILL_ENTRY_BUDGET_BYTES
     );
 }
 

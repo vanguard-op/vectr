@@ -16,6 +16,11 @@ publish = false
 [dependencies]
 # The engine under test, exercised through its public API (C-002).
 vectr-core = { path = "../../crates/vectr-core" }
+# The shipped project loader documents the size budgets for the always-read
+# material — the scaffolded agent guide and the skill's entry point — so the
+# acceptance suite measures against the same figures the crate documents rather
+# than restating them (FEAT-020).
+vectr-project = { path = "../../crates/vectr-project" }
 
 [dev-dependencies]
 # Reading and building scene documents in the tests (C-001).
