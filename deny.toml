@@ -34,10 +34,14 @@ allow = [
 exceptions = []
 
 [licenses.private]
-# Workspace crates are unpublished placeholders while the project license is
-# still being settled; do not license-check them. Flip to false once crates
-# carry a real SPDX license and are published.
-ignore = true
+# Enforce the workspace crates' declared licence (NFR-041). Every product crate
+# now carries `license = "MIT OR Apache-2.0"` (D-010) and is published to
+# crates.io (D-006); vectr-eval is maintainer-only but carries the same SPDX
+# licence. With `ignore = false` cargo-deny checks each workspace crate's
+# declared licence against `allow`, so a crate that ships without a compatible
+# SPDX licence fails the gate instead of slipping through as a private
+# placeholder.
+ignore = false
 
 [bans]
 multiple-versions = "warn"
