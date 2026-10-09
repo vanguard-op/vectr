@@ -1,7 +1,7 @@
 # Delivery
 
 ## Source of truth
-docs/Vectr/ — git submodule, remote https://github.com/vanguard-op/vectr-docs.git; working tree at 538b43f (multi-scene projects, full-complexity scope, validated alpha colour model, single-layer shading scheduled as Phase 6), the recorded pointer advancing with the build. The docs are authoritative for what to build; this file tracks state only and never restates the spec.
+docs/Vectr/ — git submodule, remote https://github.com/vanguard-op/vectr-docs.git; working tree at b9868b3 (multi-scene projects, agent-surface scene addressing, full-complexity scope, validated alpha colour model, single-layer shading scheduled as Phase 6), the recorded pointer advancing with the build. The docs are authoritative for what to build; this file tracks state only and never restates the spec.
 
 ## Team & file ownership
 | Member | Owns |
@@ -66,7 +66,7 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 |---|---|---|
 | Phase 1 — First Graphic | 2026-10-08 | FEAT-001, FEAT-002, FEAT-003, FEAT-004, FEAT-005, FEAT-011, FEAT-012, FEAT-013, FEAT-016, FEAT-024 shipped; C-001–C-004 implemented; A-001–A-004 sourced. |
 | Phase 2 — Style Core | 2026-10-08 | FEAT-027, FEAT-007, FEAT-008, FEAT-009, FEAT-010 shipped; the element paint model unified with linear/radial gradients; recipe selection wired through the CLI; C-001–C-003 re-implemented at revision 5. |
-| Phase 3 — Any Model Can Author | 2026-10-08 | FEAT-017, FEAT-018, FEAT-019, FEAT-020 shipped; validated alpha colour model (FEAT-005) and the shading-request warning (FEAT-007); scope extended to very complex illustrations (FEAT-003, FEAT-011) with complex-scene coverage; multi-scene projects with identifier addressing and a default scene, matched by the MCP surface (FEAT-016, FEAT-019); CLI and MCP share one project loader and one authoring guide; crates self-contained for packaging, both binaries and the skill distributed; released as 0.1.0-pre.1 on crates.io and GitHub Releases (checksummed and signed); C-001–C-005 implemented. |
+| Phase 3 — Any Model Can Author | 2026-10-08 | FEAT-017, FEAT-018, FEAT-019, FEAT-020 shipped; validated alpha colour model (FEAT-005) and the shading-request warning (FEAT-007); scope extended to very complex illustrations (FEAT-003, FEAT-011) with complex-scene coverage; multi-scene projects with identifier addressing and a default scene, matched by the MCP surface (FEAT-016, FEAT-019); CLI and MCP share one project loader and one authoring guide; crates self-contained for packaging, both binaries and the skill distributed; released as 0.1.0-pre.1 on crates.io and GitHub Releases (checksummed and signed); the gate covers the acceptance crate's fmt/lints and a determinism check; C-001–C-005 implemented. |
 
 ## Decisions log
 | # | Decision | Rationale | By |
@@ -122,3 +122,8 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 - cargo clippy --workspace --all-targets -- -D warnings
 - cargo run -p vectr-cli -- validate <scene-id>
 - cargo run -p vectr-cli -- export <scene-id> --format svg --out dist/scene.svg
+- bash scripts/check.sh
+- bash scripts/deny.sh
+- bash scripts/font-inventory.sh
+- bash scripts/package.sh <target-triple> [out-dir]
+- bash scripts/publish-crates.sh

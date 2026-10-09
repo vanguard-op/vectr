@@ -54,7 +54,8 @@ trap cleanup EXIT
 chmod 700 "$gnupg_home"
 export GNUPGHOME="$gnupg_home"
 
-printf '%s' "$GPG_PRIVATE_KEY" | gpg --batch --quiet --import
+printf '%s' "$GPG_PRIVATE_KEY" | gpg --batch --quiet --import \
+  || { echo "error: GPG_PRIVATE_KEY is not a usable key" >&2; exit 1; }
 
 key_id="$(gpg --list-secret-keys --with-colons | awk -F: '/^sec:/ { print $5; exit }')"
 [[ -n "$key_id" ]] || { echo "error: GPG_PRIVATE_KEY contains no secret key" >&2; exit 1; }

@@ -1,7 +1,9 @@
 name: CI
 
 # Every change is gated by the same commands that run locally
-# (scripts/check.sh), plus the dependency and license scan.
+# (scripts/check.sh), so a failure is reproducible with one command. The
+# canonical gate covers the tests, the determinism check, and the dependency,
+# advisory and license scans (release.md, "Environments & Promotion").
 on:
   push:
     branches: [main, dev]
@@ -32,18 +34,18 @@ jobs:
           rustup toolchain install --no-self-update
           rustup component add rustfmt clippy
 
+      # The canonical gate runs scripts/deny.sh, so cargo-deny is installed on
+      # each runner and the gate is identical on every supported OS. The scan
+      # itself is target-agnostic (deny.toml sets `[graph] targets = []`), so it
+      # runs inside the gate rather than as a second, separate job (NFR-020,
+      # NFR-041).
+      - name: Install pinned cargo-deny
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@0.20.2
+
       - uses: Swatinem/rust-cache@v2
 
-      - name: Format, lint, build, test
+      - name: Format, lint, build, test, determinism and scans
         shell: bash
         run: scripts/check.sh
-
-  deny:
-    name: dependency & license scan
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      # cargo-deny: advisories (NFR-020) and license inventory (NFR-041).
-      - uses: EmbarkStudios/cargo-deny-action@v2
-        with:
-          manifest-path: ./Cargo.toml

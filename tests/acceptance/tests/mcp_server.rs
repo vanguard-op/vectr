@@ -73,7 +73,10 @@ fn two_scene_project(tag: &str, default_scene: Option<&str>) -> TempDir {
         config["defaultSceneId"] = json!(id);
     }
     dir.write("vectr.project.json", &config.to_string());
-    dir.write("palettes/red.json", &palette("red", &[("accent", "#ff0000")]));
+    dir.write(
+        "palettes/red.json",
+        &palette("red", &[("accent", "#ff0000")]),
+    );
     dir.write(
         "palettes/blue.json",
         &palette("blue", &[("accent", "#0000ff")]),
@@ -329,11 +332,7 @@ fn a_named_scene_addresses_one_scene_and_resolves_only_its_assets() {
 #[test]
 fn an_omitted_scene_uses_the_project_default() {
     let dir = two_scene_project("mcp-default", Some("blue"));
-    let run = run_mcp_session(
-        dir.path(),
-        &[],
-        &[mcp_tool_call(1, "compile", json!({}))],
-    );
+    let run = run_mcp_session(dir.path(), &[], &[mcp_tool_call(1, "compile", json!({}))]);
     assert_eq!(run.code, 0, "{}", run.stderr);
     let result = &response(&run, 1)["result"];
     assert_eq!(result["isError"], false, "{:?}", run.responses);
@@ -367,11 +366,7 @@ fn a_project_that_names_no_default_reports_no_scene_selected() {
     // A project that names no default scene must not choose among its scenes;
     // it returns a structured error that no scene was selected (FEAT-019).
     let dir = two_scene_project("mcp-no-default", None);
-    let run = run_mcp_session(
-        dir.path(),
-        &[],
-        &[mcp_tool_call(1, "validate", json!({}))],
-    );
+    let run = run_mcp_session(dir.path(), &[], &[mcp_tool_call(1, "validate", json!({}))]);
     assert_eq!(run.code, 0, "{}", run.stderr);
     let result = &response(&run, 1)["result"];
     assert_eq!(result["isError"], true, "{:?}", run.responses);
@@ -408,11 +403,7 @@ fn a_scene_identifier_no_document_provides_is_a_structured_error_naming_the_scen
 #[test]
 fn a_default_that_resolves_to_no_document_is_a_structured_error_naming_the_scene() {
     let dir = two_scene_project("mcp-missing-default", Some("ghost"));
-    let run = run_mcp_session(
-        dir.path(),
-        &[],
-        &[mcp_tool_call(1, "compile", json!({}))],
-    );
+    let run = run_mcp_session(dir.path(), &[], &[mcp_tool_call(1, "compile", json!({}))]);
     assert_eq!(run.code, 0, "{}", run.stderr);
     let result = &response(&run, 1)["result"];
     assert_eq!(result["isError"], true, "{:?}", run.responses);
@@ -487,11 +478,7 @@ fn an_inline_draft_is_used_as_a_draft_and_leaves_the_default_unchanged() {
         std::fs::read_to_string(dir.path().join("vectr.project.json")).expect("reads the config"),
         r#"{"defaultSceneId":"red"}"#
     );
-    let default = run_mcp_session(
-        dir.path(),
-        &[],
-        &[mcp_tool_call(1, "compile", json!({}))],
-    );
+    let default = run_mcp_session(dir.path(), &[], &[mcp_tool_call(1, "compile", json!({}))]);
     assert_eq!(default.code, 0, "{}", default.stderr);
     assert_eq!(
         first_fill(&response(&default, 1)["result"]),
