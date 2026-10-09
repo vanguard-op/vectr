@@ -71,7 +71,7 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 ### Active phase: Phase 4 — Reuse & Incremental Authoring
 | Task | Feature | Owner | Status | Contract |
 |---|---|---|---|---|
-| T-072 | FEAT-030 | backend-engineer | Ready | C-001, C-002, C-003 |
+| T-072 | FEAT-030 | backend-engineer | Done | C-001, C-002, C-003 |
 | T-073 | FEAT-031 | backend-engineer | Backlog | C-002, C-004 |
 | T-074 | FEAT-031 | ai-engineer | Backlog | C-005 |
 | T-075 | FEAT-029 | ai-engineer | Backlog | C-002, C-004, C-005 |
