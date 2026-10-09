@@ -1,7 +1,7 @@
 # Delivery
 
 ## Source of truth
-docs/Vectr/ — git submodule, remote https://github.com/vanguard-op/vectr-docs.git; working tree at cc1cd19 (reusable parts, incremental authoring, and part-scoped rendering specified for Phase 4), the recorded pointer advancing with the build. The docs are authoritative for what to build; this file tracks state only and never restates the spec.
+docs/Vectr/ — git submodule, remote https://github.com/vanguard-op/vectr-docs.git; working tree at 803a8ea (reusable parts, incremental authoring, and part-scoped rendering specified for Phase 4; definition elements split into the TemplateElement variant), the recorded pointer advancing with the build. The docs are authoritative for what to build; this file tracks state only and never restates the spec.
 
 ## Team & file ownership
 | Member | Owns |
@@ -115,6 +115,7 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | D-034 | A reusable part is a separate, project-scoped Definition entity, and a scene is not instanceable (no scene-in-scene). | A scene is a deliverable (canvas, palette, recipe) while a part must take the placing scene's look; separating them keeps "restyle by one token" true for reused parts and avoids a scene-cycle surface. Confirms the split the user chose. | user |
 | D-035 | A parameter is referenced inside a definition by the object `{param: "<name>"}` in a field whose type matches the parameter; an instance override names one element of the placed definition by identifier. | The docs left both unsettled; the tagged-object form is unambiguous across field types and matches the model's existing tagged-object idiom, and targeting an element keeps multi-colour parts overridable. | lead |
 | D-036 | A project's reusable definitions live in a `definitions/` directory, one document per definition named for its identifier (`definitions/<id>.json`), scaffolded by `vectr init`. | Definitions are project documents referenced by identifier, parallel to scenes and palettes; the docs name the directory but not its file naming. Extends D-009. | lead |
+| D-037 | A definition's element is a distinct `TemplateElement` variant whose parameter-capable fields accept a literal or a parameter reference, while a scene's `Element` fields stay literal-typed; `Binding`, `BindingValue`, and `Override` are shared entities; a scene carries an optional `constraints` array. | A single element type cannot admit a reference where a definition allows one and reject it where a scene does not, so the variant keeps validation sound. Ratifies the shape the build had already chosen. | lead |
 
 ## Definition of Done
 - Every acceptance criterion in the task's FEAT file is met, including its edge cases and failure states.
