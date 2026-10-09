@@ -1,0 +1,9 @@
+{
+  "id": "p-014-pill",
+  "corpusId": "vectr-authoring",
+  "intent": "A rounded rectangle.",
+  "text": "Draw a rounded pill shape.",
+  "order": 13,
+  "complexity": "simple",
+  "qualities": []
+}

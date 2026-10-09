@@ -1,0 +1,13 @@
+{
+  "id": "p-096-chess-set",
+  "corpusId": "vectr-authoring",
+  "intent": "A chess set in three dimensions.",
+  "text": "Draw a chess set shown in three dimensions, with the pieces placed on the board.",
+  "order": 95,
+  "complexity": "complex",
+  "qualities": [
+    "depth",
+    "relative_placement",
+    "reusable_parts"
+  ]
+}

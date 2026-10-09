@@ -16,6 +16,7 @@ fn half_red() -> RenderModel {
     let mut shape = ResolvedNode {
         id: "e1".to_string(),
         name: None,
+        accessible_name: None,
         order: 0,
         kind: "rect".to_string(),
         groups: Vec::new(),

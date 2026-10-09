@@ -1,0 +1,14 @@
+{
+  "id": "p-098-microscope",
+  "corpusId": "vectr-authoring",
+  "intent": "A microscope with its parts placed relatively.",
+  "text": "Draw a microscope with its arm, stage, and lenses placed relative to one another.",
+  "order": 97,
+  "complexity": "complex",
+  "qualities": [
+    "depth",
+    "relative_placement",
+    "reusable_parts",
+    "shared_anchors"
+  ]
+}

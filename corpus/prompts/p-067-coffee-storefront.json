@@ -1,0 +1,9 @@
+{
+  "id": "p-067-coffee-storefront",
+  "corpusId": "vectr-authoring",
+  "intent": "A coffee shop storefront.",
+  "text": "Draw a coffee shop storefront.",
+  "order": 66,
+  "complexity": "moderate",
+  "qualities": []
+}

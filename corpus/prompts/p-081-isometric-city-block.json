@@ -1,0 +1,14 @@
+{
+  "id": "p-081-isometric-city-block",
+  "corpusId": "vectr-authoring",
+  "intent": "An isometric city block of several buildings.",
+  "text": "Draw an isometric city block with several buildings shown in three dimensions, built from a reusable building part.",
+  "order": 80,
+  "complexity": "complex",
+  "qualities": [
+    "depth",
+    "relative_placement",
+    "reusable_parts",
+    "shared_anchors"
+  ]
+}

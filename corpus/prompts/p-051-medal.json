@@ -1,0 +1,9 @@
+{
+  "id": "p-051-medal",
+  "corpusId": "vectr-authoring",
+  "intent": "A medal with a ribbon.",
+  "text": "Draw a medal with a ribbon.",
+  "order": 50,
+  "complexity": "moderate",
+  "qualities": []
+}

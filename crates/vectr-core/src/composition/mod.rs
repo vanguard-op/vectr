@@ -15,6 +15,7 @@ pub mod along_path;
 pub mod boolean;
 pub mod flatten;
 pub mod offset;
+pub mod procedural;
 pub mod repeat;
 pub mod transform;
 
@@ -49,6 +50,7 @@ pub fn is_composition(kind: ElementKind) -> bool {
             | ElementKind::AlongPath
             | ElementKind::Offset
             | ElementKind::Projection
+            | ElementKind::Procedural
     )
 }
 
@@ -114,6 +116,7 @@ mod tests {
             parent_id: None,
             order: 0,
             name: None,
+            accessible_name: None,
             kind,
             geometry: Geometry::default(),
             transform,

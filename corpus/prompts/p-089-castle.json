@@ -1,0 +1,13 @@
+{
+  "id": "p-089-castle",
+  "corpusId": "vectr-authoring",
+  "intent": "A castle with towers in three dimensions.",
+  "text": "Draw a castle with towers shown in three dimensions.",
+  "order": 88,
+  "complexity": "complex",
+  "qualities": [
+    "depth",
+    "relative_placement",
+    "reusable_parts"
+  ]
+}

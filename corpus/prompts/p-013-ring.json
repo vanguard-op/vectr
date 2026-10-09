@@ -1,0 +1,9 @@
+{
+  "id": "p-013-ring",
+  "corpusId": "vectr-authoring",
+  "intent": "A hollow circle.",
+  "text": "Draw a ring: a circle with a hollow centre.",
+  "order": 12,
+  "complexity": "simple",
+  "qualities": []
+}

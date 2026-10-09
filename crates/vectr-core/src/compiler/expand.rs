@@ -183,6 +183,7 @@ impl Expander<'_> {
                     element.opacity(),
                     element.visible(),
                     element.name.clone(),
+                    element.accessible_name.clone(),
                     element.parent_id.as_deref(),
                     None,
                 );
@@ -225,6 +226,7 @@ impl Expander<'_> {
         opacity: f64,
         visible: bool,
         name: Option<String>,
+        accessible_name: Option<String>,
         parent: Option<&str>,
         prefix: Option<&str>,
     ) {
@@ -281,6 +283,7 @@ impl Expander<'_> {
             parent_id: parent.map(str::to_string),
             order,
             name,
+            accessible_name,
             kind: ElementKind::Group,
             geometry: Geometry::default(),
             transform,
@@ -392,6 +395,7 @@ impl Expander<'_> {
                 opacity,
                 visible,
                 template.name.clone(),
+                template.accessible_name.clone(),
                 parent,
                 Some(prefix),
             );
@@ -596,6 +600,7 @@ fn resolve_element(
         parent_id: template.parent_id.clone(),
         order: template.order,
         name: template.name.clone(),
+        accessible_name: template.accessible_name.clone(),
         kind: template.kind,
         geometry: Geometry {
             x: opt_number(&geometry.x, values, "/geometry/x", &mut diagnostics),
@@ -654,6 +659,13 @@ fn resolve_element(
                 &mut diagnostics,
             ),
             axis: geometry.axis,
+            procedure: geometry.procedure,
+            amount: opt_number(
+                &geometry.amount,
+                values,
+                "/geometry/amount",
+                &mut diagnostics,
+            ),
         },
         transform: resolve_transform(&template.transform, values).unwrap_or_else(|findings| {
             diagnostics.extend(findings);

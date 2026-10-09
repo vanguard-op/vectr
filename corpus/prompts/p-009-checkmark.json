@@ -1,0 +1,9 @@
+{
+  "id": "p-009-checkmark",
+  "corpusId": "vectr-authoring",
+  "intent": "A checkmark.",
+  "text": "Draw a checkmark.",
+  "order": 8,
+  "complexity": "simple",
+  "qualities": []
+}

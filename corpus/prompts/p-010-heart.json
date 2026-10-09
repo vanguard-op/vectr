@@ -1,0 +1,9 @@
+{
+  "id": "p-010-heart",
+  "corpusId": "vectr-authoring",
+  "intent": "A filled heart shape.",
+  "text": "Draw a filled heart shape.",
+  "order": 9,
+  "complexity": "simple",
+  "qualities": []
+}

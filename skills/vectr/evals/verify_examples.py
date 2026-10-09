@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
 """Deterministic checks for the Vectr skill artifacts (FEAT-020).
 
-The skill's value is that a model can follow the authoring guide against the
+The skill's value is that a model can follow the authoring references against the
 published schema and the installed tool. These checks pin that contract: the
-frontmatter and JSON are well-formed, the guide stands alone as the single
-source of the authoring procedure (the scaffold embeds it verbatim, so it must
-not depend on the skill's other files), and every worked scene the guide ships,
+frontmatter and JSON are well-formed, the always-read entry point routes to the
+on-demand references, those references teach the whole workflow and the one
+universal method, and every worked example the skill ships under `examples/` —
 from the simple mark to the compositionally complex illustration, plus every
-reusable definition and the scene template, validate, compile, and export through
-the real toolchain.
+reusable definition and the scene template — validates, compiles, and exports
+through the real toolchain.
+
+The authoring procedure is dissolved into the references, so there is no
+monolithic guide; the entry point carries the workflow and the references carry
+the depth for each step. Each worked example is a markdown document that carries
+its request, its deduced plan, its scene or definition, and notes.
 
 Nothing here grades authored scenes; measuring cross-model authoring quality is
 the evaluation harness's job. This only proves the shipped examples still work.
@@ -59,7 +64,7 @@ def parse_frontmatter(text: str) -> dict[str, str]:
     return fields
 
 
-def fenced_json_blocks(text: str) -> list[dict]:
+def fenced_json_blocks(text: str) -> list:
     blocks = []
     for match in re.finditer(r"```json\s*\n(.*?)```", text, re.DOTALL):
         try:
@@ -69,9 +74,31 @@ def fenced_json_blocks(text: str) -> list[dict]:
     return blocks
 
 
-def check_static(skill_dir: Path) -> list[str]:
+def is_scene(document: dict) -> bool:
+    """A scene is a document with a canvas and a non-empty elements list."""
+    return (
+        isinstance(document, dict)
+        and isinstance(document.get("elements"), list)
+        and bool(document["elements"])
+        and "canvas" in document
+    )
+
+
+def is_definition(document: dict) -> bool:
+    """A reusable definition has parameters and an origin but no canvas."""
+    return (
+        isinstance(document, dict)
+        and isinstance(document.get("elements"), list)
+        and bool(document["elements"])
+        and "parameters" in document
+        and "origin" in document
+    )
+
+
+def check_static(skill_dir: Path) -> tuple[list[str], dict, dict, list[dict], list[dict]]:
     notes = []
-    frontmatter = parse_frontmatter((skill_dir / "SKILL.md").read_text())
+    entry = (skill_dir / "SKILL.md").read_text()
+    frontmatter = parse_frontmatter(entry)
     name = frontmatter.get("name")
     if name != skill_dir.name:
         raise CheckError(f"frontmatter name {name!r} does not match folder {skill_dir.name!r}")
@@ -92,23 +119,55 @@ def check_static(skill_dir: Path) -> list[str]:
     if evals.get("skill_name") != skill_dir.name:
         raise CheckError("evals.json skill_name does not match the skill folder")
 
-    guide = (skill_dir / "references/authoring-guide.md").read_text()
+    references = sorted((skill_dir / "references").glob("*.md"))
+    if not references:
+        raise CheckError("the skill ships no references")
 
-    # The guide is the single source of the authoring procedure: it is what the
-    # scaffold embeds into a project, so it must carry the whole workflow, name
-    # the versions it targets, and stand alone — a scaffolded project has none
-    # of the skill's other files.
+    # The authoring procedure is dissolved into the references: no single
+    # monolithic guide remains (FEAT-020, D-046).
+    if (skill_dir / "references/authoring-guide.md").exists():
+        raise CheckError("the skill still ships a monolithic references/authoring-guide.md")
+
+    # The always-read entry point carries the workflow and points at every
+    # on-demand reference it routes to; the depth is loaded only when a step
+    # needs it (FEAT-020, D-042).
+    for path in references:
+        name = f"references/{path.name}"
+        if name not in entry:
+            raise CheckError(f"the skill entry point does not point at `{name}`")
+
+    # The worked examples live in their own directory, one file each, so the
+    # model does not conflate an example with a copyable asset (FEAT-020, D-047).
+    if "examples/" not in entry:
+        raise CheckError("the skill entry point does not point at its `examples/` directory")
+
+    # The workflow is the entry point's spine and the references carry the depth
+    # for each step, so read them together as the authored material.
+    reference_text = "\n\n".join(path.read_text() for path in references)
+    guide = entry + "\n\n" + reference_text
+
+    # The references together carry the whole workflow — a model reads the
+    # procedure and only the depth the current step needs.
     for command in ("vectr schema", "vectr validate", "vectr compile", "vectr export", "vectr render"):
         if command not in guide:
             raise CheckError(f"the guide does not teach `{command}`")
 
-    # A complex request is built up in verified parts rather than authored in one
-    # pass: the guide must teach reusable definitions and the part-scoped render
-    # that verifies each one (FEAT-029, FEAT-030, FEAT-031).
+    # Every graphic is authored by one method, whatever its complexity: sketch
+    # the whole at low fidelity, then refine its sections one at a time — a
+    # section may be a group, an instance, or a scene — so complexity changes the
+    # number of turns, not the method (FEAT-029, D-046).
+    for phrase in (
+        "sketch the whole at low fidelity",
+        "a group, an instance, or a scene",
+        "number of turns",
+    ):
+        if phrase not in guide:
+            raise CheckError(f"the guide does not direct the one universal method (`{phrase}`)")
+
+    # A section that is a reusable part is a definition, placed by an instance,
+    # and verified on its own before it is integrated (FEAT-030, FEAT-031).
     if "definitions/" not in guide:
         raise CheckError("the guide does not teach reusable definitions")
-    if "Build a complex graphic up in verified parts" not in guide:
-        raise CheckError("the guide does not direct the incremental build-up method")
 
     # A scene is addressed by its identifier, not by a file path: the document
     # is `scenes/<id>.json` and a command names the id, falling back to the
@@ -131,6 +190,11 @@ def check_static(skill_dir: Path) -> list[str]:
             "the guide does not teach the MCP inline `draft` argument and its "
             "mutual exclusion with `scene`"
         )
+
+    # The references together carry the depth for each step: the
+    # inspect-and-correct loop, the bounded retry, the ambiguous-request
+    # defaults, and the licensing note are each a reference's depth, not the
+    # entry point's (FEAT-020, D-042).
     for section in (
         "Inspect and correct",
         "Retry once",
@@ -138,56 +202,53 @@ def check_static(skill_dir: Path) -> list[str]:
         "Defaults for an ambiguous request",
         "Licensing",
     ):
-        if section not in guide:
-            raise CheckError(f"the guide is missing `{section}`")
+        if section not in reference_text:
+            raise CheckError(f"the references are missing `{section}`")
     if version and version not in guide:
         raise CheckError(f"the guide does not name the tool version {version!r}")
-    for skill_only in ("SKILL.md", "assets/scene.template.json", "evals/"):
-        if skill_only in guide:
-            raise CheckError(
-                f"the guide references the skill-only {skill_only!r}; it must stand "
-                "alone so the scaffold can embed it verbatim"
-            )
 
-    blocks = fenced_json_blocks(guide)
+    blocks = [b for b in fenced_json_blocks(guide) if isinstance(b, dict)]
     palette = next((b for b in blocks if "tokens" in b), None)
     stroke = next((b for b in blocks if {"cap", "join", "width"} <= set(b)), None)
-    # A scene is a document with a canvas and elements; a reusable definition is
-    # a document with parameters, an origin, and elements but no canvas. Telling
-    # them apart lets the toolchain check address each the way the guide does
-    # (FEAT-029, FEAT-030).
-    scenes = [
-        b
-        for b in blocks
-        if isinstance(b, dict)
-        and isinstance(b.get("elements"), list)
-        and b["elements"]
-        and "canvas" in b
-    ]
-    definitions = [
-        b
-        for b in blocks
-        if isinstance(b, dict)
-        and isinstance(b.get("elements"), list)
-        and b["elements"]
-        and "parameters" in b
-        and "origin" in b
-    ]
-    if palette is None or stroke is None or not scenes:
-        raise CheckError("the authoring guide is missing a palette, stroke, or scene example")
+    if palette is None or stroke is None:
+        raise CheckError("the references are missing a palette or stroke example")
+
+    # The worked examples are markdown documents under `examples/`, one file
+    # each, kept apart from `assets/` (FEAT-020, D-047). Each carries its
+    # request, its deduced plan, its document, and notes; the document is the
+    # single fenced JSON block that parses as a scene or a definition.
+    example_dir = skill_dir / "examples"
+    if not example_dir.is_dir():
+        raise CheckError("the skill ships no `examples/` directory")
+    scenes: list[dict] = []
+    definitions: list[dict] = []
+    for path in sorted(example_dir.glob("*.md")):
+        documents = [b for b in fenced_json_blocks(path.read_text()) if isinstance(b, dict)]
+        if len(documents) != 1:
+            raise CheckError(
+                f"the example `{path.name}` carries {len(documents)} JSON documents; expected one"
+            )
+        document = documents[0]
+        if is_scene(document):
+            scenes.append(document)
+        elif is_definition(document):
+            definitions.append(document)
+        else:
+            raise CheckError(f"the example `{path.name}` is neither a scene nor a definition")
+    if len(scenes) < 2:
+        raise CheckError(f"the examples must span the range; found {len(scenes)} scenes")
     if not definitions:
-        raise CheckError("the authoring guide is missing a reusable definition example")
+        raise CheckError("the examples must include a reusable definition")
     notes.append(
-        f"guide carries {len(blocks)} json examples, {len(scenes)} worked scenes, "
-        f"and {len(definitions)} definitions"
+        f"references carry {len(blocks)} json snippets; examples/ carries "
+        f"{len(scenes)} worked scenes and {len(definitions)} definitions"
     )
 
     # The shipped examples are one consistent project: element ids and definition
     # ids share one namespace across the whole project (FEAT-001, FEAT-030), so a
-    # reader can drop the guide's scenes and definitions into one project with no
-    # collision. Each example validates alone, so a collision is only visible
-    # across them; check it here and fail rather than ship examples that cannot
-    # coexist.
+    # reader can drop them into one project with no collision. Each example
+    # validates alone, so a collision is only visible across them; check it here
+    # and fail rather than ship examples that cannot coexist.
     seen: dict[str, str] = {}
     for kind, documents in (("scene", scenes), ("definition", definitions)):
         for document in documents:
@@ -234,7 +295,7 @@ def check_toolchain(
         (project / "definitions").mkdir()
         (project / "scenes").mkdir()
         (project / "dist").mkdir()
-        # The examples are one project: it names the guide's palette as its
+        # The examples are one project: it names the references' palette as its
         # default so a definition rendered in isolation resolves its tokens
         # (FEAT-030, FEAT-031), and the first worked scene as the default scene.
         (project / "vectr.project.json").write_text(
@@ -250,7 +311,7 @@ def check_toolchain(
         for definition in definitions:
             (project / f"definitions/{definition['id']}.json").write_text(json.dumps(definition))
 
-        # Every worked scene the guide ships runs the whole loop, so a simple
+        # Every worked scene the skill ships runs the whole loop, so a simple
         # mark and a compositionally complex illustration are both pinned to the
         # real toolchain. A command addresses a scene by its identifier and the
         # document is `scenes/<id>.json` (FEAT-016, D-032).
@@ -275,8 +336,8 @@ def check_toolchain(
                 raise CheckError(f"the exported PNG for {scene_id} is not a PNG")
         notes.append(f"{len(scenes)} worked scenes validate, compile, and export SVG and PNG")
 
-        # Every definition the guide ships renders on its own, the verification
-        # step the build-up method turns on: the command parses and validates the
+        # Every definition the skill ships renders on its own, the verification
+        # step the method turns on: the command parses and validates the
         # definition structurally and writes the part's isolated preview
         # (FEAT-029, FEAT-031).
         for definition in definitions:

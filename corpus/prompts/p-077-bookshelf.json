@@ -1,0 +1,9 @@
+{
+  "id": "p-077-bookshelf",
+  "corpusId": "vectr-authoring",
+  "intent": "A bookshelf with books.",
+  "text": "Draw a bookshelf with books on it.",
+  "order": 76,
+  "complexity": "moderate",
+  "qualities": []
+}

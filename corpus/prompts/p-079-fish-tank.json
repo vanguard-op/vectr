@@ -1,0 +1,9 @@
+{
+  "id": "p-079-fish-tank",
+  "corpusId": "vectr-authoring",
+  "intent": "A fish tank with fish and plants.",
+  "text": "Draw a fish tank with fish and plants.",
+  "order": 78,
+  "complexity": "moderate",
+  "qualities": []
+}

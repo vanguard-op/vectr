@@ -524,6 +524,7 @@ dependencies = [
  "serde_json",
  "tiny-skia",
  "vectr-core",
+ "vectr-project",
 ]
 
 [[package]]
@@ -536,6 +537,14 @@ dependencies = [
  "serde",
  "serde_json",
  "skrifa",
+]
+
+[[package]]
+name = "vectr-project"
+version = "0.1.0-pre.2"
+dependencies = [
+ "serde_json",
+ "vectr-core",
 ]
 
 [[package]]

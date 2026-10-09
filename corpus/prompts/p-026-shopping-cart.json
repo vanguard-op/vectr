@@ -1,0 +1,9 @@
+{
+  "id": "p-026-shopping-cart",
+  "corpusId": "vectr-authoring",
+  "intent": "A shopping cart icon.",
+  "text": "Draw a shopping cart icon.",
+  "order": 25,
+  "complexity": "moderate",
+  "qualities": []
+}

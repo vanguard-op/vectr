@@ -1,0 +1,9 @@
+{
+  "id": "p-066-campsite",
+  "corpusId": "vectr-authoring",
+  "intent": "A campsite with a tent, a fire, and trees.",
+  "text": "Draw a campsite with a tent, a campfire, and trees.",
+  "order": 65,
+  "complexity": "moderate",
+  "qualities": []
+}

@@ -1,0 +1,14 @@
+{
+  "id": "p-090-grand-piano",
+  "corpusId": "vectr-authoring",
+  "intent": "A grand piano with correct proportions.",
+  "text": "Draw a grand piano with its lid, legs, and keyboard in correct proportion and joined at their supports.",
+  "order": 89,
+  "complexity": "complex",
+  "qualities": [
+    "relative_placement",
+    "reusable_parts",
+    "shared_anchors",
+    "subject_accuracy"
+  ]
+}

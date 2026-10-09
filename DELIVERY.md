@@ -1,7 +1,7 @@
 # Delivery
 
 ## Source of truth
-docs/Vectr/ — git submodule, remote https://github.com/vanguard-op/vectr-docs.git; working tree at faf20f0 (reusable parts settled as one element shape with a single literal-or-reference form; part-scoped rendering resolves style from the project's default palette and a part identifier in one shared namespace), the recorded pointer advancing with the build. The docs are authoritative for what to build; this file tracks state only and never restates the spec.
+docs/Vectr/ — git submodule, remote https://github.com/vanguard-op/vectr-docs.git; working tree at 07774b3 (authoring-quality guidance specified as FEAT-032 with NFR-031; the skill and project guide packaged for a model's context budget; the scene seed, the procedural element kind, the icon-set document, and element accessible names settled; the corpus coverage fields and the always-read size budget settled; the authoring method made universal — sketch the whole, then refine sections, with the work deduced from the prompt; the evaluation cost budget quantified), the recorded pointer advancing with the build. The docs are authoritative for what to build; this file tracks state only and never restates the spec.
 
 ## Team & file ownership
 | Member | Owns |
@@ -9,7 +9,7 @@ docs/Vectr/ — git submodule, remote https://github.com/vanguard-op/vectr-docs.
 | lead | README.md, DELIVERY.md, CONTRACTS.md, ASSETS.md, .delivery/**, Cargo.lock |
 | infra-engineer | Cargo.toml, rust-toolchain.toml, deny.toml, .gitignore, .github/**, scripts/**, assets/fonts/** |
 | backend-engineer | crates/vectr-core/**, crates/vectr-cli/**, schema/** |
-| ai-engineer | crates/vectr-mcp/**, crates/vectr-eval/**, skills/** |
+| ai-engineer | crates/vectr-mcp/**, crates/vectr-eval/**, crates/vectr-project/**, skills/** |
 | qa-engineer | tests/**, fixtures/**, corpus/** |
 | frontend-engineer | (none — Vectr has no UI) |
 | visual-artist | (none — the docs declare no imagery) |
@@ -35,7 +35,7 @@ Rust (stable, pinned by rust-toolchain.toml), cargo workspace. serde + schemars 
 - scratch/ — per-task scratch (gitignored)
 
 ## Contracts
-CONTRACTS.md — C-001 scene document, C-002 library API, C-003 render model, C-004 CLI, C-005 MCP server.
+CONTRACTS.md — C-001 scene document, C-002 library API, C-003 render model, C-004 CLI, C-005 MCP server, C-006 evaluation harness.
 
 ## Token map
 Vectr has no product UI, so there are no product-level design tokens. Scene palettes (schema.md, "Palette") are project data authored by the user.
@@ -68,6 +68,7 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | Phase 2 — Style Core | 2026-10-08 | FEAT-027, FEAT-007, FEAT-008, FEAT-009, FEAT-010 shipped; the element paint model unified with linear/radial gradients; recipe selection wired through the CLI; C-001–C-003 re-implemented at revision 5. |
 | Phase 3 — Any Model Can Author | 2026-10-08 | FEAT-017, FEAT-018, FEAT-019, FEAT-020 shipped; validated alpha colour model (FEAT-005) and the shading-request warning (FEAT-007); scope extended to very complex illustrations (FEAT-003, FEAT-011) with complex-scene coverage; multi-scene projects with identifier addressing and a default scene, matched by the MCP surface (FEAT-016, FEAT-019); CLI and MCP share one project loader and one authoring guide; crates self-contained for packaging, both binaries and the skill distributed; released as 0.1.0-pre.1 on crates.io and GitHub Releases (checksummed and signed); the gate covers the acceptance crate's fmt/lints and a determinism check; C-001–C-005 implemented. |
 | Phase 4 — Reuse & Incremental Authoring | 2026-10-09 | FEAT-030, FEAT-031, FEAT-029 shipped: reusable part definitions, part-scoped rendering, and the incremental build-up method; the element model settled as one shape with a single literal-or-reference form and parameters as the only adjustment mechanism; part style resolves from the project's default palette and a part identifier resolves in one shared namespace; C-001–C-005 re-implemented at revisions 7/7/6/8/4; released as 0.1.0-pre.2. |
+| Phase 5 — Quality & Reach | 2026-10-09 | FEAT-006, FEAT-014, FEAT-021, FEAT-022, FEAT-023, FEAT-025, FEAT-026, FEAT-032 shipped, with the FEAT-020 packaging and FEAT-029 method rebuilt around the one universal authoring method; C-001–C-006 re-implemented at revisions 9/11/8/12/5/2 and marked implemented. |
 
 ## Decisions log
 | # | Decision | Rationale | By |
@@ -111,6 +112,14 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | D-037 | A definition's element is a distinct `TemplateElement` variant whose parameter-capable fields accept a literal or a parameter reference, while a scene's `Element` fields stay literal-typed; `Binding`, `BindingValue`, and `Override` are shared entities; a scene carries an optional `constraints` array. | A single element type cannot admit a reference where a definition allows one and reject it where a scene does not, so the variant keeps validation sound. Ratifies the shape the build had already chosen. | lead |
 | D-038 | A reusable definition's element is the same `Element` shape as a scene's; a parameter-capable field holds a literal or a `ParamRef`; a reference is valid only inside a definition; and parameters are the only use-adjustment mechanism (no separate overrides). | Supersedes D-037: one element shape needs one value form, and one adjustment mechanism removes the last reason for a second element shape, so the model carries no duplicated types. | lead |
 | D-039 | An isolated definition resolves its colours and style from the project's default palette and default recipe (`ProjectConfig.defaultPaletteId`); a project's definitions and elements share one identifier namespace, so a part identifier resolves to a definition first and otherwise to the element subtree, with no scene search. | A definition carries no palette of its own, so an isolated preview needs a project-level source; and "addressed by its identifier" is only unambiguous if definitions and elements share one namespace. | lead |
+| D-040 | The authoring-quality gap — perspective and depth, parts placed relative to one another rather than by absolute coordinates, an object decomposed into its real parts and authored so those parts join at shared anchors, and subject research by the authoring model — is specified before it is built, through product-shaper; it is not routed as build work under the existing features. | The docs settle the authoring workflow but not this guidance, so there is no agreed requirement to build or score against. | user |
+| D-041 | The authoring guidance ships before its measurement; the evaluation harness and its corpus (FEAT-023) follow in Phase 5. | Guidance and measurement are separable, and the guidance is what raises quality now while the harness quantifies it later. | user |
+| D-042 | Authoring guidance is structured for a model's context budget: always-read entry points stay small and route to material loaded only on demand, and anything loaded in full and kept across iterations is minimal data — including a generated, always-loaded summary of a project's available style assets. | Context is a budget; loading material the model does not need yet degrades it, and a file kept across iterations is a permanent tax. | user |
+| D-043 | Supersedes D-042: the always-loaded file is the project's scaffolded agent guide (AGENTS.md), which stays minimal because the model reads it in full and keeps it across the authoring loop; the depth lives in the skill's references, loaded on demand. There is no separate generated asset summary. | The user corrected the artifact: AGENTS.md, not an assets summary; and a scaffold that writes the whole procedure into it makes every iteration pay for unneeded material. | user |
+| D-044 | The hard-end quality directives enter the spec as a new FEAT-032 (P1) with NFR-031 as their judged bar; the context-budget packaging amends FEAT-020 (a small always-read skill entry point, depth in on-demand references, and a minimal scaffolded AGENTS.md with schema-only orientation when no skill is present). | The user chose a new feature over amending the shipped features, so the guidance carries its own acceptance criteria and a bar the harness can score; and a bare project keeps working from orientation plus the schema. | user |
+| D-045 | CDLA-Permissive-2.0 is added to the dependency licence allow-list, so the evaluation harness may depend on `webpki-root-certs` through the rustls TLS path. | The harness calls model providers over HTTPS and needs a root-cert bundle; the licence is permissive and the harness is maintainer-only. | user |
+| D-046 | The authoring method is universal: every request runs the same sketch-then-section loop, and complexity changes only the number of turns, never the method. What a section is — a group, an instance, or a scene — is deduced from the prompt, which describes the picture rather than prescribing structure. Worked examples live under the skill's assets, one file each, referenced from the guidance. | The product owner corrected the guidance's framing: there is no simple-versus-complex fork, and a reusable definition is one section kind rather than the required unit. | user |
+| D-047 | Supersedes D-046's placement: the worked examples live in the skill's `examples/` directory, one file each, kept separate from `assets/` so the model does not conflate an example with a copyable asset. | The product owner corrected the location. | user |
 
 ## Definition of Done
 - Every acceptance criterion in the task's FEAT file is met, including its edge cases and failure states.
@@ -132,6 +141,7 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 - bash scripts/check.sh
 - bash scripts/deny.sh
 - bash scripts/font-inventory.sh
+- bash scripts/no-rasterizer.sh
 - bash scripts/package.sh <target-triple> [out-dir]
 - bash scripts/publish-crates.sh
 - bash scripts/sync-version.sh [--check]

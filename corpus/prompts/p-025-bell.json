@@ -1,0 +1,9 @@
+{
+  "id": "p-025-bell",
+  "corpusId": "vectr-authoring",
+  "intent": "A simple bell.",
+  "text": "Draw a simple bell.",
+  "order": 24,
+  "complexity": "simple",
+  "qualities": []
+}

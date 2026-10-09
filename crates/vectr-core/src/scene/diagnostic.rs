@@ -54,6 +54,8 @@ impl DiagnosticCode {
     pub const FORMAT_VERSION: Self = Self::new("E_FORMAT_VERSION");
     /// Two elements share an identifier.
     pub const DUPLICATE_ID: Self = Self::new("E_DUPLICATE_ID");
+    /// Two elements share an accessible name (FEAT-026).
+    pub const DUPLICATE_NAME: Self = Self::new("E_DUPLICATE_NAME");
     /// The document exceeds the parser's defined input size limit.
     pub const SIZE_LIMIT: Self = Self::new("E_SIZE_LIMIT");
 

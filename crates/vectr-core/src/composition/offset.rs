@@ -166,6 +166,7 @@ mod tests {
             parent_id: None,
             order: 0,
             name: None,
+            accessible_name: None,
             kind: ElementKind::Offset,
             geometry: Geometry::default(),
             transform: Transform {

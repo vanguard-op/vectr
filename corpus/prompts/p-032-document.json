@@ -1,0 +1,9 @@
+{
+  "id": "p-032-document",
+  "corpusId": "vectr-authoring",
+  "intent": "A document with a folded corner.",
+  "text": "Draw a document icon with a folded corner.",
+  "order": 31,
+  "complexity": "moderate",
+  "qualities": []
+}

@@ -1,0 +1,9 @@
+{
+  "id": "p-059-desk-workspace",
+  "corpusId": "vectr-authoring",
+  "intent": "A desk workspace with a laptop, mug, and plant.",
+  "text": "Draw a desk workspace with a laptop, a mug, and a plant.",
+  "order": 58,
+  "complexity": "moderate",
+  "qualities": []
+}

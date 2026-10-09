@@ -32,6 +32,8 @@
     "RecipeParameters",
     "Gradient",
     "GradientStop",
+    "IconSet",
+    "IconEntry",
     "Asset",
     "ProjectConfig",
     "ProjectOutput",
@@ -46,6 +48,7 @@
     "Axis",
     "ProjectionAxis",
     "BooleanOperation",
+    "Procedure",
     "TextAlign",
     "RecipeName",
     "Shading",
@@ -56,7 +59,9 @@
     "Spread",
     "AssetKind",
     "ExportFormat",
-    "ExportStatus"
+    "ExportStatus",
+    "PromptComplexity",
+    "PromptQuality"
   ],
   "$ref": "#/$defs/Scene",
   "$defs": {
@@ -72,6 +77,7 @@
         "canvas": { "$ref": "#/$defs/Canvas" },
         "paletteId": { "type": "string", "description": "References the Palette whose tokens the scene's elements use." },
         "recipeId": { "type": "string", "description": "References the StyleRecipe applied to the scene, if any." },
+        "seed": { "type": "integer", "description": "Seed governing all generated geometry. A procedural element's effective seed derives deterministically from this value and the element's stable identifier, and, for an element owned by a reusable definition, additionally from the placing instance's identifier; when absent, a default seed of 0 applies and is recorded in the render model. A value that is not an integer is a validation error." },
         "title": { "type": "string", "description": "Accessible title carried into exported output." },
         "description": { "type": "string", "description": "Accessible description carried into exported output." },
         "elements": {
@@ -110,7 +116,8 @@
         "definitionId": { "type": ["string", "null"], "description": "References the Definition this element belongs to; null when the element belongs to a Scene." },
         "parentId": { "type": ["string", "null"], "description": "References the parent Element, or null for a root element." },
         "order": { "type": "integer", "minimum": 0, "description": "Paint order among siblings; lower values paint first." },
-        "name": { "type": "string", "description": "Element name, preserved in exported output." },
+        "name": { "type": "string", "description": "Element name, the maintenance name preserved in exported output." },
+        "accessibleName": { "type": "string", "description": "Accessible name for assistive technology, carried into exported output and distinct from the maintenance name in name. When absent, the element emits no accessible name. A text element's string is carried as accessible text whether or not an accessible name is set." },
         "kind": { "$ref": "#/$defs/ElementKind" },
         "geometry": { "$ref": "#/$defs/Geometry" },
         "transform": { "$ref": "#/$defs/Transform" },
@@ -266,7 +273,9 @@
         "spacing": { "$ref": "#/$defs/NumberValue", "description": "Distance between successive copies for repeat elements, along the element's local x-axis. A literal number or a number parameter reference." },
         "operation": { "$ref": "#/$defs/BooleanOperation" },
         "distance": { "$ref": "#/$defs/NumberValue", "description": "Outline offset distance in scene units for offset elements; positive offsets outward and negative inward. A literal number or a number parameter reference." },
-        "axis": { "$ref": "#/$defs/ProjectionAxis" }
+        "axis": { "$ref": "#/$defs/ProjectionAxis" },
+        "procedure": { "$ref": "#/$defs/Procedure", "description": "The generation a procedural element applies to its children. A procedural element with no child, or missing a parameter its procedure requires, is a validation error." },
+        "amount": { "$ref": "#/$defs/NumberValue", "description": "Maximum displacement or feature amplitude for a procedural element, in scene units: the displacement bound for jitter and scatter, and the amplitude of ornament. A literal number or a number parameter reference." }
       },
       "additionalProperties": false
     },
@@ -440,6 +449,41 @@
       "required": ["offset", "token"],
       "additionalProperties": false
     },
+    "IconSet": {
+      "title": "IconSet",
+      "description": "A project-scoped document that generates a set of icons sharing one canvas, palette, recipe, stroke profile, and naming scheme. Each icon is a reusable Definition the set places, rendered on its own under the set's shared style rather than the project's isolated-definition defaults, and exported as a separately named file.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Stable identifier for the icon set, unique within its project." },
+        "projectId": { "type": "string", "description": "References the ProjectConfig this icon set belongs to." },
+        "name": { "type": "string", "maxLength": 120, "description": "Human-readable icon-set name." },
+        "canvas": { "$ref": "#/$defs/Canvas" },
+        "paletteId": { "type": "string", "description": "References the Palette whose tokens the set's icons resolve against; when absent, the project's defaultPaletteId applies." },
+        "recipeId": { "type": "string", "description": "References the StyleRecipe the set's icons render under; when absent, the project's defaultRecipeId applies." },
+        "strokeProfileId": { "type": "string", "description": "References the StrokeProfile every icon in the set draws with; an icon element's stroke resolves to this profile, and a stroke that names a different profile is a validation error." },
+        "namePattern": { "type": "string", "description": "The naming scheme for the set's exported files: a pattern containing the placeholder {name}, replaced by each icon's name; defaults to {name}. A pattern that does not contain {name} is a validation error." },
+        "icons": {
+          "type": "array",
+          "minItems": 1,
+          "description": "The icons in the set, each an entry naming the definition that draws it. Every icon is rendered on its own under the set's shared canvas, palette, recipe, and stroke profile, and exported to a file named by namePattern. An empty list is a validation error.",
+          "items": { "$ref": "#/$defs/IconEntry" }
+        }
+      },
+      "required": ["id", "projectId", "name", "canvas", "strokeProfileId", "icons"],
+      "additionalProperties": false
+    },
+    "IconEntry": {
+      "title": "IconEntry",
+      "description": "One icon in a set: a named placement of a reusable definition.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "The icon's name, unique within the set and substituted for {name} in namePattern to name the exported file." },
+        "definitionRef": { "type": "string", "description": "References the Definition that draws the icon." },
+        "accessibleName": { "type": "string", "description": "Accessible name carried into the icon's exported output, distinct from the icon's name." }
+      },
+      "required": ["name", "definitionRef"],
+      "additionalProperties": false
+    },
     "Asset": {
       "title": "Asset",
       "description": "An external file a scene references, such as a font or an image.",
@@ -457,13 +501,15 @@
     },
     "ProjectConfig": {
       "title": "ProjectConfig",
-      "description": "The per-project settings that govern how scenes in the project are compiled and exported.",
+      "description": "The per-project settings that govern how the project's scenes are compiled and exported. A project holds one or more scenes and may name one of them as its default.",
       "type": "object",
       "properties": {
         "id": { "type": "string", "description": "Stable identifier for the project." },
         "name": { "type": "string", "maxLength": 120, "description": "Human-readable project name." },
         "formatVersion": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+$", "description": "The scene format version this project targets; this build supports 0.2." },
-        "defaultRecipeId": { "type": "string", "description": "References the StyleRecipe applied when a scene does not name one." },
+        "defaultRecipeId": { "type": "string", "description": "References the StyleRecipe applied when a scene names none, and the recipe an isolated reusable definition renders under; when neither names one, the flat recipe applies." },
+        "defaultPaletteId": { "type": "string", "description": "References the Palette whose tokens an element resolves against when the scene that owns it names none, and the palette an isolated reusable definition resolves its tokens against." },
+        "defaultSceneId": { "type": "string", "description": "References the Scene used when a request does not name one." },
         "output": { "$ref": "#/$defs/ProjectOutput" }
       },
       "required": ["id", "name", "formatVersion", "output"],
@@ -514,16 +560,22 @@
     },
     "Prompt": {
       "title": "Prompt",
-      "description": "One authoring task in an evaluation corpus.",
+      "description": "One authoring task in an evaluation corpus, classified by its place in the product's complexity range and the hard-end qualities it exercises.",
       "type": "object",
       "properties": {
         "id": { "type": "string", "description": "Stable identifier for the prompt." },
         "corpusId": { "type": "string", "description": "References the EvaluationCorpus this prompt belongs to." },
         "intent": { "type": "string", "description": "The graphic the prompt asks for." },
         "text": { "type": "string", "description": "The natural-language request given to the authoring model." },
-        "order": { "type": "integer", "minimum": 0, "description": "Order of the prompt in the corpus." }
+        "order": { "type": "integer", "minimum": 0, "description": "Order of the prompt in the corpus." },
+        "complexity": { "$ref": "#/$defs/PromptComplexity" },
+        "qualities": {
+          "type": "array",
+          "description": "The hard-end qualities the prompt exercises. Depth, relative placement, shared anchors, and subject accuracy are the four the authoring guidance directs and the harness scores; reusable parts marks an illustration built up from reusable part definitions. A complex-end prompt carries at least one, and a corpus that omits a quality does not meet its coverage requirement.",
+          "items": { "$ref": "#/$defs/PromptQuality" }
+        }
       },
-      "required": ["id", "corpusId", "intent", "text", "order"],
+      "required": ["id", "corpusId", "intent", "text", "order", "complexity", "qualities"],
       "additionalProperties": false
     },
     "AuthoringModel": {
@@ -548,6 +600,7 @@
         "authoringModelId": { "type": "string", "description": "References the AuthoringModel that authored the scenes." },
         "compileSuccessRate": { "type": "number", "minimum": 0, "maximum": 1, "description": "Share of authored scenes that compiled without error." },
         "fidelityScore": { "type": "number", "minimum": 0, "maximum": 1, "description": "Judged visual fidelity score for the run." },
+        "medianTokens": { "type": "integer", "minimum": 0, "description": "The median authoring-model token usage per prompt across the run, over the prompts whose provider reported usage; absent when no prompt reported usage." },
         "regression": { "type": "boolean", "description": "Whether the run regressed against the previous run of the same corpus and model." },
         "notes": { "type": "string", "description": "Anything notable about the run." }
       },
@@ -558,7 +611,7 @@
       "title": "ElementKind",
       "description": "The element's role.",
       "type": "string",
-      "enum": ["rect", "ellipse", "polygon", "line", "path", "text", "group", "repeat", "boolean", "alongPath", "offset", "projection", "raster", "instance"]
+      "enum": ["rect", "ellipse", "polygon", "line", "path", "text", "group", "repeat", "boolean", "alongPath", "offset", "projection", "procedural", "raster", "instance"]
     },
     "PaintKind": {
       "title": "PaintKind",
@@ -589,6 +642,12 @@
       "description": "A boolean composition operation: union combines the children, subtract removes the later children from the first, and intersect keeps their common area.",
       "type": "string",
       "enum": ["union", "subtract", "intersect"]
+    },
+    "Procedure": {
+      "title": "Procedure",
+      "description": "The generation a procedural element applies to its children, in paint order. Triangulation decomposes the region enclosed by the children's resolved outlines into triangles, sized by spacing, which it requires. Scatter distributes count copies of the first child (the motif, lowest order) across the region enclosed by the remaining children, spaced by spacing and displaced by up to amount; it requires count. Jitter displaces each child's geometry by up to amount, which it requires. Stippling distributes count points within the region enclosed by the children's resolved outlines, spaced by spacing; it requires count. Ornament generates count ornamental features along the children's resolved outlines, with amplitude amount; it requires count and amount.",
+      "type": "string",
+      "enum": ["triangulation", "scatter", "jitter", "stippling", "ornament"]
     },
     "TextAlign": {
       "title": "TextAlign",
@@ -655,6 +714,18 @@
       "description": "The outcome of the export.",
       "type": "string",
       "enum": ["written", "failed", "dependency-missing"]
+    },
+    "PromptComplexity": {
+      "title": "PromptComplexity",
+      "description": "Where a prompt sits in the product's complexity range: a simple mark, a moderately detailed graphic, or the complex end. Every prompt carries one, and the harness scores the complex end against the hard-end bar.",
+      "type": "string",
+      "enum": ["simple", "moderate", "complex"]
+    },
+    "PromptQuality": {
+      "title": "PromptQuality",
+      "description": "A hard-end quality a prompt exercises: depth and perspective, relative placement, parts joined at shared anchors, subject accuracy, or an illustration built up from reusable parts.",
+      "type": "string",
+      "enum": ["depth", "relative_placement", "shared_anchors", "subject_accuracy", "reusable_parts"]
     }
   }
 }

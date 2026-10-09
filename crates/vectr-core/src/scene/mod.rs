@@ -14,10 +14,10 @@ mod version;
 pub use color::{is_color, validate_color, INVALID_COLOR};
 pub use diagnostic::{Diagnostic, DiagnosticCode, Diagnostics, Location, Severity};
 pub use model::{
-    Axis, Binding, BindingValue, BoolValue, BooleanOperation, Canvas, Constraint, ConstraintKind,
-    Definition, Element, ElementKind, Geometry, NumberValue, Origin, Paint, PaintKind, PaintValue,
-    ParamRef, Parameter, ParameterType, ParameterValue, ProjectionAxis, Scene, StringValue, Stroke,
-    TextAlign, Transform,
+    default_name_pattern, Axis, Binding, BindingValue, BoolValue, BooleanOperation, Canvas,
+    Constraint, ConstraintKind, Definition, Element, ElementKind, Geometry, IconEntry, IconSet,
+    NumberValue, Origin, Paint, PaintKind, PaintValue, ParamRef, Parameter, ParameterType,
+    ParameterValue, Procedure, ProjectionAxis, Scene, StringValue, Stroke, TextAlign, Transform,
 };
 pub use version::{
     is_supported, is_supported_version, parse_version, supported_range, CURRENT_FORMAT_VERSION,
@@ -184,6 +184,152 @@ pub fn validate_definition(definition: &Definition) -> Diagnostics {
     diagnostics
 }
 
+/// Reads an icon set from a JSON document (C-002, FEAT-025).
+///
+/// On success the returned [`IconSet`] is structurally valid and passes
+/// [`validate_icon_set`]; parsing refuses rather than returning one carrying a
+/// duplicate icon name, an empty icon list, or an unusable naming pattern
+/// (NFR-011).
+pub fn parse_icon_set(source: &str) -> Result<IconSet, Diagnostics> {
+    ensure_within_size(source.len())?;
+
+    let value: serde_json::Value = serde_json::from_str(source)
+        .map_err(|error| diagnostics_from_serde(DiagnosticCode::PARSE, &error))?;
+    if !value.is_object() {
+        return Err(Diagnostics::from(Diagnostic::error(
+            DiagnosticCode::PARSE,
+            "not an icon-set document: the top level must be a JSON object",
+        )));
+    }
+
+    let set: IconSet = serde_json::from_str(source)
+        .map_err(|error| diagnostics_from_serde(DiagnosticCode::SCHEMA, &error))?;
+
+    let findings = validate_icon_set(&set);
+    if findings.has_errors() {
+        return Err(findings);
+    }
+    Ok(set)
+}
+
+/// Checks a parsed icon set against the language contract (C-002, FEAT-025).
+///
+/// Returns every finding, errors and warnings alike, in a deterministic order.
+/// The document-level rules the schema names are enforced here: a set declares
+/// at least one icon, two icons cannot share a name, and the naming pattern must
+/// carry the `{name}` placeholder (docs/Vectr/schema.md, "IconSet").
+pub fn validate_icon_set(set: &IconSet) -> Diagnostics {
+    let mut diagnostics = Diagnostics::new();
+
+    if set.id.is_empty() {
+        diagnostics.push(
+            Diagnostic::error(DiagnosticCode::SCHEMA, "`id` must not be empty").at_path("/id"),
+        );
+    }
+    validate_name(&mut diagnostics, &set.name, "/name", "icon-set name");
+    validate_required_number(&mut diagnostics, set.canvas.width, "/canvas/width", "width");
+    validate_required_number(
+        &mut diagnostics,
+        set.canvas.height,
+        "/canvas/height",
+        "height",
+    );
+    validate_color(
+        &mut diagnostics,
+        &set.canvas.background,
+        "canvas background",
+        "/canvas/background",
+    );
+
+    if set.stroke_profile_id.is_empty() {
+        diagnostics.push(
+            Diagnostic::error(
+                DiagnosticCode::SCHEMA,
+                "`strokeProfileId` must not be empty",
+            )
+            .at_path("/strokeProfileId"),
+        );
+    }
+
+    // The naming scheme must yield a distinct file name per icon, so the
+    // placeholder is required and the pattern and each name must stay a plain
+    // file name rather than escaping the output directory (FEAT-025, NFR-024).
+    if !set.name_pattern.contains("{name}") {
+        diagnostics.push(
+            Diagnostic::error(
+                DiagnosticCode::SCHEMA,
+                format!(
+                    "namePattern `{}` must contain the placeholder `{{name}}`",
+                    set.name_pattern
+                ),
+            )
+            .at_path("/namePattern"),
+        );
+    }
+    if set.name_pattern.contains('/') || set.name_pattern.contains('\\') {
+        diagnostics.push(
+            Diagnostic::error(
+                DiagnosticCode::SCHEMA,
+                "`namePattern` must not contain a path separator",
+            )
+            .at_path("/namePattern"),
+        );
+    }
+
+    if set.icons.is_empty() {
+        diagnostics.push(
+            Diagnostic::error(
+                DiagnosticCode::SCHEMA,
+                format!("icon set `{}` must declare at least one icon", set.id),
+            )
+            .at_path("/icons"),
+        );
+    }
+
+    let mut seen: HashSet<&str> = HashSet::with_capacity(set.icons.len());
+    for (index, icon) in set.icons.iter().enumerate() {
+        let base = format!("/icons/{index}");
+        if icon.name.is_empty() {
+            diagnostics.push(
+                Diagnostic::error(DiagnosticCode::SCHEMA, "an icon name must not be empty")
+                    .at_path(format!("{base}/name")),
+            );
+        } else if icon.name.contains('/')
+            || icon.name.contains('\\')
+            || icon.name == "."
+            || icon.name == ".."
+        {
+            diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::SCHEMA,
+                    format!("icon name `{}` must be a plain file name", icon.name),
+                )
+                .at_path(format!("{base}/name")),
+            );
+        }
+        if !seen.insert(icon.name.as_str()) {
+            diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::DUPLICATE_NAME,
+                    format!(
+                        "duplicate icon name `{}` in icon set `{}`",
+                        icon.name, set.id
+                    ),
+                )
+                .at_path(format!("{base}/name")),
+            );
+        }
+        if icon.definition_ref.is_empty() {
+            diagnostics.push(
+                Diagnostic::error(DiagnosticCode::SCHEMA, "`definitionRef` must not be empty")
+                    .at_path(format!("{base}/definitionRef")),
+            );
+        }
+    }
+
+    diagnostics
+}
+
 /// Whether a literal default matches its parameter's declared type.
 fn parameter_type_matches(value_type: ParameterType, value: &ParameterValue) -> bool {
     matches!(
@@ -220,6 +366,7 @@ fn validate_element_params(
         ("count", geometry.count.as_ref()),
         ("spacing", geometry.spacing.as_ref()),
         ("distance", geometry.distance.as_ref()),
+        ("amount", geometry.amount.as_ref()),
     ];
     for (field, value) in numeric_geometry {
         if let Some(value) = value {
@@ -532,6 +679,7 @@ fn validate_scene_param_refs(diagnostics: &mut Diagnostics, scene: &Scene) {
             ("count", geometry.count.as_ref()),
             ("spacing", geometry.spacing.as_ref()),
             ("distance", geometry.distance.as_ref()),
+            ("amount", geometry.amount.as_ref()),
         ];
         for (field, value) in numeric {
             if value.and_then(NumberValue::param).is_some() {
@@ -719,6 +867,7 @@ fn validate_non_negative_number(
 
 fn validate_elements(diagnostics: &mut Diagnostics, elements: &[Element]) {
     let mut seen: HashSet<&str> = HashSet::with_capacity(elements.len());
+    let mut seen_accessible: HashSet<&str> = HashSet::with_capacity(elements.len());
     let mut index_of: std::collections::HashMap<&str, usize> =
         std::collections::HashMap::with_capacity(elements.len());
     for (index, element) in elements.iter().enumerate() {
@@ -741,6 +890,30 @@ fn validate_elements(diagnostics: &mut Diagnostics, elements: &[Element]) {
             );
         }
 
+        // An accessible name identifies an element for assistive technology; a
+        // repeat within one tree is ambiguous, so it is a located error rather
+        // than something a reader has to disambiguate. The maintenance name may
+        // repeat, because many sibling parts of one kind commonly share it
+        // (FEAT-026).
+        if let Some(name) = element
+            .accessible_name
+            .as_deref()
+            .filter(|name| !name.is_empty())
+        {
+            if !seen_accessible.insert(name) {
+                diagnostics.push(
+                    Diagnostic::error(
+                        DiagnosticCode::DUPLICATE_NAME,
+                        format!("duplicate element accessible name `{name}`"),
+                    )
+                    .with_location(Location::element_at(
+                        element.id.clone(),
+                        format!("{base}/accessibleName"),
+                    )),
+                );
+            }
+        }
+
         if element.order < 0 {
             diagnostics.push(
                 Diagnostic::error(DiagnosticCode::SCHEMA, "`order` must be zero or greater")
@@ -761,6 +934,101 @@ fn validate_elements(diagnostics: &mut Diagnostics, elements: &[Element]) {
         validate_transform(diagnostics, &element.transform, &base);
         validate_text(diagnostics, element, &base);
         validate_text_operand(diagnostics, elements, element, &base, &index_of);
+    }
+
+    validate_procedural(diagnostics, elements, &index_of);
+}
+
+/// A procedural element needs children and the parameters its procedure
+/// requires (FEAT-006).
+///
+/// A `procedural` element with no child renders nothing, and a procedure that
+/// needs a parameter it does not declare cannot generate; each is a located
+/// error naming the element and the field, rather than a silent empty result.
+fn validate_procedural(
+    diagnostics: &mut Diagnostics,
+    elements: &[Element],
+    index_of: &std::collections::HashMap<&str, usize>,
+) {
+    let mut has_children: HashSet<&str> = HashSet::new();
+    for element in elements {
+        if let Some(parent) = element.parent_id.as_deref() {
+            if index_of.contains_key(parent) {
+                has_children.insert(parent);
+            }
+        }
+    }
+
+    for (index, element) in elements.iter().enumerate() {
+        if element.kind != ElementKind::Procedural {
+            continue;
+        }
+        let base = format!("/elements/{index}");
+        let Some(procedure) = element.geometry.procedure else {
+            diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::SCHEMA,
+                    format!(
+                        "procedural element `{}` must declare a procedure",
+                        element.id
+                    ),
+                )
+                .with_location(Location::element_at(
+                    element.id.clone(),
+                    format!("{base}/geometry/procedure"),
+                )),
+            );
+            continue;
+        };
+
+        if !has_children.contains(element.id.as_str()) {
+            diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::SCHEMA,
+                    format!(
+                        "procedural element `{}` has no child to generate from",
+                        element.id
+                    ),
+                )
+                .with_location(Location::element(element.id.clone())),
+            );
+        }
+
+        // A parameter is present whether literal or a reference; only a field
+        // the element leaves out is missing. A reference is resolved by
+        // expansion before generation (FEAT-030).
+        let mut missing = |field: &str, present: bool| {
+            if present {
+                return;
+            }
+            diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::SCHEMA,
+                    format!(
+                        "procedural element `{}` requires `{field}` for the {} procedure",
+                        element.id,
+                        procedure.as_str()
+                    ),
+                )
+                .with_location(Location::element_at(
+                    element.id.clone(),
+                    format!("{base}/geometry/{field}"),
+                )),
+            );
+        };
+        let count = element.geometry.count.is_some();
+        let spacing = element.geometry.spacing.is_some();
+        let amount = element.geometry.amount.is_some();
+        match procedure {
+            Procedure::Triangulation => missing("spacing", spacing),
+            Procedure::Scatter => missing("count", count),
+            Procedure::Jitter => missing("amount", amount),
+            Procedure::Stippling => missing("count", count),
+            Procedure::Ornament => {
+                missing("count", count);
+                missing("amount", amount);
+            }
+        }
     }
 }
 
@@ -871,6 +1139,7 @@ fn is_text_operand_kind(kind: ElementKind) -> bool {
             | ElementKind::Projection
             | ElementKind::Repeat
             | ElementKind::AlongPath
+            | ElementKind::Procedural
     )
 }
 
@@ -924,6 +1193,12 @@ fn validate_geometry(diagnostics: &mut Diagnostics, geometry: &Geometry, base: &
         geometry.distance(),
         &format!("{base}/geometry/distance"),
         "distance",
+    );
+    validate_non_negative_number(
+        diagnostics,
+        geometry.amount(),
+        &format!("{base}/geometry/amount"),
+        "amount",
     );
     validate_non_negative_number(
         diagnostics,
@@ -1171,6 +1446,57 @@ mod tests {
         );
         assert!(!text.contains("\"fill\""));
         assert!(!text.contains("\"stroke\""));
+    }
+
+    /// A scene with two rects, each carrying a maintenance name and an
+    /// accessible name, so the naming rules can be exercised (FEAT-026).
+    fn two_named_elements(first: (&str, &str), second: (&str, &str)) -> String {
+        format!(
+            r#"{{"id":"s","projectId":"p","name":"Scene","formatVersion":"{SHIPPED_VERSION}","canvas":{{"width":10,"height":10,"background":"transparent"}},"elements":[{{"id":"e1","sceneId":"s","order":0,"kind":"rect","name":"{}","accessibleName":"{}","geometry":{{"x":0,"y":0,"width":1,"height":1}},"transform":{{"translateX":0,"translateY":0,"rotate":0,"scaleX":1,"scaleY":1}},"opacity":1,"visible":true}},{{"id":"e2","sceneId":"s","order":1,"kind":"rect","name":"{}","accessibleName":"{}","geometry":{{"x":2,"y":0,"width":1,"height":1}},"transform":{{"translateX":0,"translateY":0,"rotate":0,"scaleX":1,"scaleY":1}},"opacity":1,"visible":true}}]}}"#,
+            first.0, first.1, second.0, second.1
+        )
+    }
+
+    #[test]
+    fn an_element_carries_an_accessible_name_distinct_from_its_maintenance_name() {
+        let scene =
+            parse(&two_named_elements(("Box", "Red box"), ("Dot", "Red dot"))).expect("valid");
+        let element = scene.element("e1").expect("element present");
+        assert_eq!(element.name.as_deref(), Some("Box"));
+        assert_eq!(element.accessible_name.as_deref(), Some("Red box"));
+
+        let text = scene.to_json_string().expect("serializable");
+        assert!(
+            text.contains(r#""name":"Box","accessibleName":"Red box""#),
+            "{text}"
+        );
+        assert_eq!(parse(&text).expect("round-trips"), scene);
+    }
+
+    #[test]
+    fn repeated_maintenance_names_are_allowed_but_accessible_names_must_be_unique() {
+        // Many sibling parts of one kind commonly share a maintenance name.
+        parse(&two_named_elements(
+            ("Pine", "Near pine"),
+            ("Pine", "Far pine"),
+        ))
+        .expect("a repeated maintenance name is valid");
+
+        let diagnostics = parse_error(&two_named_elements(("Box", "Icon"), ("Dot", "Icon")));
+        let error = diagnostics
+            .errors()
+            .find(|finding| finding.code == DiagnosticCode::DUPLICATE_NAME)
+            .expect("a duplicate accessible name is an error");
+        assert!(
+            error
+                .location
+                .as_ref()
+                .and_then(|location| location.json_path.as_deref())
+                .unwrap_or_default()
+                .ends_with("/accessibleName"),
+            "{}",
+            error.message
+        );
     }
 
     #[test]
@@ -1690,5 +2016,154 @@ mod tests {
             diagnostics.errors().next().map(|d| d.code.clone()),
             Some(DiagnosticCode::SCHEMA)
         );
+    }
+
+    fn with_seed(value: &str) -> String {
+        full_scene().replace(
+            r#""recipeId": "flat","#,
+            &format!(r#""recipeId": "flat", "seed": {value},"#),
+        )
+    }
+
+    #[test]
+    fn a_scene_seed_parses_and_round_trips() {
+        let scene = parse(&with_seed("12345")).expect("a seed is valid");
+        assert_eq!(scene.seed, Some(12345));
+        let text = scene.to_json_string().expect("serializable");
+        assert!(text.contains(r#""seed":12345"#), "{text}");
+        assert_eq!(parse(&text).expect("round-trips"), scene);
+    }
+
+    #[test]
+    fn a_scene_without_a_seed_omits_it() {
+        let scene = parse(&full_scene()).expect("valid scene");
+        assert_eq!(scene.seed, None);
+        assert!(!scene.to_json_string().unwrap().contains("seed"));
+    }
+
+    #[test]
+    fn an_integral_float_seed_is_accepted_as_the_integer_it_denotes() {
+        let scene = parse(&with_seed("4.0")).expect("an integral float is an integer");
+        assert_eq!(scene.seed, Some(4));
+    }
+
+    #[test]
+    fn a_seed_that_is_not_an_integer_is_refused_naming_it() {
+        let diagnostics = parse_error(&with_seed("1.5"));
+        let error = diagnostics.errors().next().expect("an error");
+        assert_eq!(error.code, DiagnosticCode::SCHEMA);
+        assert!(error.message.contains("seed"), "{}", error.message);
+        assert!(error.message.contains("1.5"), "{}", error.message);
+    }
+
+    #[test]
+    fn a_non_numeric_seed_is_refused_naming_it() {
+        let diagnostics = parse_error(&with_seed(r#""soon""#));
+        let error = diagnostics.errors().next().expect("an error");
+        assert_eq!(error.code, DiagnosticCode::SCHEMA);
+        assert!(error.message.contains("seed"), "{}", error.message);
+    }
+
+    fn procedural_scene(geometry: &str, extra_elements: &str) -> String {
+        format!(
+            r#"{{"id":"s","projectId":"p","name":"Scene","formatVersion":"{SHIPPED_VERSION}","canvas":{{"width":100,"height":100,"background":"transparent"}},"elements":[{{"id":"p1","sceneId":"s","order":0,"kind":"procedural","geometry":{geometry},"transform":{{"translateX":0,"translateY":0,"rotate":0,"scaleX":1,"scaleY":1}},"opacity":1,"visible":true}}{extra_elements}]}}"#
+        )
+    }
+
+    fn child_of_procedural() -> &'static str {
+        r#",{"id":"c1","sceneId":"s","parentId":"p1","order":0,"kind":"rect","geometry":{"x":0,"y":0,"width":20,"height":20},"transform":{"translateX":0,"translateY":0,"rotate":0,"scaleX":1,"scaleY":1},"opacity":1,"visible":true}"#
+    }
+
+    #[test]
+    fn a_procedural_element_without_a_child_is_refused() {
+        let source = procedural_scene(r#"{"procedure":"stippling","count":4}"#, "");
+        let diagnostics = parse_error(&source);
+        let error = diagnostics
+            .errors()
+            .find(|error| error.message.contains("no child"))
+            .expect("a missing-child error");
+        assert!(error.message.contains("p1"), "{}", error.message);
+    }
+
+    #[test]
+    fn a_procedural_element_missing_a_required_parameter_is_refused() {
+        let source = procedural_scene(r#"{"procedure":"jitter"}"#, child_of_procedural());
+        let diagnostics = parse_error(&source);
+        let error = diagnostics
+            .errors()
+            .find(|error| error.message.contains("amount"))
+            .expect("a missing-parameter error");
+        assert_eq!(
+            error
+                .location
+                .as_ref()
+                .and_then(|location| location.json_path.as_deref()),
+            Some("/elements/0/geometry/amount")
+        );
+    }
+
+    #[test]
+    fn a_procedural_element_without_a_procedure_is_refused() {
+        let source = procedural_scene(r#"{"count":4}"#, child_of_procedural());
+        let diagnostics = parse_error(&source);
+        let error = diagnostics
+            .errors()
+            .find(|error| error.message.contains("procedure"))
+            .expect("a missing-procedure error");
+        assert!(error.message.contains("p1"), "{}", error.message);
+    }
+
+    #[test]
+    fn a_well_formed_procedural_element_parses() {
+        let source = procedural_scene(
+            r#"{"procedure":"stippling","count":4,"spacing":2}"#,
+            child_of_procedural(),
+        );
+        let scene = parse(&source).expect("a procedural element with a child is valid");
+        let element = scene.element("p1").expect("the procedural element");
+        assert_eq!(element.kind, ElementKind::Procedural);
+        assert_eq!(element.geometry.procedure, Some(Procedure::Stippling));
+        assert_eq!(element.geometry.count(), Some(4));
+        assert_eq!(element.geometry.spacing(), Some(2.0));
+
+        let text = scene.to_json_string().expect("serializable");
+        assert!(text.contains(r#""procedure":"stippling""#), "{text}");
+        assert_eq!(parse(&text).expect("round-trips"), scene);
+    }
+
+    #[test]
+    fn a_negative_amount_is_refused() {
+        let source = procedural_scene(
+            r#"{"procedure":"jitter","amount":-1}"#,
+            child_of_procedural(),
+        );
+        let diagnostics = parse_error(&source);
+        let error = diagnostics.errors().next().expect("an error");
+        assert_eq!(
+            error
+                .location
+                .as_ref()
+                .and_then(|location| location.json_path.as_deref()),
+            Some("/elements/0/geometry/amount")
+        );
+    }
+
+    #[test]
+    fn procedure_names_match_the_language() {
+        for (procedure, name) in [
+            (Procedure::Triangulation, "triangulation"),
+            (Procedure::Scatter, "scatter"),
+            (Procedure::Jitter, "jitter"),
+            (Procedure::Stippling, "stippling"),
+            (Procedure::Ornament, "ornament"),
+        ] {
+            assert_eq!(
+                serde_json::to_string(&procedure).unwrap(),
+                format!("\"{name}\"")
+            );
+            assert_eq!(Procedure::from_name(name), Some(procedure));
+            assert_eq!(procedure.as_str(), name);
+        }
+        assert_eq!(Procedure::from_name("wobble"), None);
     }
 }

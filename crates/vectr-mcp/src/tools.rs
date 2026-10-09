@@ -1,13 +1,13 @@
-//! The five MCP tools: validate, compile, render, render-part and schema
-//! (C-005, FEAT-019, FEAT-031).
+//! The six MCP tools: validate, compile, render, inspect, render-part and schema
+//! (C-005, FEAT-019, FEAT-022, FEAT-031).
 //!
 //! Each tool is a thin, stateless wrapper over the same engine calls the command
 //! line makes, so an agent gets identical results to `vectr validate`, `vectr
-//! compile`, `vectr export`, `vectr render` and `vectr schema` (C-005: the MCP
-//! tools consume the CLI's capabilities). A tool call carries no server state:
-//! it resolves the input under the server's [`Scope`], runs the engine, and
-//! returns a JSON value. That keeps concurrent calls independent (FEAT-021,
-//! FEAT-019).
+//! compile`, `vectr export`, `vectr inspect`, `vectr render` and `vectr schema`
+//! (C-005: the MCP tools consume the CLI's capabilities). A tool call carries no
+//! server state: it resolves the input under the server's [`Scope`], runs the
+//! engine, and returns a JSON value. That keeps concurrent calls independent
+//! (FEAT-021, FEAT-019).
 //!
 //! A scene tool addresses a scene exactly as the command line does: by the
 //! scene's identifier resolved among a project's scenes, or, when none is named,
@@ -20,6 +20,17 @@
 //! The render-part tool renders one part on its own — a reusable definition or
 //! an element subtree, each addressed by its identifier — so a model can verify
 //! it before it is composed (FEAT-031).
+//!
+//! The inspect tool closes the render-in-the-loop: it compiles a whole scene,
+//! writes a preview image (SVG or PNG) at a configurable size, and reports the
+//! path and the size it rendered at, so a person or a model can compare the
+//! result against the request (FEAT-022). The MCP server has no inspection
+//! capability of its own, so it records that limitation alongside the preview
+//! rather than hiding it.
+//!
+//! The render tool writes SVG or PNG, and also PDF when the `enable_pdf_export`
+//! rollout flag is set; the flag is off by default, so PDF is reported as an
+//! unsupported capability until it is enabled (FEAT-014, C-005).
 
 use std::path::{Path, PathBuf};
 
@@ -28,9 +39,10 @@ use serde_json::{json, Map, Value};
 use vectr_core::scene::{is_color, INVALID_COLOR};
 use vectr_core::{
     compile_definition as compile_part_definition, compile_subtree, compile_with_style,
-    export_png_reporting, export_svg_reporting, parse as parse_scene, schema, schema_for,
-    validate as validate_scene, validate_gradient_usage, validate_palette_usage, Diagnostics,
-    Location, RasterOptions, RenderModel, Scene, SchemaForm, SvgOptions,
+    export_pdf_reporting, export_png_reporting, export_svg_reporting, parse as parse_scene, schema,
+    schema_for, validate as validate_scene, validate_gradient_usage, validate_palette_usage,
+    Diagnostic, DiagnosticCode, Diagnostics, Location, PdfOptions, RasterOptions, RenderModel,
+    Scene, SchemaForm, SvgOptions,
 };
 
 use vectr_project::{resolve_part, resolve_scene, ProjectAssets, ResolvedPart};
@@ -41,6 +53,16 @@ use crate::scope::{Scope, ScopeError, SCOPE};
 /// The stable code a call that names both a scene identifier and an inline
 /// draft is reported under (C-005): the two are mutually exclusive.
 pub const MALFORMED: &str = "E_MALFORMED";
+
+/// The environment variable that enables PDF export, a rollout flag that is off
+/// by default (FEAT-014). The same variable the command line reads, so the two
+/// front ends gate the capability identically.
+pub const ENABLE_PDF_ENV: &str = "VECTR_ENABLE_PDF_EXPORT";
+
+/// The finding recorded when the server can render a preview but has no
+/// in-process capability to compare it with the request, so the caller performs
+/// the inspection (FEAT-022).
+const INSPECTION_UNAVAILABLE: DiagnosticCode = DiagnosticCode::new("W_INSPECTION_UNAVAILABLE");
 
 /// A tool call the client asked for could not be carried out.
 #[derive(Debug)]
@@ -130,18 +152,20 @@ pub fn call(scope: &Scope, name: &str, arguments: &Map<String, Value>) -> Result
         "validate" => validate_tool(scope, arguments),
         "compile" => compile_tool(scope, arguments),
         "render" => render_tool(scope, arguments),
+        "inspect" => inspect_tool(scope, arguments),
         "render-part" => render_part_tool(scope, arguments),
         "schema" => schema_tool(arguments),
         other => Err(CallError::InvalidParams(format!("Unknown tool: {other}"))),
     }
 }
 
-/// The five tool definitions, in the order `tools/list` publishes them.
+/// The six tool definitions, in the order `tools/list` publishes them.
 pub fn definitions() -> Value {
     json!([
         validate_definition(),
         compile_definition(),
         render_definition(),
+        inspect_definition(),
         render_part_definition(),
         schema_definition(),
     ])
@@ -153,16 +177,7 @@ fn validate_tool(scope: &Scope, arguments: &Map<String, Value>) -> Result<Value,
     let input = load_scene(scope, arguments)?;
 
     let assets = ProjectAssets::load(&input.root, &input.scene).map_err(exec_diagnostics)?;
-    let mut findings = validate_scene(&input.scene);
-    if let Some(palette) = assets.palette() {
-        findings.extend(validate_palette_usage(
-            &input.scene,
-            palette,
-            assets.gradients(),
-        ));
-    }
-    findings.extend(validate_gradient_usage(&input.scene, assets.gradients()));
-    findings.extend(assets.check_references(&input.scene));
+    let findings = structural_findings(&input.scene, &assets);
 
     if findings.has_errors() {
         return Err(exec(ToolError::from_diagnostics(findings)));
@@ -171,6 +186,23 @@ fn validate_tool(scope: &Scope, arguments: &Map<String, Value>) -> Result<Value,
         "valid": true,
         "diagnostics": serde_json::to_value(&findings).unwrap_or(Value::Null),
     }))
+}
+
+/// The structural checks a scene and its project assets must pass (FEAT-018).
+///
+/// A palette token the palette no longer defines, a stroke profile, a gradient,
+/// or a font that does not resolve is an error naming it, so a scene that will
+/// not render is caught before anything is compiled or written (FEAT-005,
+/// FEAT-024, FEAT-027). Shared by `validate` and `inspect`, so both gate on the
+/// same findings (FEAT-022).
+fn structural_findings(scene: &Scene, assets: &ProjectAssets) -> Diagnostics {
+    let mut findings = validate_scene(scene);
+    if let Some(palette) = assets.palette() {
+        findings.extend(validate_palette_usage(scene, palette, assets.gradients()));
+    }
+    findings.extend(validate_gradient_usage(scene, assets.gradients()));
+    findings.extend(assets.check_references(scene));
+    findings
 }
 
 fn compile_tool(scope: &Scope, arguments: &Map<String, Value>) -> Result<Value, CallError> {
@@ -201,9 +233,17 @@ fn render_tool(scope: &Scope, arguments: &Map<String, Value>) -> Result<Value, C
     let input = load_scene(scope, arguments)?;
 
     let format = args.required_string("format")?;
-    if format != "svg" && format != "png" {
+    if format != "svg" && format != "png" && format != "pdf" {
         return Err(unsupported(format!(
-            "rendering `{format}` is not supported; use `svg` or `png`"
+            "rendering `{format}` is not supported; use `svg`, `png` or `pdf`"
+        )));
+    }
+    // PDF export is off by default and enabled by the rollout flag, so a PDF
+    // request while it is off is an unsupported capability, refused before
+    // anything is compiled or written (FEAT-014, C-005).
+    if format == "pdf" && !pdf_enabled() {
+        return Err(unsupported(format!(
+            "PDF export is disabled; set {ENABLE_PDF_ENV}=1 to enable it"
         )));
     }
     let width = args.number("width")?;
@@ -211,7 +251,7 @@ fn render_tool(scope: &Scope, arguments: &Map<String, Value>) -> Result<Value, C
     let density = args.number("density")?;
     let background = args.string("background")?;
 
-    if format == "svg" && density.is_some() {
+    if format != "png" && density.is_some() {
         return Err(unsupported("`density` applies only to PNG output"));
     }
     if let Some(colour) = &background {
@@ -224,6 +264,125 @@ fn render_tool(scope: &Scope, arguments: &Map<String, Value>) -> Result<Value, C
     }
 
     let (model, mut diagnostics) = compile_scene(&input)?;
+
+    let bytes = match format.as_str() {
+        "svg" => {
+            let options = SvgOptions {
+                width,
+                height,
+                background: background.clone(),
+            };
+            let export = export_svg_reporting(&model, &options).map_err(exec_diagnostics)?;
+            diagnostics.extend(export.diagnostics);
+            export.svg.into_bytes()
+        }
+        "png" => {
+            let options = RasterOptions {
+                width,
+                height,
+                density,
+                background: background.clone(),
+            };
+            let export = export_png_reporting(&model, &options).map_err(exec_diagnostics)?;
+            diagnostics.extend(export.diagnostics);
+            export.png
+        }
+        _ => {
+            // The MCP surface carries no print-profile argument (C-005), so a
+            // PDF render uses the exporter's default sRGB profile.
+            let options = PdfOptions {
+                page_width: width,
+                page_height: height,
+                profile: None,
+                background: background.clone(),
+            };
+            let export = export_pdf_reporting(&model, &options).map_err(exec_diagnostics)?;
+            diagnostics.extend(export.diagnostics);
+            export.pdf
+        }
+    };
+
+    let target = match args.string("out")? {
+        Some(out) => PathBuf::from(out),
+        None => default_output(&input, &format),
+    };
+    let target = scope.write_path(&target).map_err(scope_error)?;
+    write_atomic(&target, &bytes).map_err(|error| {
+        exec(ToolError::new(
+            "E_OUTPUT",
+            format!("cannot write output `{}`: {error}", report_path(&target)),
+        ))
+    })?;
+
+    Ok(json!({
+        "path": report_path(&target),
+        "format": format,
+        "diagnostics": serde_json::to_value(&diagnostics).unwrap_or(Value::Null),
+    }))
+}
+
+/// Renders a whole-scene preview for inspection (C-005, FEAT-022).
+///
+/// The scene passes the same structural gate `validate` applies and is compiled
+/// as `render` compiles it, so a broken scene is reported before a preview is
+/// attempted and a render failure is reported before any inspection (NFR-011).
+/// The preview is written as SVG or PNG at the requested size — the size is
+/// configurable so a preview too small to judge can be raised — and the tool
+/// reports its path and the size it rendered at. The server has no inspection
+/// capability of its own, so it records that limitation alongside the preview
+/// for the caller to compare against the request rather than hiding it
+/// (FEAT-022).
+fn inspect_tool(scope: &Scope, arguments: &Map<String, Value>) -> Result<Value, CallError> {
+    let args = Args::new(arguments);
+    args.allowed(&[
+        "scene",
+        "draft",
+        "project",
+        "format",
+        "out",
+        "width",
+        "height",
+        "density",
+        "background",
+    ])?;
+    let input = load_scene(scope, arguments)?;
+
+    let format = args.required_string("format")?;
+    if format != "svg" && format != "png" {
+        return Err(unsupported(format!(
+            "inspecting as `{format}` is not supported; use `svg` or `png`"
+        )));
+    }
+    let width = args.number("width")?;
+    let height = args.number("height")?;
+    let density = args.number("density")?;
+    let background = args.string("background")?;
+
+    if format != "png" && density.is_some() {
+        return Err(unsupported("`density` applies only to PNG output"));
+    }
+    if let Some(colour) = &background {
+        if !is_color(colour) {
+            return Err(exec(ToolError::new(
+                INVALID_COLOR.as_str(),
+                format!("`background` is not a colour SVG supports: `{colour}`"),
+            )));
+        }
+    }
+
+    let assets = ProjectAssets::load(&input.root, &input.scene).map_err(exec_diagnostics)?;
+    // Structural checks run first and gate the preview: a scene that fails them
+    // is reported and nothing is rendered, so the findings still stand even when
+    // no inspection can follow (FEAT-018, FEAT-022).
+    let mut diagnostics = structural_findings(&input.scene, &assets);
+    if diagnostics.has_errors() {
+        return Err(exec_diagnostics(diagnostics));
+    }
+
+    let model =
+        compile_with_style(&input.scene, &assets.style_context()).map_err(exec_diagnostics)?;
+    diagnostics.extend(model.diagnostics.clone());
+    let frame = output_frame(&model, &format, width, height, density);
 
     let bytes = match format.as_str() {
         "svg" => {
@@ -249,6 +408,13 @@ fn render_tool(scope: &Scope, arguments: &Map<String, Value>) -> Result<Value, C
         }
     };
 
+    // The preview is complete: note that the visual comparison with the request
+    // is the caller's, so the limitation is reported rather than hidden.
+    diagnostics.push(Diagnostic::warning(
+        INSPECTION_UNAVAILABLE,
+        "no inspection capability is available; the preview is rendered for a person or a model to compare against the request",
+    ));
+
     let target = match args.string("out")? {
         Some(out) => PathBuf::from(out),
         None => default_output(&input, &format),
@@ -264,6 +430,7 @@ fn render_tool(scope: &Scope, arguments: &Map<String, Value>) -> Result<Value, C
     Ok(json!({
         "path": report_path(&target),
         "format": format,
+        "size": { "width": frame.0, "height": frame.1 },
         "diagnostics": serde_json::to_value(&diagnostics).unwrap_or(Value::Null),
     }))
 }
@@ -607,6 +774,22 @@ fn unsupported(message: impl Into<String>) -> CallError {
     exec(ToolError::new("E_UNSUPPORTED", message))
 }
 
+/// Whether the PDF rollout flag is set (FEAT-014).
+///
+/// The flag is read from the environment so the capability can be enabled
+/// without a rebuild, matching the command line's gate. It is off by default.
+fn pdf_enabled() -> bool {
+    enabled_value(std::env::var(ENABLE_PDF_ENV).ok().as_deref())
+}
+
+/// Whether a flag value enables a gated capability.
+fn enabled_value(value: Option<&str>) -> bool {
+    matches!(
+        value.map(str::trim),
+        Some("1") | Some("true") | Some("TRUE") | Some("yes") | Some("on")
+    )
+}
+
 /// The `project` input property shared by the tools that resolve a project.
 fn project_property() -> Value {
     json!({
@@ -689,7 +872,7 @@ fn render_definition() -> Value {
         .expect("the scene properties are an object");
     object.insert(
         "format".to_string(),
-        json!({ "type": "string", "enum": ["svg", "png"], "description": "The output format." }),
+        json!({ "type": "string", "enum": ["svg", "png", "pdf"], "description": "The output format. `pdf` is available only when the `enable_pdf_export` rollout flag is enabled." }),
     );
     object.insert(
         "out".to_string(),
@@ -715,7 +898,7 @@ fn render_definition() -> Value {
     json!({
         "name": "render",
         "title": "Render a scene",
-        "description": "Compile a scene and write it as SVG or PNG. Address a project scene by its identifier or send an inline draft; with neither, the project's default scene is used. Returns the path it wrote; a failure writes nothing.",
+        "description": "Compile a scene and write it as SVG or PNG, or as vector PDF when the `enable_pdf_export` rollout flag is enabled. Address a project scene by its identifier or send an inline draft; with neither, the project's default scene is used. Returns the path it wrote; a failure writes nothing.",
         "inputSchema": {
             "type": "object",
             "properties": properties,
@@ -726,7 +909,7 @@ fn render_definition() -> Value {
             "type": "object",
             "properties": {
                 "path": { "type": "string", "description": "The path the output was written to." },
-                "format": { "type": "string", "enum": ["svg", "png"] },
+                "format": { "type": "string", "enum": ["svg", "png", "pdf"] },
                 "diagnostics": {
                     "type": "array",
                     "description": "Warnings recorded while compiling and exporting.",
@@ -734,6 +917,72 @@ fn render_definition() -> Value {
                 }
             },
             "required": ["path", "format", "diagnostics"]
+        },
+        "annotations": { "readOnlyHint": false }
+    })
+}
+
+fn inspect_definition() -> Value {
+    let mut properties = scene_properties();
+    let object = properties
+        .as_object_mut()
+        .expect("the scene properties are an object");
+    object.insert(
+        "format".to_string(),
+        json!({ "type": "string", "enum": ["svg", "png"], "description": "The preview format; SVG or PNG." }),
+    );
+    object.insert(
+        "out".to_string(),
+        json!({ "type": "string", "description": "Where to write the preview. Defaults to <project>/dist/<scene>.<format>." }),
+    );
+    object.insert(
+        "width".to_string(),
+        json!({ "type": "number", "description": "Preview width in scene units; the canvas width when absent." }),
+    );
+    object.insert(
+        "height".to_string(),
+        json!({ "type": "number", "description": "Preview height in scene units; the canvas height when absent." }),
+    );
+    object.insert(
+        "density".to_string(),
+        json!({ "type": "number", "description": "Pixel density multiplier; PNG only." }),
+    );
+    object.insert(
+        "background".to_string(),
+        json!({ "type": "string", "description": "Background override, or `transparent`." }),
+    );
+
+    json!({
+        "name": "inspect",
+        "title": "Render a scene preview for inspection",
+        "description": "Compile a scene and write a preview image for a person or a model to compare against the request (FEAT-022). Structural checks run first and gate the preview, and the size is configurable so a preview too small to judge can be raised. Returns the path it wrote and the size it rendered at; a failure writes nothing.",
+        "inputSchema": {
+            "type": "object",
+            "properties": properties,
+            "required": ["format"],
+            "additionalProperties": false
+        },
+        "outputSchema": {
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "description": "The path the preview was written to." },
+                "format": { "type": "string", "enum": ["svg", "png"] },
+                "size": {
+                    "type": "object",
+                    "description": "The preview's resolved size after the requested size and density compose.",
+                    "properties": {
+                        "width": { "type": "number" },
+                        "height": { "type": "number" }
+                    },
+                    "required": ["width", "height"]
+                },
+                "diagnostics": {
+                    "type": "array",
+                    "description": "Findings recorded while compiling and exporting, including the note that the visual comparison with the request is the caller's.",
+                    "items": { "type": "object" }
+                }
+            },
+            "required": ["path", "format", "size", "diagnostics"]
         },
         "annotations": { "readOnlyHint": false }
     })
@@ -888,6 +1137,17 @@ mod tests {
     use std::fs;
 
     use super::*;
+
+    /// Serializes the tests that toggle the PDF rollout flag, which lives in the
+    /// process environment and is shared by every test in this binary.
+    static PDF_FLAG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Holds the PDF-flag lock for the duration of a test.
+    fn pdf_flag() -> std::sync::MutexGuard<'static, ()> {
+        PDF_FLAG_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     const RECT_SCENE: &str = r##"{
       "id": "s",
@@ -1078,7 +1338,7 @@ mod tests {
     }
 
     #[test]
-    fn definitions_name_five_tools_with_input_and_output_schemas() {
+    fn definitions_name_six_tools_with_input_and_output_schemas() {
         let tools = definitions();
         let list = tools.as_array().expect("an array");
         let names: Vec<&str> = list
@@ -1087,7 +1347,14 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            vec!["validate", "compile", "render", "render-part", "schema"]
+            vec![
+                "validate",
+                "compile",
+                "render",
+                "inspect",
+                "render-part",
+                "schema"
+            ]
         );
         for tool in list {
             assert!(tool.get("inputSchema").is_some(), "input schema: {tool}");
@@ -1100,7 +1367,7 @@ mod tests {
         for tool in list.iter().filter(|tool| {
             matches!(
                 tool["name"].as_str(),
-                Some("validate" | "compile" | "render")
+                Some("validate" | "compile" | "render" | "inspect")
             )
         }) {
             let properties = &tool["inputSchema"]["properties"];
@@ -1119,6 +1386,27 @@ mod tests {
                 .iter()
                 .any(|name| name == "scene" || name == "draft"));
         }
+
+        // The inspect tool takes a preview format and a configurable size, and
+        // reports the size it rendered at (FEAT-022).
+        let inspect = list
+            .iter()
+            .find(|tool| tool["name"] == "inspect")
+            .expect("the inspect tool is published");
+        let properties = &inspect["inputSchema"]["properties"];
+        for name in ["format", "out", "width", "height", "density", "background"] {
+            assert!(
+                properties.get(name).is_some(),
+                "inspect publishes `{name}`: {inspect}"
+            );
+        }
+        let required: Vec<&str> = inspect["inputSchema"]["required"]
+            .as_array()
+            .expect("required")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert_eq!(required, vec!["format"]);
 
         // The part tool addresses a part within a project rather than a scene,
         // and requires the part and a format; an omitted size frames the part to
@@ -1472,14 +1760,87 @@ mod tests {
     #[test]
     fn render_refuses_an_unsupported_format_without_writing() {
         let dir = tempdir("render-unsupported");
+        let out = dir.join("out.jpeg");
+        let error = assert_exec(call(
+            &scope(&dir),
+            "render",
+            &args(json!({ "draft": RECT_SCENE, "format": "jpeg", "out": out })),
+        ));
+        assert_eq!(error.code, "E_UNSUPPORTED");
+        assert!(!dir.join("out.jpeg").exists());
+    }
+
+    #[test]
+    fn pdf_render_is_gated_by_the_rollout_flag() {
+        // Off by default: an unsupported capability and nothing written
+        // (FEAT-014, C-005).
+        let _guard = pdf_flag();
+        std::env::remove_var(ENABLE_PDF_ENV);
+        let dir = tempdir("render-pdf-off");
         let out = dir.join("out.pdf");
         let error = assert_exec(call(
             &scope(&dir),
             "render",
-            &args(json!({ "draft": RECT_SCENE, "format": "pdf", "out": out })),
+            &args(json!({ "draft": RECT_SCENE, "format": "pdf", "out": out.clone() })),
         ));
         assert_eq!(error.code, "E_UNSUPPORTED");
-        assert!(!dir.join("out.pdf").exists());
+        assert!(!out.exists(), "nothing is written while the flag is off");
+
+        // Enabled: a vector PDF is written.
+        std::env::set_var(ENABLE_PDF_ENV, "1");
+        let result = call(
+            &scope(&dir),
+            "render",
+            &args(json!({ "draft": RECT_SCENE, "format": "pdf", "out": out.clone() })),
+        )
+        .expect("renders");
+        std::env::remove_var(ENABLE_PDF_ENV);
+
+        assert_eq!(result["format"], "pdf");
+        let bytes = fs::read(out).expect("reads the pdf");
+        assert!(bytes.starts_with(b"%PDF-"), "a PDF signature");
+        assert!(bytes.ends_with(b"%%EOF\n"), "a complete document");
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(!text.contains("/Subtype /Image"), "vector only: {text}");
+    }
+
+    #[test]
+    fn pdf_render_defaults_to_dist_scene_pdf() {
+        let _guard = pdf_flag();
+        std::env::set_var(ENABLE_PDF_ENV, "1");
+        let dir = tempdir("render-pdf-default");
+        let result = call(
+            &scope(&dir),
+            "render",
+            &args(json!({ "draft": RECT_SCENE, "format": "pdf" })),
+        )
+        .expect("renders");
+        std::env::remove_var(ENABLE_PDF_ENV);
+        let path = result["path"].as_str().expect("a path");
+        assert!(path.ends_with("dist/scene.pdf"), "{path}");
+    }
+
+    #[test]
+    fn a_pdf_render_refuses_density() {
+        let _guard = pdf_flag();
+        std::env::set_var(ENABLE_PDF_ENV, "1");
+        let dir = tempdir("render-pdf-density");
+        let error = assert_exec(call(
+            &scope(&dir),
+            "render",
+            &args(json!({ "draft": RECT_SCENE, "format": "pdf", "density": 2 })),
+        ));
+        std::env::remove_var(ENABLE_PDF_ENV);
+        assert_eq!(error.code, "E_UNSUPPORTED");
+    }
+
+    #[test]
+    fn the_pdf_flag_recognizes_the_enabling_values() {
+        assert!(enabled_value(Some("1")));
+        assert!(enabled_value(Some("true")));
+        assert!(enabled_value(Some("on")));
+        assert!(!enabled_value(Some("0")));
+        assert!(!enabled_value(None));
     }
 
     #[test]
@@ -1492,6 +1853,143 @@ mod tests {
             &args(json!({ "draft": RECT_SCENE, "format": "svg", "out": outside.join("out.svg") })),
         ));
         assert_eq!(error.code, SCOPE);
+    }
+
+    // -----------------------------------------------------------------------
+    // Render-in-the-loop inspection (FEAT-022)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn inspect_writes_a_png_preview_and_reports_its_size() {
+        let dir = tempdir("inspect-png");
+        let out = dir.join("preview.png");
+        let result = call(
+            &scope(&dir),
+            "inspect",
+            &args(json!({ "draft": RECT_SCENE, "format": "png", "out": out.clone() })),
+        )
+        .expect("inspects");
+        assert_eq!(result["format"], "png");
+        assert_eq!(result["size"]["width"], 100.0);
+        assert_eq!(result["size"]["height"], 100.0);
+        let bytes = fs::read(out).expect("reads the preview");
+        assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
+    }
+
+    #[test]
+    fn inspect_writes_an_svg_preview() {
+        let dir = tempdir("inspect-svg");
+        let out = dir.join("preview.svg");
+        let result = call(
+            &scope(&dir),
+            "inspect",
+            &args(json!({ "draft": RECT_SCENE, "format": "svg", "out": out.clone() })),
+        )
+        .expect("inspects");
+        assert_eq!(result["format"], "svg");
+        let svg = fs::read_to_string(out).expect("reads the preview");
+        assert!(svg.contains("<svg"), "{svg}");
+        assert!(svg.contains("<rect"), "{svg}");
+    }
+
+    #[test]
+    fn inspect_notes_that_the_visual_comparison_is_the_callers() {
+        // The server has no inspection capability of its own, so it records the
+        // limitation rather than hiding it (FEAT-022).
+        let dir = tempdir("inspect-note");
+        let result = call(
+            &scope(&dir),
+            "inspect",
+            &args(json!({ "draft": RECT_SCENE, "format": "png" })),
+        )
+        .expect("inspects");
+        let diagnostics = result["diagnostics"].as_array().expect("diagnostics");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|finding| finding["code"] == "W_INSPECTION_UNAVAILABLE"),
+            "the missing inspection capability is noted: {result}"
+        );
+    }
+
+    #[test]
+    fn inspect_size_is_configurable() {
+        // A preview too small to judge can be raised (FEAT-022).
+        let dir = tempdir("inspect-size");
+        let result = call(
+            &scope(&dir),
+            "inspect",
+            &args(json!({ "draft": RECT_SCENE, "format": "png", "width": 200 })),
+        )
+        .expect("inspects");
+        assert_eq!(result["size"]["width"], 200.0);
+        assert_eq!(result["size"]["height"], 200.0);
+    }
+
+    #[test]
+    fn inspect_defaults_its_output_to_dist_scene() {
+        let dir = tempdir("inspect-default-out");
+        let result = call(
+            &scope(&dir),
+            "inspect",
+            &args(json!({ "draft": RECT_SCENE, "format": "png" })),
+        )
+        .expect("inspects");
+        let path = result["path"].as_str().expect("a path");
+        assert!(path.ends_with("dist/scene.png"), "{path}");
+    }
+
+    #[test]
+    fn inspect_runs_structural_checks_before_rendering() {
+        // A structural error gates the preview: it is reported and nothing is
+        // written, so the findings stand even though no inspection follows
+        // (FEAT-018, FEAT-022).
+        let dir = tempdir("inspect-structural");
+        let draft = RECT_SCENE.replace(
+            r##""kind": "rect","##,
+            r##""kind": "rect", "stroke": {"profileId": "outline", "paint": {"kind": "token", "ref": "accent"}},"##,
+        );
+        let out = dir.join("preview.png");
+        let error = assert_exec(call(
+            &scope(&dir),
+            "inspect",
+            &args(json!({ "draft": draft, "format": "png", "out": out.clone() })),
+        ));
+        assert_eq!(error.code, "E_UNDEFINED_STROKE");
+        assert!(!out.exists(), "nothing is written when the checks fail");
+    }
+
+    #[test]
+    fn inspect_refuses_an_unsupported_format() {
+        let dir = tempdir("inspect-format");
+        let error = assert_exec(call(
+            &scope(&dir),
+            "inspect",
+            &args(json!({ "draft": RECT_SCENE, "format": "pdf" })),
+        ));
+        assert_eq!(error.code, "E_UNSUPPORTED");
+    }
+
+    #[test]
+    fn inspect_refuses_a_density_on_svg() {
+        let dir = tempdir("inspect-density");
+        let error = assert_exec(call(
+            &scope(&dir),
+            "inspect",
+            &args(json!({ "draft": RECT_SCENE, "format": "svg", "density": 2 })),
+        ));
+        assert_eq!(error.code, "E_UNSUPPORTED");
+    }
+
+    #[test]
+    fn inspect_requires_a_format() {
+        let dir = tempdir("inspect-required");
+        let result = call(
+            &scope(&dir),
+            "inspect",
+            &args(json!({ "draft": RECT_SCENE })),
+        );
+        assert!(matches!(result, Err(CallError::InvalidParams(_))));
     }
 
     // -----------------------------------------------------------------------

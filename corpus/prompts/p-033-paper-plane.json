@@ -1,0 +1,9 @@
+{
+  "id": "p-033-paper-plane",
+  "corpusId": "vectr-authoring",
+  "intent": "A paper plane.",
+  "text": "Draw a paper plane.",
+  "order": 32,
+  "complexity": "moderate",
+  "qualities": []
+}

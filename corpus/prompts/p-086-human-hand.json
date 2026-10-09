@@ -1,0 +1,14 @@
+{
+  "id": "p-086-human-hand",
+  "corpusId": "vectr-authoring",
+  "intent": "A human hand with correct finger anatomy.",
+  "text": "Draw a human hand with correct finger anatomy, the fingers placed relative to the palm and joined at the knuckles.",
+  "order": 85,
+  "complexity": "complex",
+  "qualities": [
+    "relative_placement",
+    "reusable_parts",
+    "shared_anchors",
+    "subject_accuracy"
+  ]
+}

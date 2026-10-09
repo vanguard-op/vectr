@@ -1,0 +1,9 @@
+{
+  "id": "p-024-flag",
+  "corpusId": "vectr-authoring",
+  "intent": "A flag on a pole.",
+  "text": "Draw a small flag on a pole.",
+  "order": 23,
+  "complexity": "simple",
+  "qualities": []
+}

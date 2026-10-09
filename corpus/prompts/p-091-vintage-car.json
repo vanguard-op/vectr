@@ -1,0 +1,13 @@
+{
+  "id": "p-091-vintage-car",
+  "corpusId": "vectr-authoring",
+  "intent": "A vintage car with correct proportions.",
+  "text": "Draw a vintage car with correct proportions, its wheels joined at the axles.",
+  "order": 90,
+  "complexity": "complex",
+  "qualities": [
+    "reusable_parts",
+    "shared_anchors",
+    "subject_accuracy"
+  ]
+}

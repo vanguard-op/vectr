@@ -1,0 +1,5 @@
+{
+  "id": "vectr-authoring",
+  "version": "1.0.0",
+  "description": "Versioned authoring corpus spanning Vectr's complexity range, from a simple mark to a very complex illustration built up from reusable parts. The complex end exercises the hard-end qualities (depth and perspective, relative placement, parts joined at shared anchors, and subject research). Run by the FEAT-023 harness against a chosen authoring model to measure the NFR-030 and NFR-031 bars."
+}

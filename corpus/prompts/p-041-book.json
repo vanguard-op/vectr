@@ -1,0 +1,9 @@
+{
+  "id": "p-041-book",
+  "corpusId": "vectr-authoring",
+  "intent": "An open book.",
+  "text": "Draw an open book.",
+  "order": 40,
+  "complexity": "moderate",
+  "qualities": []
+}

@@ -1,0 +1,9 @@
+{
+  "id": "p-053-gift",
+  "corpusId": "vectr-authoring",
+  "intent": "A gift box with a ribbon.",
+  "text": "Draw a gift box with a ribbon.",
+  "order": 52,
+  "complexity": "moderate",
+  "qualities": []
+}

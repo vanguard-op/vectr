@@ -66,6 +66,7 @@ mod tests {
             parent_id: None,
             order: 0,
             name: None,
+            accessible_name: None,
             kind: ElementKind::Repeat,
             geometry: Geometry {
                 count: count.map(|value| NumberValue::Literal(f64::from(value))),

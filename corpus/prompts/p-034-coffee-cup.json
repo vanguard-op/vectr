@@ -1,0 +1,9 @@
+{
+  "id": "p-034-coffee-cup",
+  "corpusId": "vectr-authoring",
+  "intent": "A coffee cup with steam.",
+  "text": "Draw a coffee cup with a little steam.",
+  "order": 33,
+  "complexity": "moderate",
+  "qualities": []
+}

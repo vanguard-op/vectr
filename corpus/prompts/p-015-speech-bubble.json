@@ -1,0 +1,9 @@
+{
+  "id": "p-015-speech-bubble",
+  "corpusId": "vectr-authoring",
+  "intent": "A rounded speech bubble with a tail.",
+  "text": "Draw a speech bubble with a little tail.",
+  "order": 14,
+  "complexity": "simple",
+  "qualities": []
+}

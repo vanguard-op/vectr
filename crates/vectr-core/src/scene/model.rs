@@ -29,6 +29,14 @@ pub struct Scene {
     /// References the style recipe applied to the scene.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recipe_id: Option<String>,
+    /// Seed governing all generated geometry; when absent a default of `0`
+    /// applies and is recorded in the render model (FEAT-006).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_seed"
+    )]
+    pub seed: Option<i64>,
     /// Accessible title carried into exported output.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
@@ -100,9 +108,16 @@ pub struct Element {
     pub parent_id: Option<String>,
     /// Paint order among siblings; lower values paint first.
     pub order: i64,
-    /// Element name, preserved in exported output.
+    /// Element name, the maintenance name preserved in exported output.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Accessible name for assistive technology, carried into exported output
+    /// and distinct from the maintenance name in `name` (FEAT-026).
+    ///
+    /// When absent the element emits no accessible name; a text element's
+    /// string is carried as accessible text whether or not one is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accessible_name: Option<String>,
     /// The element's role.
     pub kind: ElementKind,
     /// The element's geometry; which fields apply depends on `kind`.
@@ -254,6 +269,8 @@ pub enum ElementKind {
     Offset,
     /// Projection of another element.
     Projection,
+    /// Seeded procedural generation over the element's children (FEAT-006).
+    Procedural,
     /// Raster image.
     Raster,
     /// A placement of a reusable definition (FEAT-030).
@@ -276,6 +293,7 @@ impl ElementKind {
             ElementKind::AlongPath => "alongPath",
             ElementKind::Offset => "offset",
             ElementKind::Projection => "projection",
+            ElementKind::Procedural => "procedural",
             ElementKind::Raster => "raster",
             ElementKind::Instance => "instance",
         }
@@ -345,6 +363,14 @@ pub struct Geometry {
     /// The axes a projection element maps its children onto.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub axis: Option<ProjectionAxis>,
+    /// The generation a procedural element applies to its children (FEAT-006).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub procedure: Option<Procedure>,
+    /// Maximum displacement or feature amplitude for a procedural element, in
+    /// scene units; a literal number or a number parameter reference
+    /// (FEAT-006).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amount: Option<NumberValue>,
 }
 
 impl Geometry {
@@ -420,6 +446,52 @@ impl Geometry {
     /// The literal `distance`, or `None` when it is a parameter reference.
     pub fn distance(&self) -> Option<f64> {
         self.distance.as_ref().and_then(NumberValue::literal)
+    }
+
+    /// The literal `amount`, or `None` when it is a parameter reference.
+    pub fn amount(&self) -> Option<f64> {
+        self.amount.as_ref().and_then(NumberValue::literal)
+    }
+}
+
+/// The generation a procedural element applies to its children (FEAT-006).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Procedure {
+    /// Decomposes the region enclosed by the children's outlines into triangles.
+    Triangulation,
+    /// Distributes copies of the first child across the region the rest enclose.
+    Scatter,
+    /// Displaces each child's geometry.
+    Jitter,
+    /// Distributes points within the region the children enclose.
+    Stippling,
+    /// Generates ornamental features along the children's outlines.
+    Ornament,
+}
+
+impl Procedure {
+    /// The procedure name as it appears in the scene language.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Procedure::Triangulation => "triangulation",
+            Procedure::Scatter => "scatter",
+            Procedure::Jitter => "jitter",
+            Procedure::Stippling => "stippling",
+            Procedure::Ornament => "ornament",
+        }
+    }
+
+    /// Parses a procedure name, or `None` when it is not one of the five.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "triangulation" => Some(Procedure::Triangulation),
+            "scatter" => Some(Procedure::Scatter),
+            "jitter" => Some(Procedure::Jitter),
+            "stippling" => Some(Procedure::Stippling),
+            "ornament" => Some(Procedure::Ornament),
+            _ => None,
+        }
     }
 }
 
@@ -729,6 +801,80 @@ pub struct Origin {
     pub y: f64,
 }
 
+/// A project-scoped document that generates a set of icons sharing one canvas,
+/// palette, recipe, stroke profile, and naming scheme (C-001, FEAT-025).
+///
+/// Each icon is a reusable [`Definition`] the set places. The set renders every
+/// icon on its own under the shared canvas and style rather than the project's
+/// isolated-definition defaults, and exports each to a file named by
+/// [`IconSet::file_name_for`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct IconSet {
+    /// Stable identifier for the icon set, unique within its project.
+    pub id: String,
+    /// References the project this icon set belongs to.
+    pub project_id: String,
+    /// Human-readable icon-set name, at most 120 characters.
+    pub name: String,
+    /// The drawing surface shared by every icon in the set.
+    pub canvas: Canvas,
+    /// References the palette the set's icons resolve against; when absent, the
+    /// project's `defaultPaletteId` applies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub palette_id: Option<String>,
+    /// References the recipe the set's icons render under; when absent, the
+    /// project's `defaultRecipeId` applies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipe_id: Option<String>,
+    /// References the stroke profile every icon in the set draws with; an icon
+    /// element's stroke must name this profile.
+    pub stroke_profile_id: String,
+    /// The naming scheme for the set's exported files: a pattern containing the
+    /// placeholder `{name}`, replaced by each icon's name. Defaults to `{name}`.
+    #[serde(default = "default_name_pattern")]
+    pub name_pattern: String,
+    /// The icons in the set; an empty list is invalid.
+    pub icons: Vec<IconEntry>,
+}
+
+impl IconSet {
+    /// The naming pattern, which defaults to `{name}` when none is declared.
+    pub fn name_pattern(&self) -> &str {
+        &self.name_pattern
+    }
+
+    /// The file name one icon exports to: the naming pattern with `{name}`
+    /// replaced by the icon's name and the format extension appended.
+    pub fn file_name_for(&self, icon: &IconEntry, extension: &str) -> String {
+        format!(
+            "{}.{}",
+            self.name_pattern.replace("{name}", &icon.name),
+            extension
+        )
+    }
+}
+
+/// The default icon naming pattern (C-001, FEAT-025).
+pub fn default_name_pattern() -> String {
+    "{name}".to_string()
+}
+
+/// One icon in a set: a named placement of a reusable definition (C-001).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct IconEntry {
+    /// The icon's name, unique within the set and substituted for `{name}` in
+    /// the set's naming pattern to name the exported file.
+    pub name: String,
+    /// References the reusable definition that draws the icon.
+    pub definition_ref: String,
+    /// Accessible name carried into the icon's exported output, distinct from
+    /// the icon's name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accessible_name: Option<String>,
+}
+
 /// A number that is either a literal or a parameter reference (C-001).
 ///
 /// Deserialization is hand-written rather than an untagged enum so an invalid
@@ -987,6 +1133,49 @@ impl PaintValue {
             PaintValue::Paint(paint) => Some(paint),
             PaintValue::Param(_) => None,
         }
+    }
+}
+
+/// Reads a scene seed, reporting a value that is not an integer by name
+/// (FEAT-006).
+///
+/// The seed is a 64-bit integer; a fractional value, a string or any other
+/// type is a schema error whose message names the invalid value, rather than a
+/// generic type mismatch. An integral number written with a fractional part
+/// (`2.0`) is accepted as the integer it denotes; `null` is treated as absent.
+fn deserialize_seed<'de, D>(deserializer: D) -> Result<Option<i64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    match value {
+        serde_json::Value::Null => Ok(None),
+        serde_json::Value::Number(number) => {
+            if let Some(integer) = number.as_i64() {
+                return Ok(Some(integer));
+            }
+            if let Some(unsigned) = number.as_u64() {
+                return i64::try_from(unsigned)
+                    .map(Some)
+                    .map_err(|_| Error::custom(format!("`seed` {number} is out of range")));
+            }
+            if let Some(float) = number.as_f64() {
+                if float.fract() == 0.0 && float >= i64::MIN as f64 && float <= i64::MAX as f64 {
+                    return Ok(Some(float as i64));
+                }
+            }
+            Err(Error::custom(format!(
+                "`seed` must be an integer, got {number}"
+            )))
+        }
+        other => Err(Error::custom(format!(
+            "`seed` must be an integer, got {other}"
+        ))),
     }
 }
 

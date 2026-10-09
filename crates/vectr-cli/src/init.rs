@@ -71,13 +71,14 @@ const DEFAULT_RECIPE_JSON: &str = r#"{
 
 /// The entity directories a project holds, alongside `dist/` for output and
 /// `assets/` for the fonts and images a scene may reference.
-const PROJECT_DIRS: [&str; 8] = [
+const PROJECT_DIRS: [&str; 9] = [
     "scenes",
     "palettes",
     "strokes",
     "gradients",
     "recipes",
     "definitions",
+    "icon-sets",
     "assets",
     "dist",
 ];
@@ -237,6 +238,7 @@ fn starter_scene() -> Scene {
         },
         palette_id: None,
         recipe_id: None,
+        seed: None,
         title: None,
         description: None,
         elements: Vec::new(),

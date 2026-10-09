@@ -1,0 +1,9 @@
+{
+  "id": "p-030-clock",
+  "corpusId": "vectr-authoring",
+  "intent": "A clock face with two hands.",
+  "text": "Draw a clock face with two hands.",
+  "order": 29,
+  "complexity": "moderate",
+  "qualities": []
+}

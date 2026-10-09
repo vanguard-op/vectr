@@ -1,0 +1,9 @@
+{
+  "id": "p-007-chevron",
+  "corpusId": "vectr-authoring",
+  "intent": "A right-pointing chevron.",
+  "text": "Draw a chevron pointing to the right.",
+  "order": 6,
+  "complexity": "simple",
+  "qualities": []
+}

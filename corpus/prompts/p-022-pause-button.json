@@ -1,0 +1,9 @@
+{
+  "id": "p-022-pause-button",
+  "corpusId": "vectr-authoring",
+  "intent": "A pause icon of two bars.",
+  "text": "Draw a pause icon.",
+  "order": 21,
+  "complexity": "simple",
+  "qualities": []
+}

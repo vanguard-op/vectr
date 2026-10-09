@@ -1,0 +1,9 @@
+{
+  "id": "p-019-moon",
+  "corpusId": "vectr-authoring",
+  "intent": "A crescent moon.",
+  "text": "Draw a crescent moon.",
+  "order": 18,
+  "complexity": "simple",
+  "qualities": []
+}

@@ -1,0 +1,9 @@
+{
+  "id": "p-020-bolt",
+  "corpusId": "vectr-authoring",
+  "intent": "A lightning bolt.",
+  "text": "Draw a lightning bolt.",
+  "order": 19,
+  "complexity": "simple",
+  "qualities": []
+}

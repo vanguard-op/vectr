@@ -1,0 +1,9 @@
+{
+  "id": "p-058-forest-scene",
+  "corpusId": "vectr-authoring",
+  "intent": "A forest scene with several trees.",
+  "text": "Draw a forest scene with several trees.",
+  "order": 57,
+  "complexity": "moderate",
+  "qualities": []
+}

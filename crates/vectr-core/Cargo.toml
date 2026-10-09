@@ -37,13 +37,13 @@ skrifa = { workspace = true }
 # without it still validates, compiles and exports SVG, and reports PNG's
 # missing capability rather than failing silently (NFR-004).
 #
-# Declared with an explicit version rather than `workspace = true`: cargo
-# ignores a member's `default-features = false` when inheriting a workspace
-# dependency, and the rasterizer must stay pure-Rust and free of native system
-# dependencies (D-007), so its text, system-font, SVGZ and raster-image
-# defaults stay off. The workspace `resvg` entry should carry
-# `default-features = false` so this can inherit again.
-resvg = { version = "0.48.1", optional = true, default-features = false }
+# Inherited from the workspace entry so the rasterizer version is declared once
+# (NFR-020). Cargo takes `default-features` from the workspace dependency, not
+# the member, and the workspace `resvg` entry carries `default-features = false`
+# (D-007), so its native system-font, text, SVGZ and raster-image defaults stay
+# off and the rasterizer remains pure-Rust and free of native system
+# dependencies.
+resvg = { workspace = true, optional = true }
 
 [features]
 default = ["rasterizer"]

@@ -1,0 +1,13 @@
+{
+  "id": "p-093-fox",
+  "corpusId": "vectr-authoring",
+  "intent": "A fox with correct anatomy.",
+  "text": "Draw a fox with correct anatomy, its legs and tail joined at the body.",
+  "order": 92,
+  "complexity": "complex",
+  "qualities": [
+    "reusable_parts",
+    "shared_anchors",
+    "subject_accuracy"
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "id": "p-050-tag",
+  "corpusId": "vectr-authoring",
+  "intent": "A price tag.",
+  "text": "Draw a price tag.",
+  "order": 49,
+  "complexity": "moderate",
+  "qualities": []
+}

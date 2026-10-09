@@ -221,9 +221,12 @@ mod tests {
     use super::*;
     use crate::composition::Affine;
     use crate::primitives::{Rect, Shape};
-    use crate::render::{
-        NodePaint, Paint, RenderCanvas, RenderMeta, ResolvedFont, ResolvedNode, TextRun,
-    };
+    use crate::render::{NodePaint, Paint, RenderCanvas, RenderMeta, ResolvedNode};
+    // Only the rasterizer-backed tests build a text node, so these stay out of
+    // the feature-off build rather than warning as unused there (FEAT-021).
+    #[cfg(feature = "rasterizer")]
+    use crate::render::{ResolvedFont, TextRun};
+    #[cfg(feature = "rasterizer")]
     use crate::scene::TextAlign;
 
     fn rect(x: f64, y: f64, width: f64, height: f64) -> Shape {
@@ -241,6 +244,7 @@ mod tests {
         ResolvedNode {
             id: id.to_string(),
             name: None,
+            accessible_name: None,
             order: 0,
             kind: geometry.kind().to_string(),
             groups: Vec::new(),
@@ -411,6 +415,7 @@ mod tests {
         let text = ResolvedNode {
             id: "t1".to_string(),
             name: None,
+            accessible_name: None,
             order: 0,
             kind: "text".to_string(),
             groups: Vec::new(),

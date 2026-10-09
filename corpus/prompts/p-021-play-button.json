@@ -1,0 +1,9 @@
+{
+  "id": "p-021-play-button",
+  "corpusId": "vectr-authoring",
+  "intent": "A play triangle inside a circle.",
+  "text": "Draw a play button.",
+  "order": 20,
+  "complexity": "simple",
+  "qualities": []
+}

@@ -1,0 +1,13 @@
+{
+  "id": "p-087-treehouse",
+  "corpusId": "vectr-authoring",
+  "intent": "A treehouse built around a tree trunk.",
+  "text": "Draw a treehouse built around a tree trunk, shown in three dimensions.",
+  "order": 86,
+  "complexity": "complex",
+  "qualities": [
+    "depth",
+    "relative_placement",
+    "reusable_parts"
+  ]
+}

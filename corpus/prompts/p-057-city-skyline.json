@@ -1,0 +1,9 @@
+{
+  "id": "p-057-city-skyline",
+  "corpusId": "vectr-authoring",
+  "intent": "A city skyline at dusk.",
+  "text": "Draw a city skyline at dusk.",
+  "order": 56,
+  "complexity": "moderate",
+  "qualities": []
+}

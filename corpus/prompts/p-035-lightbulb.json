@@ -1,0 +1,9 @@
+{
+  "id": "p-035-lightbulb",
+  "corpusId": "vectr-authoring",
+  "intent": "A lightbulb.",
+  "text": "Draw a lightbulb.",
+  "order": 34,
+  "complexity": "moderate",
+  "qualities": []
+}

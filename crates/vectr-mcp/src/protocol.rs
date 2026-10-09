@@ -35,7 +35,7 @@ const METHOD_NOT_FOUND: i64 = -32601;
 const INVALID_PARAMS: i64 = -32602;
 
 /// The metadata a client reads after `initialize` to learn to use Vectr.
-const INSTRUCTIONS: &str = "Vectr compiles authored scenes into SVG and PNG. Call `schema` to learn the scene language, `validate` to check a scene, `compile` for the render model, `render` to write a scene as SVG or PNG, and `render-part` to preview a reusable definition or element subtree on its own.";
+const INSTRUCTIONS: &str = "Vectr compiles authored scenes into SVG, PNG and (when the PDF rollout flag is enabled) PDF. Call `schema` to learn the scene language, `validate` to check a scene, `compile` for the render model, `render` to write a scene as SVG, PNG or PDF, `inspect` to render a preview for inspection, and `render-part` to preview a reusable definition or element subtree on its own.";
 
 /// The tool server over one filesystem scope.
 pub struct Server<'a> {
@@ -268,7 +268,7 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_returns_the_five_tools() {
+    fn tools_list_returns_the_six_tools() {
         let dir = tempdir("list");
         let scope = Scope::new(vec![dir]);
         let server = Server::new(&scope);
@@ -276,7 +276,7 @@ mod tests {
             .handle(&json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }))
             .expect("a response");
         let tools = response["result"]["tools"].as_array().expect("tools");
-        assert_eq!(tools.len(), 5);
+        assert_eq!(tools.len(), 6);
         assert!(tools.iter().all(|tool| tool["inputSchema"].is_object()));
     }
 

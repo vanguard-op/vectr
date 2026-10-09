@@ -1,21 +1,22 @@
 //! `vectr` command parsing and dispatch (C-004).
 //!
 //! The grammar and exit codes are frozen by the contract: `init`, `validate`,
-//! `compile` and `export`, with 0 success, 1 invalid scene, 2 usage or unreadable
-//! input, 3 compilation failure, 4 missing export dependency, and 5 output I/O
-//! failure. Parsing is hand-rolled rather than pulled from a CLI crate so the
-//! binary depends only on the engine and can control the exit code of every
-//! path, including "no arguments prints usage and exits zero".
+//! `compile`, `export`, `render`, `inspect` and `schema`, with 0 success, 1
+//! invalid scene, 2 usage or unreadable input, 3 compilation failure, 4 missing
+//! export dependency, and 5 output I/O failure. Parsing is hand-rolled rather
+//! than pulled from a CLI crate so the binary depends only on the engine and can
+//! control the exit code of every path, including "no arguments prints usage and
+//! exits zero".
 //!
 //! Every command returns a [`Report`] holding the text to print and the status
 //! to exit with; only [`main`](crate::main) touches the process. Diagnostics are
 //! the engine's structured findings, so a failure names its code, message and
 //! location (NFR-011).
 //!
-//! `validate`, `compile` and `export` load the assets the scene's project
-//! provides — its palette, stroke profiles, and fonts — and compile against
-//! them, so a scene's style and font references resolve to concrete values
-//! before anything is written (FEAT-005, FEAT-024).
+//! `validate`, `compile`, `export` and `inspect` load the assets the scene's
+//! project provides — its palette, stroke profiles, and fonts — and compile
+//! against them, so a scene's style and font references resolve to concrete
+//! values before anything is written (FEAT-005, FEAT-024).
 //!
 //! A scene is named by its identifier, resolved among the project's scene
 //! documents under `scenes/`, with the project discovered from the working
@@ -26,16 +27,19 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use vectr_core::compiler::FONT;
+use vectr_core::export::pdf as pdf_export;
 use vectr_core::export::png as png_export;
 use vectr_core::export::svg as svg_export;
 use vectr_core::scene::INVALID_COLOR;
 use vectr_core::{
-    compile_definition, compile_subtree, compile_with_style, export_png_reporting,
-    export_svg_reporting, parse as parse_scene_source, schema, schema_for,
+    compile_definition, compile_subtree, compile_with_style, export_pdf_reporting,
+    export_png_reporting, export_svg_reporting, parse as parse_scene_source, schema, schema_for,
     validate as validate_scene_model, validate_gradient_usage, validate_palette_usage, Diagnostic,
-    DiagnosticCode, Diagnostics, RasterOptions, RenderModel, Scene, SchemaForm, SvgOptions,
+    DiagnosticCode, Diagnostics, PdfOptions, RasterOptions, RenderModel, Scene, SchemaForm,
+    SvgOptions,
 };
 
+use crate::icon_set;
 use crate::init;
 use crate::output::write_atomic;
 use vectr_project::{
@@ -55,21 +59,32 @@ pub const EXIT_DEPENDENCY: i32 = 4;
 /// The output path could not be written.
 pub const EXIT_OUTPUT: i32 = 5;
 
+/// The environment variable that enables PDF export, a rollout flag that is off
+/// by default (FEAT-014).
+pub const ENABLE_PDF_ENV: &str = "VECTR_ENABLE_PDF_EXPORT";
+
+/// The environment variable that enables icon-set mode, a rollout flag that is
+/// off by default (FEAT-025).
+pub const ENABLE_ICON_SET_ENV: &str = "VECTR_ENABLE_ICON_SET_MODE";
+
 /// The usage block shared by the help text and every usage error.
 const USAGE: &str = "\
 Usage:
   vectr init [dir]
   vectr validate [<scene>] [--json]
   vectr compile [<scene>] [--out <file>] [--check]
-  vectr export [<scene>] --format svg|png [--out <file>] [--width <n>] [--height <n>] [--density <n>] [--background <color|transparent>]
+  vectr export [<scene>] --format svg|png|pdf [--out <file>] [--width <n>] [--height <n>] [--density <n>] [--background <color|transparent>] [--profile <srgb|cmyk>]
+  vectr inspect [<scene>] [--out <file>] [--width <n>] [--height <n>] [--density <n>] [--background <color|transparent>]
   vectr render <part> [--out <file>] [--format svg|png] [--width <n>] [--height <n>] [--density <n>] [--background <color|transparent>]
+  vectr icon-set export [<set>] [--format svg|png|pdf] [--out-dir <dir>]
   vectr schema [--type <name>] [--compact]
 
 <scene> is a scene identifier resolved among the project's scenes; the project
 is found from the working directory. Omitting it uses the project's default
 scene. <part> is a reusable definition's identifier, or an element subtree's
 identifier, resolved within the project; it is rendered on its own, framed to
-its own bounds.";
+its own bounds. <set> is an icon-set identifier resolved among the project's
+icon sets; omitting it uses the project's only icon set.";
 
 /// One parsed command line.
 #[derive(Debug, Clone, PartialEq)]
@@ -115,6 +130,23 @@ pub enum Command {
         density: Option<f64>,
         /// Background override, or `transparent`.
         background: Option<String>,
+        /// The print colour profile a PDF export targets (FEAT-014).
+        profile: Option<Profile>,
+    },
+    /// Render a whole-scene preview for inspection (FEAT-022).
+    Inspect {
+        /// The scene identifier to read; the project's default when absent.
+        scene: Option<String>,
+        /// Where to write the preview; the default `dist/` path when absent.
+        out: Option<PathBuf>,
+        /// Preview width override.
+        width: Option<f64>,
+        /// Preview height override.
+        height: Option<f64>,
+        /// Pixel density multiplier.
+        density: Option<f64>,
+        /// Background override, or `transparent`.
+        background: Option<String>,
     },
     /// Render one part on its own: a reusable definition or an element subtree.
     Render {
@@ -133,6 +165,15 @@ pub enum Command {
         /// Background override, or `transparent`.
         background: Option<String>,
     },
+    /// Export every icon in a set on its own (FEAT-025).
+    IconSetExport {
+        /// The icon-set identifier to read; the project's only set when absent.
+        set: Option<String>,
+        /// The output format for every icon.
+        format: Format,
+        /// Where to write the icons; the default `dist/` path when absent.
+        out_dir: Option<PathBuf>,
+    },
     /// Print the language contract, or one of its types.
     Schema {
         /// The type to print; the whole contract when absent.
@@ -149,6 +190,8 @@ pub enum Format {
     Svg,
     /// A rasterized PNG image.
     Png,
+    /// A vector PDF document (FEAT-014); gated by `enable_pdf_export`.
+    Pdf,
 }
 
 impl Format {
@@ -157,6 +200,31 @@ impl Format {
         match self {
             Format::Svg => "svg",
             Format::Png => "png",
+            Format::Pdf => "pdf",
+        }
+    }
+}
+
+/// The print colour profile a PDF export targets (FEAT-014).
+///
+/// The profile is a PDF-only concern: `srgb` carries per-paint transparency,
+/// while `cmyk` is a print space that cannot, so the exporter flattens it. The
+/// CLI names the two profiles the contract freezes and leaves the emission to
+/// the engine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Profile {
+    /// Device RGB with transparency.
+    Srgb,
+    /// Device CMYK with transparency flattened.
+    Cmyk,
+}
+
+impl Profile {
+    /// The profile name the exporter understands.
+    fn name(self) -> &'static str {
+        match self {
+            Profile::Srgb => "srgb",
+            Profile::Cmyk => "cmyk",
         }
     }
 }
@@ -199,8 +267,10 @@ pub fn help_text() -> String {
          \x20 init      Create a project scaffold in a directory.\n\
          \x20 validate  Check a scene against the language contract.\n\
          \x20 compile   Compile a scene into its render model.\n\
-         \x20 export    Export a scene as SVG or PNG.\n\
+         \x20 export    Export a scene as SVG, PNG or PDF.\n\
+         \x20 inspect   Render a whole-scene preview for inspection.\n\
          \x20 render    Render one part on its own, framed to its bounds.\n\
+         \x20 icon-set  Export every icon in a set on its own.\n\
          \x20 schema    Print the language contract.\n\n\
          Exit codes:\n\
          \x20 0 success   1 invalid scene   2 usage or unreadable input\n\
@@ -235,9 +305,10 @@ pub fn parse(args: Vec<OsString>) -> Result<Command, String> {
         "validate" => parse_validate(rest),
         "compile" => parse_compile(rest),
         "export" => parse_export(rest),
+        "inspect" => parse_inspect(rest),
         "render" => parse_render(rest),
+        "icon-set" => parse_icon_set(rest),
         "schema" => parse_schema(rest),
-        "inspect" => Err("`inspect` is reserved for a later release".to_string()),
         _ if name.starts_with('-') => Err(format!("unknown option `{name}`")),
         _ => Err(format!("unknown command `{name}`")),
     }
@@ -284,15 +355,53 @@ pub fn run_in(command: Command, cwd: &Path) -> Report {
             height,
             density,
             background,
+            profile,
+        } => {
+            // PDF is a gated capability, off by default (FEAT-014); the gate is
+            // checked before the scene is read, so a disabled export writes
+            // nothing (NFR-011).
+            if format == Format::Pdf {
+                if let Some(report) = pdf_disabled() {
+                    return report;
+                }
+            }
+            match resolve(cwd, scene.as_deref()) {
+                Ok(scene) => {
+                    let target = out
+                        .as_deref()
+                        .map(|path| absolute(cwd, path))
+                        .unwrap_or_else(|| {
+                            cwd.join(default_output(scene.id(), format.extension()))
+                        });
+                    export_scene(
+                        &scene,
+                        format,
+                        &target,
+                        width,
+                        height,
+                        density,
+                        background.as_deref(),
+                        profile,
+                    )
+                }
+                Err(report) => report,
+            }
+        }
+        Command::Inspect {
+            scene,
+            out,
+            width,
+            height,
+            density,
+            background,
         } => match resolve(cwd, scene.as_deref()) {
             Ok(scene) => {
                 let target = out
                     .as_deref()
                     .map(|path| absolute(cwd, path))
-                    .unwrap_or_else(|| cwd.join(default_output(scene.id(), format.extension())));
-                export_scene(
+                    .unwrap_or_else(|| cwd.join(default_output(scene.id(), "png")));
+                inspect_scene(
                     &scene,
-                    format,
                     &target,
                     width,
                     height,
@@ -325,6 +434,30 @@ pub fn run_in(command: Command, cwd: &Path) -> Report {
                 density,
                 background.as_deref(),
             )
+        }
+        Command::IconSetExport {
+            set,
+            format,
+            out_dir,
+        } => {
+            // Icon-set mode is a gated capability, off by default (FEAT-025);
+            // the gate is checked before any set is read, so a disabled export
+            // writes nothing (NFR-011).
+            if let Some(report) = icon_set_disabled() {
+                return report;
+            }
+            // A PDF icon-set export is still a PDF export, so it also respects
+            // the PDF gate (FEAT-014).
+            if format == Format::Pdf {
+                if let Some(report) = pdf_disabled() {
+                    return report;
+                }
+            }
+            let out_dir = out_dir
+                .as_deref()
+                .map(|path| absolute(cwd, path))
+                .unwrap_or_else(|| cwd.join("dist"));
+            icon_set::export(cwd, set.as_deref(), format, &out_dir)
         }
         Command::Schema { type_name, compact } => schema_command(type_name.as_deref(), compact),
     }
@@ -428,6 +561,7 @@ fn parse_export(args: Vec<OsString>) -> Result<Command, String> {
     let mut height: Option<f64> = None;
     let mut density: Option<f64> = None;
     let mut background: Option<String> = None;
+    let mut profile: Option<Profile> = None;
 
     let mut i = 0;
     while i < args.len() {
@@ -449,6 +583,8 @@ fn parse_export(args: Vec<OsString>) -> Result<Command, String> {
                     density = Some(parse_number(value, "density")?);
                 } else if let Some(value) = text.strip_prefix("--background=") {
                     background = Some(value.to_string());
+                } else if let Some(value) = text.strip_prefix("--profile=") {
+                    profile = Some(parse_profile(value)?);
                 } else {
                     match text {
                         "--format" => {
@@ -482,6 +618,11 @@ fn parse_export(args: Vec<OsString>) -> Result<Command, String> {
                                     .into_owned(),
                             )
                         }
+                        "--profile" => {
+                            profile = Some(parse_profile(
+                                &take_value(&args, &mut i, "--profile")?.to_string_lossy(),
+                            )?)
+                        }
                         t if t.starts_with('-') && t != "-" => {
                             return Err(format!("unknown option `{t}` for `export`"))
                         }
@@ -493,10 +634,91 @@ fn parse_export(args: Vec<OsString>) -> Result<Command, String> {
         i += 1;
     }
 
-    let format = format.ok_or_else(|| "`export` needs `--format svg|png`".to_string())?;
+    let format = format.ok_or_else(|| "`export` needs `--format svg|png|pdf`".to_string())?;
     Ok(Command::Export {
         scene,
         format,
+        out,
+        width,
+        height,
+        density,
+        background,
+        profile,
+    })
+}
+
+/// Parses the `inspect` command: a scene plus the preview-size options.
+///
+/// A whole-scene preview is always a PNG, so `inspect` takes no `--format`; the
+/// size is configurable so a preview too small to judge can be raised
+/// (FEAT-022).
+fn parse_inspect(args: Vec<OsString>) -> Result<Command, String> {
+    let mut scene: Option<String> = None;
+    let mut out: Option<PathBuf> = None;
+    let mut width: Option<f64> = None;
+    let mut height: Option<f64> = None;
+    let mut density: Option<f64> = None;
+    let mut background: Option<String> = None;
+
+    let mut i = 0;
+    while i < args.len() {
+        let raw = args[i].clone();
+        let text = raw.to_str().map(str::to_owned);
+        match text.as_deref() {
+            None => set_scene_id(&mut scene, raw)?,
+            Some("-h") | Some("--help") => return Ok(Command::Help),
+            Some(text) => {
+                if let Some(value) = text.strip_prefix("--out=") {
+                    out = Some(PathBuf::from(value));
+                } else if let Some(value) = text.strip_prefix("--width=") {
+                    width = Some(parse_number(value, "width")?);
+                } else if let Some(value) = text.strip_prefix("--height=") {
+                    height = Some(parse_number(value, "height")?);
+                } else if let Some(value) = text.strip_prefix("--density=") {
+                    density = Some(parse_number(value, "density")?);
+                } else if let Some(value) = text.strip_prefix("--background=") {
+                    background = Some(value.to_string());
+                } else {
+                    match text {
+                        "--out" => out = Some(PathBuf::from(take_value(&args, &mut i, "--out")?)),
+                        "--width" => {
+                            width = Some(parse_number(
+                                &take_value(&args, &mut i, "--width")?.to_string_lossy(),
+                                "width",
+                            )?)
+                        }
+                        "--height" => {
+                            height = Some(parse_number(
+                                &take_value(&args, &mut i, "--height")?.to_string_lossy(),
+                                "height",
+                            )?)
+                        }
+                        "--density" => {
+                            density = Some(parse_number(
+                                &take_value(&args, &mut i, "--density")?.to_string_lossy(),
+                                "density",
+                            )?)
+                        }
+                        "--background" => {
+                            background = Some(
+                                take_value(&args, &mut i, "--background")?
+                                    .to_string_lossy()
+                                    .into_owned(),
+                            )
+                        }
+                        t if t.starts_with('-') && t != "-" => {
+                            return Err(format!("unknown option `{t}` for `inspect`"))
+                        }
+                        _ => set_scene_id(&mut scene, raw)?,
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+
+    Ok(Command::Inspect {
+        scene,
         out,
         width,
         height,
@@ -527,7 +749,7 @@ fn parse_render(args: Vec<OsString>) -> Result<Command, String> {
             Some("-h") | Some("--help") => return Ok(Command::Help),
             Some(text) => {
                 if let Some(value) = text.strip_prefix("--format=") {
-                    format = parse_format(value)?;
+                    format = parse_render_format(value)?;
                 } else if let Some(value) = text.strip_prefix("--out=") {
                     out = Some(PathBuf::from(value));
                 } else if let Some(value) = text.strip_prefix("--width=") {
@@ -541,7 +763,7 @@ fn parse_render(args: Vec<OsString>) -> Result<Command, String> {
                 } else {
                     match text {
                         "--format" => {
-                            format = parse_format(
+                            format = parse_render_format(
                                 &take_value(&args, &mut i, "--format")?.to_string_lossy(),
                             )?
                         }
@@ -591,6 +813,75 @@ fn parse_render(args: Vec<OsString>) -> Result<Command, String> {
         height,
         density,
         background,
+    })
+}
+
+/// Parses the `icon-set` command: its `export` action plus the format and
+/// output directory (FEAT-025).
+///
+/// The set is an identifier resolved among the project's icon-set documents;
+/// the format defaults to SVG, and every icon is written under the output
+/// directory, `dist/` by default.
+fn parse_icon_set(args: Vec<OsString>) -> Result<Command, String> {
+    let mut args = args.into_iter();
+    let Some(action) = args.next() else {
+        return Err("`icon-set` needs an action, such as `export`".to_string());
+    };
+    let Some(action) = action.to_str() else {
+        return Err("the icon-set action is not valid UTF-8".to_string());
+    };
+    match action {
+        "-h" | "--help" => return Ok(Command::Help),
+        "export" => {}
+        other => {
+            return Err(format!(
+                "unknown action `{other}` for `icon-set`; expected `export`"
+            ))
+        }
+    }
+
+    let args: Vec<OsString> = args.collect();
+    let mut set: Option<String> = None;
+    let mut format = Format::Svg;
+    let mut out_dir: Option<PathBuf> = None;
+
+    let mut i = 0;
+    while i < args.len() {
+        let raw = args[i].clone();
+        let text = raw.to_str().map(str::to_owned);
+        match text.as_deref() {
+            None => set_icon_set_id(&mut set, raw)?,
+            Some("-h") | Some("--help") => return Ok(Command::Help),
+            Some(text) => {
+                if let Some(value) = text.strip_prefix("--format=") {
+                    format = parse_format(value)?;
+                } else if let Some(value) = text.strip_prefix("--out-dir=") {
+                    out_dir = Some(PathBuf::from(value));
+                } else {
+                    match text {
+                        "--format" => {
+                            format = parse_format(
+                                &take_value(&args, &mut i, "--format")?.to_string_lossy(),
+                            )?
+                        }
+                        "--out-dir" => {
+                            out_dir = Some(PathBuf::from(take_value(&args, &mut i, "--out-dir")?))
+                        }
+                        t if t.starts_with('-') && t != "-" => {
+                            return Err(format!("unknown option `{t}` for `icon-set export`"))
+                        }
+                        _ => set_icon_set_id(&mut set, raw)?,
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+
+    Ok(Command::IconSetExport {
+        set,
+        format,
+        out_dir,
     })
 }
 
@@ -678,7 +969,46 @@ fn set_part(slot: &mut Option<String>, value: OsString) -> Result<(), String> {
     Ok(())
 }
 
+/// Records the single icon-set identifier `icon-set export` accepts.
+fn set_icon_set_id(slot: &mut Option<String>, value: OsString) -> Result<(), String> {
+    if slot.is_some() {
+        return Err("`icon-set export` accepts at most one set identifier".to_string());
+    }
+    let id = value
+        .into_string()
+        .map_err(|_| "the set identifier is not valid UTF-8".to_string())?;
+    *slot = Some(id);
+    Ok(())
+}
+
 fn parse_format(value: &str) -> Result<Format, String> {
+    match value {
+        "svg" => Ok(Format::Svg),
+        "png" => Ok(Format::Png),
+        "pdf" => Ok(Format::Pdf),
+        _ => Err(format!(
+            "`--format` must be `svg`, `png` or `pdf`, got `{value}`"
+        )),
+    }
+}
+
+/// Parses the print colour profile the contract names, case-insensitively.
+///
+/// The profile is refused at the command line rather than passed through, so an
+/// unusable value fails as a usage error before any scene is read (FEAT-014).
+fn parse_profile(value: &str) -> Result<Profile, String> {
+    match value.to_ascii_lowercase().as_str() {
+        "srgb" => Ok(Profile::Srgb),
+        "cmyk" => Ok(Profile::Cmyk),
+        _ => Err(format!(
+            "`--profile` must be `srgb` or `cmyk`, got `{value}`"
+        )),
+    }
+}
+
+/// Parses the `render` command's format: a part preview is a vector or raster
+/// image, so PDF is not one of its targets (C-004).
+fn parse_render_format(value: &str) -> Result<Format, String> {
     match value {
         "svg" => Ok(Format::Svg),
         "png" => Ok(Format::Png),
@@ -705,15 +1035,28 @@ fn validate_scene(scene: &ProjectScene, json: bool) -> Report {
         }
     };
 
-    // Validation is the gate a project's references pass: a palette token the
-    // palette no longer defines, a stroke profile, or a font that does not
-    // resolve is an error naming it, so a restyle that broke a scene is caught
-    // before anything is compiled (FEAT-005, FEAT-024). The checks run against
-    // the scene with its definition instances expanded, so a reference written
-    // inside a reusable part is checked like one written in the scene (FEAT-030).
-    let mut findings = validate_scene_model(&parsed);
-    let expanded = assets.expanded_scene(&parsed);
-    let usage_scene = expanded.as_ref().unwrap_or(&parsed);
+    let findings = structural_findings(&parsed, &assets);
+
+    let code = if findings.has_errors() {
+        dependency_exit_code(&findings, EXIT_INVALID_SCENE)
+    } else {
+        EXIT_SUCCESS
+    };
+    report_findings(code, findings, json)
+}
+
+/// The structural checks a scene and its project assets must pass (FEAT-018).
+///
+/// A palette token the palette no longer defines, a stroke profile, or a font
+/// that does not resolve is an error naming it, so a restyle that broke a scene
+/// is caught before anything is compiled (FEAT-005, FEAT-024). The checks run
+/// against the scene with its definition instances expanded, so a reference
+/// written inside a reusable part is checked like one written in the scene
+/// (FEAT-030).
+fn structural_findings(scene: &Scene, assets: &ProjectAssets) -> Diagnostics {
+    let mut findings = validate_scene_model(scene);
+    let expanded = assets.expanded_scene(scene);
+    let usage_scene = expanded.as_ref().unwrap_or(scene);
     if let Some(palette) = assets.palette() {
         findings.extend(validate_palette_usage(
             usage_scene,
@@ -722,14 +1065,8 @@ fn validate_scene(scene: &ProjectScene, json: bool) -> Report {
         ));
     }
     findings.extend(validate_gradient_usage(usage_scene, assets.gradients()));
-    findings.extend(assets.check_references(&parsed));
-
-    let code = if findings.has_errors() {
-        dependency_exit_code(&findings, EXIT_INVALID_SCENE)
-    } else {
-        EXIT_SUCCESS
-    };
-    report_findings(code, findings, json)
+    findings.extend(assets.check_references(scene));
+    findings
 }
 
 fn compile_scene(cwd: &Path, scene: &ProjectScene, out: Option<&Path>, check: bool) -> Report {
@@ -784,6 +1121,7 @@ fn compile_scene(cwd: &Path, scene: &ProjectScene, out: Option<&Path>, check: bo
     write_report(&target, text.as_bytes(), &warnings)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn export_scene(
     scene: &ProjectScene,
     format: Format,
@@ -792,11 +1130,20 @@ fn export_scene(
     height: Option<f64>,
     density: Option<f64>,
     background: Option<&str>,
+    profile: Option<Profile>,
 ) -> Report {
-    if format == Format::Svg && density.is_some() {
+    if format != Format::Png && density.is_some() {
         return Report::failure(
             EXIT_USAGE,
             "error: `--density` applies only to PNG output\n".to_string(),
+        );
+    }
+    // The profile names a print colour space, so it is meaningful only for the
+    // PDF target; naming it elsewhere is refused rather than ignored (FEAT-014).
+    if format != Format::Pdf && profile.is_some() {
+        return Report::failure(
+            EXIT_USAGE,
+            "error: `--profile` applies only to PDF output\n".to_string(),
         );
     }
 
@@ -853,6 +1200,7 @@ fn export_scene(
         height,
         density,
         background,
+        profile,
         &mut warnings,
     ) {
         Ok(bytes) => bytes,
@@ -860,6 +1208,151 @@ fn export_scene(
     };
 
     write_report(target, &bytes, &warnings)
+}
+
+/// The finding recorded when no in-process capability can compare a preview
+/// with the original request, so the caller performs the inspection (FEAT-022).
+const INSPECTION_UNAVAILABLE: DiagnosticCode = DiagnosticCode::new("W_INSPECTION_UNAVAILABLE");
+
+/// Renders a whole-scene preview for inspection (FEAT-022).
+///
+/// The scene passes the same structural gate `validate` applies and is compiled
+/// exactly as `export` does, so a broken scene is reported before a preview is
+/// attempted and a render failure is reported before any inspection (NFR-011).
+/// The preview is written as PNG at the requested size, and the command reports
+/// its path and the size it rendered at. The command line has no inspection
+/// capability of its own: it renders the preview for a person or a model to
+/// compare against the request, and records that limitation rather than hiding
+/// it (FEAT-022).
+fn inspect_scene(
+    scene: &ProjectScene,
+    target: &Path,
+    width: Option<f64>,
+    height: Option<f64>,
+    density: Option<f64>,
+    background: Option<&str>,
+) -> Report {
+    // A background override is a colour value like any other, refused before
+    // the scene is read so no partial preview can be produced (FEAT-005).
+    if let Some(background) = background {
+        if !vectr_core::scene::is_color(background) {
+            let diagnostics = Diagnostics::from(Diagnostic::error(
+                INVALID_COLOR,
+                format!("`--background` is not a colour SVG supports: `{background}`"),
+            ));
+            return Report::failure(EXIT_USAGE, diagnostics_text(&diagnostics));
+        }
+    }
+
+    let parsed = match parse_project_scene(scene) {
+        Ok(parsed) => parsed,
+        Err((code, diagnostics)) => return Report::failure(code, diagnostics_text(&diagnostics)),
+    };
+    let assets = match ProjectAssets::load(scene.root(), &parsed) {
+        Ok(assets) => assets,
+        Err(diagnostics) => {
+            return Report::failure(
+                asset_exit_code(&diagnostics),
+                diagnostics_text(&diagnostics),
+            )
+        }
+    };
+
+    // Structural checks run first and gate the preview: a scene that fails them
+    // is reported and nothing is rendered, so the structural findings still
+    // stand even when no inspection can follow (FEAT-018, FEAT-022).
+    let structural = structural_findings(&parsed, &assets);
+    if structural.has_errors() {
+        return Report::failure(
+            dependency_exit_code(&structural, EXIT_INVALID_SCENE),
+            diagnostics_text(&structural),
+        );
+    }
+
+    let style = assets.style_context();
+    let model = match compile_with_style(&parsed, &style) {
+        Ok(model) => model,
+        Err(diagnostics) => {
+            return Report::failure(
+                dependency_exit_code(&diagnostics, EXIT_COMPILE),
+                diagnostics_text(&diagnostics),
+            )
+        }
+    };
+
+    let options = RasterOptions {
+        width,
+        height,
+        density,
+        background: background.map(str::to_string),
+    };
+    let export = match export_png_reporting(&model, &options) {
+        Ok(export) => export,
+        Err(diagnostics) => {
+            return Report::failure(
+                export_exit_code(&diagnostics),
+                diagnostics_text(&diagnostics),
+            )
+        }
+    };
+
+    // The preview is complete: report the structural and export findings, then
+    // note that the visual comparison with the request is the caller's.
+    let mut warnings = diagnostics_text(&structural);
+    warnings.push_str(&diagnostics_text(&model.diagnostics));
+    warnings.push_str(&diagnostics_text(&export.diagnostics));
+    warnings.push_str(&diagnostics_text(&Diagnostics::from(Diagnostic::warning(
+        INSPECTION_UNAVAILABLE,
+        "no inspection capability is available; the preview is rendered for a person or a model to compare against the request",
+    ))));
+
+    let size = png_size(&export.png);
+    write_preview(target, &export.png, &warnings, size)
+}
+
+/// The pixel size a PNG encodes in its IHDR header, as `(width, height)`.
+///
+/// The exporter wrote a well-formed PNG, so this reads the size it actually
+/// produced rather than re-deriving it from the requested options. A byte slice
+/// that is not a PNG header has no size.
+fn png_size(bytes: &[u8]) -> Option<(u32, u32)> {
+    const SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
+    if bytes.len() < 24 || &bytes[..8] != SIGNATURE || &bytes[12..16] != b"IHDR" {
+        return None;
+    }
+    let read = |offset: usize| {
+        u32::from_be_bytes([
+            bytes[offset],
+            bytes[offset + 1],
+            bytes[offset + 2],
+            bytes[offset + 3],
+        ])
+    };
+    Some((read(16), read(20)))
+}
+
+/// Writes an inspection preview, reporting the path and the size it rendered at.
+fn write_preview(target: &Path, bytes: &[u8], warnings: &str, size: Option<(u32, u32)>) -> Report {
+    match write_atomic(target, bytes) {
+        Ok(()) => {
+            let size = match size {
+                Some((width, height)) => format!("{width}x{height}"),
+                None => "unknown".to_string(),
+            };
+            Report {
+                code: EXIT_SUCCESS,
+                stdout: format!("wrote {}\npreview {size}\n", target.display()),
+                stderr: warnings.to_string(),
+            }
+        }
+        Err(error) => Report::failure(
+            EXIT_OUTPUT,
+            format!(
+                "{warnings}error: cannot write output `{}`: {error}\n",
+                target.display()
+            ),
+        ),
+    }
 }
 
 /// Renders one part on its own, framed to its own bounds (FEAT-031).
@@ -939,6 +1432,7 @@ fn render_part(
         height,
         density,
         background,
+        None,
         &mut warnings,
     ) {
         Ok(bytes) => bytes,
@@ -985,6 +1479,7 @@ fn output_frame(
 ///
 /// Shared by `export` and `render`, so both surface the same exporter warnings
 /// and classify a missing dependency the same way (C-004).
+#[allow(clippy::too_many_arguments)]
 fn export_bytes(
     model: &RenderModel,
     format: Format,
@@ -992,6 +1487,7 @@ fn export_bytes(
     height: Option<f64>,
     density: Option<f64>,
     background: Option<&str>,
+    profile: Option<Profile>,
     warnings: &mut String,
 ) -> Result<Vec<u8>, Report> {
     match format {
@@ -1023,6 +1519,24 @@ fn export_bytes(
                 Ok(export) => {
                     warnings.push_str(&diagnostics_text(&export.diagnostics));
                     Ok(export.png)
+                }
+                Err(diagnostics) => Err(Report::failure(
+                    export_exit_code(&diagnostics),
+                    diagnostics_text(&diagnostics),
+                )),
+            }
+        }
+        Format::Pdf => {
+            let options = PdfOptions {
+                page_width: width,
+                page_height: height,
+                profile: profile.map(Profile::name).map(str::to_string),
+                background: background.map(str::to_string),
+            };
+            match export_pdf_reporting(model, &options) {
+                Ok(export) => {
+                    warnings.push_str(&diagnostics_text(&export.diagnostics));
+                    Ok(export.pdf)
                 }
                 Err(diagnostics) => Err(Report::failure(
                     export_exit_code(&diagnostics),
@@ -1129,22 +1643,64 @@ fn default_output(scene_id: &str, extension: &str) -> PathBuf {
 
 /// Classifies an export failure: a missing dependency outranks a usage error,
 /// which outranks a defined size limit.
-fn export_exit_code(diagnostics: &Diagnostics) -> i32 {
+pub(crate) fn export_exit_code(diagnostics: &Diagnostics) -> i32 {
     let mut code = EXIT_COMPILE;
     for error in diagnostics.errors() {
         if error.code == png_export::RASTERIZER {
             return EXIT_DEPENDENCY;
         }
-        if error.code == svg_export::OPTIONS || error.code == png_export::OPTIONS {
+        if error.code == svg_export::OPTIONS
+            || error.code == png_export::OPTIONS
+            || error.code == pdf_export::OPTIONS
+            || error.code == pdf_export::PROFILE
+        {
             code = EXIT_USAGE;
         }
     }
     code
 }
 
+/// The report for a disabled PDF export, when the rollout flag is off.
+///
+/// PDF export is off by default (FEAT-014); the flag is read from the
+/// environment so the capability can be enabled without a rebuild.
+fn pdf_disabled() -> Option<Report> {
+    if enabled_value(std::env::var(ENABLE_PDF_ENV).ok().as_deref()) {
+        None
+    } else {
+        Some(Report::failure(
+            EXIT_USAGE,
+            format!("error: PDF export is disabled; set {ENABLE_PDF_ENV}=1 to enable it\n"),
+        ))
+    }
+}
+
+/// The report for a disabled icon-set export, when the rollout flag is off.
+///
+/// Icon-set mode is off by default (FEAT-025); the flag is read from the
+/// environment so the capability can be enabled without a rebuild.
+fn icon_set_disabled() -> Option<Report> {
+    if enabled_value(std::env::var(ENABLE_ICON_SET_ENV).ok().as_deref()) {
+        None
+    } else {
+        Some(Report::failure(
+            EXIT_USAGE,
+            format!("error: icon-set mode is disabled; set {ENABLE_ICON_SET_ENV}=1 to enable it\n"),
+        ))
+    }
+}
+
+/// Whether a flag value enables a gated capability.
+pub fn enabled_value(value: Option<&str>) -> bool {
+    matches!(
+        value.map(str::trim),
+        Some("1") | Some("true") | Some("TRUE") | Some("yes") | Some("on")
+    )
+}
+
 /// Classifies a project-asset loading failure: a missing font is a dependency,
 /// any other unreadable project asset is missing input.
-fn asset_exit_code(diagnostics: &Diagnostics) -> i32 {
+pub(crate) fn asset_exit_code(diagnostics: &Diagnostics) -> i32 {
     dependency_exit_code(diagnostics, EXIT_USAGE)
 }
 
@@ -1235,6 +1791,17 @@ mod tests {
     use super::*;
     use crate::testing::TempDir;
     use std::fs;
+
+    /// Serializes the tests that toggle the PDF rollout flag, which lives in the
+    /// process environment and is shared by every test in this binary.
+    static PDF_FLAG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Holds the PDF-flag lock for the duration of a test.
+    fn pdf_flag() -> std::sync::MutexGuard<'static, ()> {
+        PDF_FLAG_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     /// Writes a project whose `defaultSceneId` is `id`, holding one scene at
     /// `scenes/<id>.json`.
@@ -1343,9 +1910,50 @@ mod tests {
     }
 
     #[test]
-    fn a_reserved_command_is_reported() {
-        let error = parse_args(&["inspect"]).expect_err("reserved");
-        assert!(error.contains("reserved"), "{error}");
+    fn inspect_parses_the_scene_and_defaults_to_the_project_scene() {
+        assert_eq!(
+            parse_args(&["inspect"]).unwrap(),
+            Command::Inspect {
+                scene: None,
+                out: None,
+                width: None,
+                height: None,
+                density: None,
+                background: None,
+            }
+        );
+        assert_eq!(
+            parse_args(&[
+                "inspect",
+                "logo",
+                "--out",
+                "dist/logo.png",
+                "--width",
+                "640",
+                "--height",
+                "480",
+                "--density",
+                "2",
+                "--background",
+                "transparent",
+            ])
+            .unwrap(),
+            Command::Inspect {
+                scene: Some("logo".to_string()),
+                out: Some(PathBuf::from("dist/logo.png")),
+                width: Some(640.0),
+                height: Some(480.0),
+                density: Some(2.0),
+                background: Some("transparent".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn inspect_refuses_unknown_options_and_extra_positionals() {
+        assert!(parse_args(&["inspect", "a", "b"]).is_err());
+        assert!(parse_args(&["inspect", "logo", "--nope"]).is_err());
+        assert!(parse_args(&["inspect", "logo", "--format", "png"]).is_err());
     }
 
     #[test]
@@ -1507,6 +2115,7 @@ mod tests {
                 height: Some(64.0),
                 density: Some(2.0),
                 background: Some("transparent".to_string()),
+                profile: None,
             }
         );
     }
@@ -1514,7 +2123,62 @@ mod tests {
     #[test]
     fn export_requires_a_known_format() {
         assert!(parse_args(&["export", "scene.json"]).is_err());
-        assert!(parse_args(&["export", "scene.json", "--format", "pdf"]).is_err());
+        assert!(parse_args(&["export", "scene.json", "--format", "tiff"]).is_err());
+        assert_eq!(
+            parse_args(&["export", "scene.json", "--format", "pdf"]).unwrap(),
+            Command::Export {
+                scene: Some("scene.json".to_string()),
+                format: Format::Pdf,
+                out: None,
+                width: None,
+                height: None,
+                density: None,
+                background: None,
+                profile: None,
+            }
+        );
+    }
+
+    #[test]
+    fn export_parses_the_print_profile_in_both_flag_forms() {
+        let expected = |profile: Option<Profile>| Command::Export {
+            scene: Some("logo".to_string()),
+            format: Format::Pdf,
+            out: None,
+            width: None,
+            height: None,
+            density: None,
+            background: None,
+            profile,
+        };
+        assert_eq!(
+            parse_args(&["export", "logo", "--format", "pdf", "--profile", "cmyk"]).unwrap(),
+            expected(Some(Profile::Cmyk))
+        );
+        assert_eq!(
+            parse_args(&["export", "logo", "--format=pdf", "--profile=srgb"]).unwrap(),
+            expected(Some(Profile::Srgb))
+        );
+    }
+
+    #[test]
+    fn export_refuses_an_unknown_profile_or_a_missing_value() {
+        assert!(parse_args(&[
+            "export",
+            "logo",
+            "--format",
+            "pdf",
+            "--profile",
+            "adobe-rgb"
+        ])
+        .is_err());
+        assert!(parse_args(&["export", "logo", "--format", "pdf", "--profile"]).is_err());
+        assert!(parse_args(&["export", "logo", "--format", "pdf", "--profile="]).is_err());
+    }
+
+    #[test]
+    fn render_does_not_accept_pdf() {
+        assert!(parse_args(&["render", "badge", "--format", "pdf"]).is_err());
     }
 
     #[test]
@@ -1792,6 +2456,7 @@ mod tests {
                 height: None,
                 density: None,
                 background: None,
+                profile: None,
             },
             dir.path(),
         );
@@ -1815,12 +2480,207 @@ mod tests {
                 height: None,
                 density: None,
                 background: None,
+                profile: None,
             },
             dir.path(),
         );
         assert_eq!(report.code, EXIT_SUCCESS);
         let bytes = fs::read(&out).expect("reads the png");
         assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n", "PNG signature");
+    }
+
+    #[test]
+    fn pdf_export_is_gated_and_writes_a_vector_document() {
+        let _guard = pdf_flag();
+        let dir = TempDir::new("export-pdf");
+        write_at(&dir, "vectr.project.json", "{}");
+        write_at(&dir, "palettes/brand.json", PALETTE);
+        write_at(&dir, "scenes/brand.json", PALETTE_SCENE);
+        let out = dir.path().join("out.pdf");
+
+        // Off by default: a usage error and nothing written (FEAT-014).
+        std::env::remove_var(ENABLE_PDF_ENV);
+        let disabled = run_in(
+            Command::Export {
+                scene: Some("brand".to_string()),
+                format: Format::Pdf,
+                out: Some(out.clone()),
+                width: None,
+                height: None,
+                density: None,
+                background: None,
+                profile: None,
+            },
+            dir.path(),
+        );
+        assert_eq!(disabled.code, EXIT_USAGE, "{}", disabled.stderr);
+        assert!(!out.exists(), "nothing is written while the flag is off");
+
+        // Enabled: a vector PDF is written.
+        std::env::set_var(ENABLE_PDF_ENV, "1");
+        let report = run_in(
+            Command::Export {
+                scene: Some("brand".to_string()),
+                format: Format::Pdf,
+                out: Some(out.clone()),
+                width: None,
+                height: None,
+                density: None,
+                background: None,
+                profile: None,
+            },
+            dir.path(),
+        );
+        std::env::remove_var(ENABLE_PDF_ENV);
+        assert_eq!(report.code, EXIT_SUCCESS, "{}", report.stderr);
+        let bytes = fs::read(&out).expect("reads the pdf");
+        assert!(bytes.starts_with(b"%PDF-"), "a PDF signature");
+        assert!(bytes.ends_with(b"%%EOF\n"), "a complete document");
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(!text.contains("/Subtype /Image"), "vector only: {text}");
+        assert!(text.contains(" re\n"), "vector path operators: {text}");
+        assert!(
+            text.contains("1 0 0 rg"),
+            "the resolved fill colour: {text}"
+        );
+    }
+
+    #[test]
+    fn a_profile_on_a_non_pdf_export_is_a_usage_error() {
+        let dir = TempDir::new("export-profile-svg");
+        project(&dir, "scene-1", VALID_SCENE);
+        let out = dir.path().join("out.svg");
+        let report = run_in(
+            Command::Export {
+                scene: None,
+                format: Format::Svg,
+                out: Some(out.clone()),
+                width: None,
+                height: None,
+                density: None,
+                background: None,
+                profile: Some(Profile::Cmyk),
+            },
+            dir.path(),
+        );
+        assert_eq!(report.code, EXIT_USAGE);
+        assert!(
+            report.stderr.contains("applies only to PDF output"),
+            "{}",
+            report.stderr
+        );
+        assert!(
+            !out.exists(),
+            "no output is written for an inapplicable profile"
+        );
+    }
+
+    #[test]
+    fn a_pdf_export_honours_the_requested_profile() {
+        let _guard = pdf_flag();
+        let dir = TempDir::new("export-pdf-profile");
+        write_at(&dir, "vectr.project.json", "{}");
+        write_at(&dir, "palettes/brand.json", PALETTE);
+        write_at(&dir, "scenes/brand.json", PALETTE_SCENE);
+
+        std::env::set_var(ENABLE_PDF_ENV, "1");
+        let cmyk_out = dir.path().join("cmyk.pdf");
+        let cmyk = run_in(
+            Command::Export {
+                scene: Some("brand".to_string()),
+                format: Format::Pdf,
+                out: Some(cmyk_out.clone()),
+                width: None,
+                height: None,
+                density: None,
+                background: None,
+                profile: Some(Profile::Cmyk),
+            },
+            dir.path(),
+        );
+        let srgb_out = dir.path().join("srgb.pdf");
+        let srgb = run_in(
+            Command::Export {
+                scene: Some("brand".to_string()),
+                format: Format::Pdf,
+                out: Some(srgb_out.clone()),
+                width: None,
+                height: None,
+                density: None,
+                background: None,
+                profile: Some(Profile::Srgb),
+            },
+            dir.path(),
+        );
+        std::env::remove_var(ENABLE_PDF_ENV);
+
+        assert_eq!(cmyk.code, EXIT_SUCCESS, "{}", cmyk.stderr);
+        let cmyk_bytes = fs::read(&cmyk_out).expect("reads the pdf");
+        let cmyk_text = String::from_utf8_lossy(&cmyk_bytes);
+        assert!(
+            cmyk_text.contains(" k\n"),
+            "the CMYK colour operator: {cmyk_text}"
+        );
+        assert!(
+            !cmyk_text.contains(" rg\n"),
+            "no device RGB under CMYK: {cmyk_text}"
+        );
+
+        assert_eq!(srgb.code, EXIT_SUCCESS, "{}", srgb.stderr);
+        let srgb_bytes = fs::read(&srgb_out).expect("reads the pdf");
+        let srgb_text = String::from_utf8_lossy(&srgb_bytes);
+        assert!(
+            srgb_text.contains(" rg\n"),
+            "device RGB under sRGB: {srgb_text}"
+        );
+    }
+
+    #[test]
+    fn a_cmyk_profile_flattens_transparency_with_a_notice() {
+        let _guard = pdf_flag();
+        let dir = TempDir::new("export-pdf-flatten");
+        write_at(&dir, "vectr.project.json", "{}");
+        // An alpha token, so the paint carries transparency the CMYK space
+        // cannot represent (FEAT-005, FEAT-014).
+        write_at(
+            &dir,
+            "palettes/brand.json",
+            r##"{"id":"brand","projectId":"project","name":"Brand","tokens":[{"name":"accent","value":"#ff000080"}]}"##,
+        );
+        write_at(&dir, "scenes/brand.json", PALETTE_SCENE);
+        let out = dir.path().join("cmyk.pdf");
+
+        std::env::set_var(ENABLE_PDF_ENV, "1");
+        let report = run_in(
+            Command::Export {
+                scene: Some("brand".to_string()),
+                format: Format::Pdf,
+                out: Some(out.clone()),
+                width: None,
+                height: None,
+                density: None,
+                background: None,
+                profile: Some(Profile::Cmyk),
+            },
+            dir.path(),
+        );
+        std::env::remove_var(ENABLE_PDF_ENV);
+
+        assert_eq!(report.code, EXIT_SUCCESS, "{}", report.stderr);
+        assert!(
+            report.stderr.contains("W_PDF_TRANSPARENCY_FLATTENED"),
+            "the flattening is reported: {}",
+            report.stderr
+        );
+    }
+
+    #[test]
+    fn the_pdf_flag_recognizes_the_enabling_values() {
+        assert!(enabled_value(Some("1")));
+        assert!(enabled_value(Some("true")));
+        assert!(enabled_value(Some("on")));
+        assert!(!enabled_value(Some("0")));
+        assert!(!enabled_value(None));
     }
 
     #[test]
@@ -1836,6 +2696,7 @@ mod tests {
                 height: None,
                 density: Some(2.0),
                 background: None,
+                profile: None,
             },
             dir.path(),
         );
@@ -1856,6 +2717,7 @@ mod tests {
                 height: None,
                 density: None,
                 background: Some("not-a-colour".to_string()),
+                profile: None,
             },
             dir.path(),
         );
@@ -1883,6 +2745,7 @@ mod tests {
                 height: None,
                 density: None,
                 background: Some("red".to_string()),
+                profile: None,
             },
             dir.path(),
         );
@@ -1952,6 +2815,7 @@ mod tests {
                 height: None,
                 density: None,
                 background: None,
+                profile: None,
             },
             dir.path(),
         );
@@ -2483,5 +3347,448 @@ mod tests {
             !out.exists(),
             "no preview is written before the duplicate fails"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Whole-scene verification (FEAT-022)
+    // -----------------------------------------------------------------------
+
+    fn inspect(out: Option<PathBuf>, width: Option<f64>) -> Command {
+        Command::Inspect {
+            scene: None,
+            out,
+            width,
+            height: None,
+            density: None,
+            background: None,
+        }
+    }
+
+    #[test]
+    fn inspect_writes_a_preview_and_reports_its_size() {
+        let dir = TempDir::new("inspect-preview");
+        project(&dir, "scene-1", VALID_SCENE);
+        let out = dir.path().join("preview.png");
+        let report = run_in(inspect(Some(out.clone()), None), dir.path());
+
+        assert_eq!(report.code, EXIT_SUCCESS, "{}", report.stderr);
+        let bytes = fs::read(&out).expect("reads the preview");
+        assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n", "PNG signature");
+        assert!(
+            report.stdout.contains("preview 100x100"),
+            "the size is reported: {}",
+            report.stdout
+        );
+        assert!(
+            report.stderr.contains("W_INSPECTION_UNAVAILABLE"),
+            "the missing inspection capability is noted: {}",
+            report.stderr
+        );
+    }
+
+    #[test]
+    fn inspect_size_is_configurable() {
+        let dir = TempDir::new("inspect-size");
+        project(&dir, "scene-1", VALID_SCENE);
+        let report = run_in(
+            inspect(Some(dir.path().join("preview.png")), Some(200.0)),
+            dir.path(),
+        );
+        assert_eq!(report.code, EXIT_SUCCESS, "{}", report.stderr);
+        assert!(
+            report.stdout.contains("preview 200x200"),
+            "a requested size is honoured: {}",
+            report.stdout
+        );
+    }
+
+    #[test]
+    fn inspect_defaults_its_output_to_dist_scene_png() {
+        let dir = TempDir::new("inspect-default-out");
+        project(&dir, "scene-1", VALID_SCENE);
+        let report = run_in(inspect(None, None), dir.path());
+        assert_eq!(report.code, EXIT_SUCCESS, "{}", report.stderr);
+        assert!(
+            dir.path().join("dist/scene-1.png").exists(),
+            "the default output is dist/<scene>.png"
+        );
+    }
+
+    #[test]
+    fn inspect_runs_structural_checks_before_rendering() {
+        let dir = TempDir::new("inspect-structural");
+        project(&dir, "scene-1", INVALID_SCENE);
+        let out = dir.path().join("preview.png");
+        let report = run_in(inspect(Some(out.clone()), None), dir.path());
+
+        assert_eq!(report.code, EXIT_INVALID_SCENE);
+        assert!(report.stderr.contains("E_SCHEMA"), "{}", report.stderr);
+        assert!(!out.exists(), "no preview is written for an invalid scene");
+    }
+
+    #[test]
+    fn inspect_reports_structural_warnings_alongside_the_preview() {
+        // An unused palette token is a structural warning, not an error, so it
+        // is reported without blocking the preview (FEAT-018, FEAT-022).
+        let dir = TempDir::new("inspect-warning");
+        write_at(&dir, "vectr.project.json", r#"{"defaultSceneId":"brand"}"#);
+        write_at(
+            &dir,
+            "palettes/brand.json",
+            r##"{"id":"brand","projectId":"project","name":"Brand","tokens":[{"name":"accent","value":"#ff0000"},{"name":"unused","value":"#00ff00"}]}"##,
+        );
+        write_at(&dir, "scenes/brand.json", PALETTE_SCENE);
+
+        let out = dir.path().join("preview.png");
+        let report = run_in(inspect(Some(out.clone()), None), dir.path());
+        assert_eq!(report.code, EXIT_SUCCESS, "{}", report.stderr);
+        assert!(
+            report.stderr.contains("W_UNUSED_TOKEN"),
+            "the structural warning is reported: {}",
+            report.stderr
+        );
+        assert!(out.exists(), "the preview is still written");
+    }
+
+    #[test]
+    fn inspect_refuses_an_invalid_background_before_any_output() {
+        let dir = TempDir::new("inspect-background");
+        project(&dir, "scene-1", VALID_SCENE);
+        let out = dir.path().join("preview.png");
+        let report = run_in(
+            Command::Inspect {
+                scene: None,
+                out: Some(out.clone()),
+                width: None,
+                height: None,
+                density: None,
+                background: Some("not-a-colour".to_string()),
+            },
+            dir.path(),
+        );
+        assert_eq!(report.code, EXIT_USAGE);
+        assert!(
+            report.stderr.contains("E_INVALID_COLOR"),
+            "{}",
+            report.stderr
+        );
+        assert!(!out.exists(), "no preview is written for an invalid colour");
+    }
+
+    #[test]
+    fn inspect_reports_a_render_failure_before_inspection() {
+        // A size beyond the rasterizer's budget fails the render, so the
+        // failure is reported and no inspection follows (FEAT-022).
+        let dir = TempDir::new("inspect-render-failure");
+        project(&dir, "scene-1", VALID_SCENE);
+        let out = dir.path().join("preview.png");
+        let report = run_in(inspect(Some(out.clone()), Some(100_000.0)), dir.path());
+
+        assert_eq!(report.code, EXIT_COMPILE);
+        assert!(
+            report.stderr.contains("E_RASTER_LIMIT"),
+            "the render failure is reported: {}",
+            report.stderr
+        );
+        assert!(
+            !report.stderr.contains("W_INSPECTION_UNAVAILABLE"),
+            "inspection is not attempted after a render failure: {}",
+            report.stderr
+        );
+        assert!(!out.exists(), "no partial preview is written");
+    }
+
+    #[test]
+    fn inspect_re_renders_a_correction() {
+        let dir = TempDir::new("inspect-correction");
+        write_at(&dir, "vectr.project.json", r#"{"defaultSceneId":"s"}"#);
+        write_at(&dir, "palettes/brand.json", PALETTE);
+        write_at(&dir, "scenes/s.json", PALETTE_SCENE);
+        let out = dir.path().join("preview.png");
+        run_in(inspect(Some(out.clone()), None), dir.path());
+        let before = fs::read(&out).expect("reads the first preview");
+
+        let corrected = PALETTE_SCENE.replace(
+            r##""x": 0, "y": 0, "width": 10, "height": 10"##,
+            r##""x": 0, "y": 0, "width": 60, "height": 60"##,
+        );
+        write_at(&dir, "scenes/s.json", &corrected);
+        let report = run_in(inspect(Some(out.clone()), None), dir.path());
+        assert_eq!(report.code, EXIT_SUCCESS, "{}", report.stderr);
+        let after = fs::read(&out).expect("reads the second preview");
+        assert_ne!(before, after, "the preview reflects the correction");
+    }
+
+    // -----------------------------------------------------------------------
+    // Icon-set mode (FEAT-025)
+    // -----------------------------------------------------------------------
+
+    /// Serializes the tests that toggle the icon-set rollout flag, which lives
+    /// in the process environment and is shared by every test in this binary.
+    static ICON_SET_FLAG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Holds the icon-set-flag lock for the duration of a test.
+    fn icon_set_flag() -> std::sync::MutexGuard<'static, ()> {
+        ICON_SET_FLAG_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// A definition whose single rect is filled from the palette's `ink` token.
+    fn icon_definition(id: &str, width: f64) -> String {
+        format!(
+            r##"{{"id":"{id}","projectId":"project","name":"{id}","parameters":[],"origin":{{"x":0,"y":0}},"elements":[{{"id":"{id}-body","definitionId":"{id}","order":0,"kind":"rect","geometry":{{"x":0,"y":0,"width":{width},"height":10}},"transform":{{"translateX":0,"translateY":0,"rotate":0,"scaleX":1,"scaleY":1}},"fill":{{"kind":"token","ref":"ink"}},"opacity":1,"visible":true}}]}}"##
+        )
+    }
+
+    /// A project with a palette, a stroke profile, two icon definitions, and an
+    /// icon set placing both under a shared canvas (FEAT-025).
+    fn icon_set_project(dir: &TempDir) {
+        write_at(
+            dir,
+            "vectr.project.json",
+            r#"{"defaultPaletteId":"brand","defaultRecipeId":"flat"}"#,
+        );
+        write_at(
+            dir,
+            "palettes/brand.json",
+            r##"{"id":"brand","projectId":"project","name":"Brand","tokens":[{"name":"ink","value":"#111111"}]}"##,
+        );
+        write_at(
+            dir,
+            "strokes/line.json",
+            r#"{"id":"line","projectId":"project","name":"Line","width":2,"cap":"butt","join":"miter"}"#,
+        );
+        write_at(
+            dir,
+            "recipes/flat.json",
+            r#"{"id":"flat","projectId":"project","name":"flat","parameters":{}}"#,
+        );
+        // A gradient the project carries but no icon references; an icon renders
+        // in isolation, so it must not be reported as unused (FEAT-025).
+        write_at(
+            dir,
+            "gradients/halo.json",
+            r##"{"id":"halo","projectId":"project","name":"Halo","type":"linear","stops":[{"offset":0,"token":"ink"},{"offset":1,"token":"ink"}]}"##,
+        );
+        write_at(dir, "definitions/plus.json", &icon_definition("plus", 10.0));
+        write_at(
+            dir,
+            "definitions/minus.json",
+            &icon_definition("minus", 8.0),
+        );
+        write_at(
+            dir,
+            "icon-sets/ui.json",
+            r##"{"id":"ui","projectId":"project","name":"UI","canvas":{"width":24,"height":24,"background":"transparent"},"paletteId":"brand","strokeProfileId":"line","namePattern":"icon-{name}","icons":[{"name":"plus","definitionRef":"plus"},{"name":"minus","definitionRef":"minus"}]}"##,
+        );
+    }
+
+    #[test]
+    fn icon_set_parses_the_action_and_defaults_to_svg() {
+        assert_eq!(
+            parse_args(&["icon-set", "export"]).unwrap(),
+            Command::IconSetExport {
+                set: None,
+                format: Format::Svg,
+                out_dir: None,
+            }
+        );
+    }
+
+    #[test]
+    fn icon_set_parses_every_option() {
+        assert_eq!(
+            parse_args(&[
+                "icon-set",
+                "export",
+                "ui",
+                "--format",
+                "png",
+                "--out-dir",
+                "dist/icons"
+            ])
+            .unwrap(),
+            Command::IconSetExport {
+                set: Some("ui".to_string()),
+                format: Format::Png,
+                out_dir: Some(PathBuf::from("dist/icons")),
+            }
+        );
+        assert_eq!(
+            parse_args(&["icon-set", "export", "--format=png", "--out-dir=out"]).unwrap(),
+            parse_args(&["icon-set", "export", "--format", "png", "--out-dir", "out"]).unwrap()
+        );
+    }
+
+    #[test]
+    fn icon_set_refuses_an_unknown_action_or_option() {
+        assert!(parse_args(&["icon-set"]).is_err());
+        assert!(parse_args(&["icon-set", "frobnicate"]).is_err());
+        assert!(parse_args(&["icon-set", "export", "--nope"]).is_err());
+        assert!(parse_args(&["icon-set", "export", "a", "b"]).is_err());
+        assert!(parse_args(&["icon-set", "export", "--format", "tiff"]).is_err());
+    }
+
+    #[test]
+    fn icon_set_export_is_gated_off_by_default() {
+        let _guard = icon_set_flag();
+        let dir = TempDir::new("icon-set-gated");
+        icon_set_project(&dir);
+        let out_dir = dir.path().join("icons");
+
+        std::env::remove_var(ENABLE_ICON_SET_ENV);
+        let report = run_in(
+            Command::IconSetExport {
+                set: Some("ui".to_string()),
+                format: Format::Svg,
+                out_dir: Some(out_dir.clone()),
+            },
+            dir.path(),
+        );
+        assert_eq!(report.code, EXIT_USAGE, "{}", report.stderr);
+        assert!(
+            !out_dir.exists(),
+            "nothing is written while the flag is off"
+        );
+    }
+
+    #[test]
+    fn icon_set_export_writes_each_icon_as_a_named_file() {
+        let _guard = icon_set_flag();
+        let dir = TempDir::new("icon-set-export");
+        icon_set_project(&dir);
+        let out_dir = dir.path().join("icons");
+
+        std::env::set_var(ENABLE_ICON_SET_ENV, "1");
+        let report = run_in(
+            Command::IconSetExport {
+                set: Some("ui".to_string()),
+                format: Format::Svg,
+                out_dir: Some(out_dir.clone()),
+            },
+            dir.path(),
+        );
+        std::env::remove_var(ENABLE_ICON_SET_ENV);
+
+        assert_eq!(report.code, EXIT_SUCCESS, "{}", report.stderr);
+        let plus = fs::read_to_string(out_dir.join("icon-plus.svg")).expect("plus icon");
+        let minus = fs::read_to_string(out_dir.join("icon-minus.svg")).expect("minus icon");
+        for svg in [&plus, &minus] {
+            assert!(
+                svg.contains("viewBox=\"0 0 24 24\""),
+                "shared canvas: {svg}"
+            );
+            assert!(svg.contains("#111111"), "shared palette: {svg}");
+        }
+        assert!(report.stdout.contains("icon-plus.svg"), "{}", report.stdout);
+        assert!(
+            report.stdout.contains("icon-minus.svg"),
+            "{}",
+            report.stdout
+        );
+        assert!(
+            !report.stderr.contains("W_UNUSED_DEFINITION"),
+            "an icon is rendered in isolation, so the set's other definitions are not unused: {}",
+            report.stderr
+        );
+        assert!(
+            !report.stderr.contains("W_UNUSED_GRADIENT"),
+            "an icon is rendered in isolation, so the set's other gradients are not unused: {}",
+            report.stderr
+        );
+    }
+
+    #[test]
+    fn icon_set_export_uses_the_only_set_when_none_is_named() {
+        let _guard = icon_set_flag();
+        let dir = TempDir::new("icon-set-only");
+        icon_set_project(&dir);
+
+        std::env::set_var(ENABLE_ICON_SET_ENV, "1");
+        let report = run_in(
+            Command::IconSetExport {
+                set: None,
+                format: Format::Svg,
+                out_dir: Some(dir.path().join("icons")),
+            },
+            dir.path(),
+        );
+        std::env::remove_var(ENABLE_ICON_SET_ENV);
+        assert_eq!(report.code, EXIT_SUCCESS, "{}", report.stderr);
+        assert!(dir.path().join("icons/icon-plus.svg").exists());
+    }
+
+    #[test]
+    fn icon_set_export_reports_a_set_identifier_no_document_provides() {
+        let _guard = icon_set_flag();
+        let dir = TempDir::new("icon-set-missing");
+        icon_set_project(&dir);
+
+        std::env::set_var(ENABLE_ICON_SET_ENV, "1");
+        let report = run_in(
+            Command::IconSetExport {
+                set: Some("absent".to_string()),
+                format: Format::Svg,
+                out_dir: Some(dir.path().join("icons")),
+            },
+            dir.path(),
+        );
+        std::env::remove_var(ENABLE_ICON_SET_ENV);
+        assert_eq!(report.code, EXIT_USAGE);
+        assert!(report.stderr.contains("absent"), "{}", report.stderr);
+        assert!(!dir.path().join("icons").exists());
+    }
+
+    #[test]
+    fn icon_set_export_reports_a_duplicate_icon_name_before_writing() {
+        let _guard = icon_set_flag();
+        let dir = TempDir::new("icon-set-duplicate");
+        icon_set_project(&dir);
+        write_at(
+            &dir,
+            "icon-sets/ui.json",
+            r##"{"id":"ui","projectId":"project","name":"UI","canvas":{"width":24,"height":24,"background":"transparent"},"paletteId":"brand","strokeProfileId":"line","icons":[{"name":"plus","definitionRef":"plus"},{"name":"plus","definitionRef":"minus"}]}"##,
+        );
+
+        std::env::set_var(ENABLE_ICON_SET_ENV, "1");
+        let report = run_in(
+            Command::IconSetExport {
+                set: Some("ui".to_string()),
+                format: Format::Svg,
+                out_dir: Some(dir.path().join("icons")),
+            },
+            dir.path(),
+        );
+        std::env::remove_var(ENABLE_ICON_SET_ENV);
+        assert_eq!(report.code, EXIT_USAGE);
+        assert!(
+            report.stderr.contains("E_DUPLICATE_NAME"),
+            "{}",
+            report.stderr
+        );
+        assert!(!dir.path().join("icons").exists());
+    }
+
+    #[test]
+    fn icon_set_export_writes_a_png_per_icon() {
+        let _guard = icon_set_flag();
+        let dir = TempDir::new("icon-set-png");
+        icon_set_project(&dir);
+        let out_dir = dir.path().join("icons");
+
+        std::env::set_var(ENABLE_ICON_SET_ENV, "1");
+        let report = run_in(
+            Command::IconSetExport {
+                set: Some("ui".to_string()),
+                format: Format::Png,
+                out_dir: Some(out_dir.clone()),
+            },
+            dir.path(),
+        );
+        std::env::remove_var(ENABLE_ICON_SET_ENV);
+        assert_eq!(report.code, EXIT_SUCCESS, "{}", report.stderr);
+        let bytes = fs::read(out_dir.join("icon-plus.png")).expect("plus png");
+        assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n", "PNG signature");
     }
 }

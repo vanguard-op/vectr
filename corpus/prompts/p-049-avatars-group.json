@@ -1,0 +1,9 @@
+{
+  "id": "p-049-avatars-group",
+  "corpusId": "vectr-authoring",
+  "intent": "Three user avatars grouped together.",
+  "text": "Draw three user avatars grouped together.",
+  "order": 48,
+  "complexity": "moderate",
+  "qualities": []
+}

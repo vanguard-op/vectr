@@ -331,3 +331,28 @@ fn validation_is_deterministic() {
     assert_eq!(stdout(&first), stdout(&second), "NFR-010");
     assert_eq!(stderr(&first), stderr(&second));
 }
+
+#[test]
+fn two_elements_sharing_an_accessible_name_are_refused_with_their_location() {
+    let dir = project("validate-duplicate-name");
+    let mut first = rect("r1", 0, 0.0, 0.0, 10.0, 10.0);
+    first["accessibleName"] = json!("Same");
+    let mut second = rect("r2", 1, 20.0, 0.0, 10.0, 10.0);
+    second["accessibleName"] = json!("Same");
+    let id = write_scene_as(&dir, "duplicate", scene(vec![first, second]));
+
+    let (exit, findings, _) = validate_json(&dir, &id);
+    assert_eq!(exit, 1);
+    assert!(
+        codes(&findings).contains(&"E_DUPLICATE_NAME"),
+        "a duplicate accessible name is a validation error (FEAT-026): {findings:?}"
+    );
+    let finding = findings
+        .iter()
+        .find(|finding| finding["code"] == "E_DUPLICATE_NAME")
+        .expect("an E_DUPLICATE_NAME finding");
+    assert_eq!(
+        finding["location"]["elementId"], "r2",
+        "the finding is located on the later element: {finding}"
+    );
+}

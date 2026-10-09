@@ -8,9 +8,11 @@
 #     crates/vectr-core/src/scene/version.rs (`CURRENT_FORMAT_VERSION`).
 #
 # The derived copies are the crate dependency pins, the acceptance crate and
-# both lockfiles, the README, the agent skill, and both copies of the authoring
-# guide. Bumping a release means editing the one source and running this script,
-# never editing the copies by hand.
+# both lockfiles, the README, the agent skill, its on-demand references
+# (references/*.md) and its worked examples (examples/*.md), and the crate's
+# minimal agent guide (the scaffold's AGENTS.md template). Bumping a release
+# means editing the one source and running this script, never editing the copies
+# by hand.
 #
 # Usage:
 #   scripts/sync-version.sh          # rewrite the derived copies to match
@@ -31,7 +33,10 @@
 # The format version also appears in the shipped skill's scene template and its
 # evaluation prompts (skills/vectr/assets, skills/vectr/evals), which this
 # script does not own; the acceptance suite validates the template against the
-# built tool, so a stale copy is caught there.
+# built tool, so a stale copy is caught there. The skill's worked examples
+# (skills/vectr/examples/*.md) are scenes this script does own and sweep, so a
+# format-version bump reaches the shipped examples rather than leaving one that
+# no longer validates against the built tool.
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
@@ -138,15 +143,20 @@ apply_lock() {
 # --- release version -------------------------------------------------------
 
 # The explicit version on a path dependency keeps it from registering as a `*`
-# wildcard (NFR-020) but must track the workspace version, so a published crate
-# requires the release it ships with.
+# wildcard (NFR-020) but must track the workspace version, so a crate requires
+# the release it ships with. The evaluation harness is maintainer-only and not
+# published (its manifest sets `publish = false`), but it still pins the engine
+# and the project loader it drives, so its pins track the release too: a bump
+# that missed it would leave the harness building against the previous release.
+# Every crate manifest is swept rather than a hand-kept list, so a crate added
+# later cannot fall outside the sync; a manifest that references neither crate
+# is a no-op.
 p_manifest_core='s|(vectr-core = .*version = ")[^"]*(")|\1'"$version"'\2|'
 p_manifest_project='s|(vectr-project = .*version = ")[^"]*(")|\1'"$version"'\2|'
 
-for manifest in crates/vectr-cli/Cargo.toml crates/vectr-mcp/Cargo.toml; do
+for manifest in crates/*/Cargo.toml; do
   apply "$manifest" -e "$p_manifest_core" -e "$p_manifest_project"
 done
-apply crates/vectr-project/Cargo.toml -e "$p_manifest_core"
 
 # The acceptance crate is its own workspace and names its own version.
 apply tests/acceptance/Cargo.toml -e 's|^(version = ")[^"]*(")|\1'"$version"'\2|'
@@ -164,12 +174,18 @@ apply skills/vectr/SKILL.md \
 p_guide_targets='s|(This guide targets `vectr` )[^ ]*|\1'"$version"'|'
 p_guide_prints='s|(# prints: vectr )[^ ]*|\1'"$version"'|'
 p_guide_written='s|(versions: this guide was written for )[^,]*|\1'"$version"'|'
-apply skills/vectr/references/authoring-guide.md \
-  -e "$p_guide_targets" -e "$p_guide_prints" -e "$p_guide_written"
-# The crate carries its own copy of the guide so it packages standalone; a test
-# keeps it byte-identical to the skill's reference (FEAT-020).
-apply crates/vectr-project/references/authoring-guide.md \
-  -e "$p_guide_targets" -e "$p_guide_prints" -e "$p_guide_written"
+# The skill's depth lives in its on-demand references rather than one guide
+# (FEAT-020, D-042), so a release-version literal in any of them must be synced
+# too. A reference that carries no literal is a no-op, so the whole directory is
+# swept rather than a hand-kept list a new reference could fall outside of.
+for reference in skills/vectr/references/*.md; do
+  apply "$reference" \
+    -e "$p_guide_targets" -e "$p_guide_prints" -e "$p_guide_written"
+done
+# The crate carries the minimal agent guide the scaffold writes as AGENTS.md,
+# not the skill's full authoring guide: it states the tool version only in its
+# target line, so only that pattern applies (FEAT-020, D-043).
+apply crates/vectr-project/references/authoring-guide.md -e "$p_guide_targets"
 
 apply scripts/package-skill.sh \
   -e 's|(#   scripts/package-skill.sh dist )[^ ]*|\1'"$version"'|'
@@ -179,8 +195,8 @@ apply_lock tests/acceptance/Cargo.lock "vectr-acceptance vectr-core"
 
 # --- scene format version --------------------------------------------------
 
-# The guides and the skill state the format version in prose and in the worked
-# scenes; the README's scene example carries it too.
+# The skill's entry point and its on-demand references state the format version
+# in prose and in the worked scenes; the README's scene example carries it too.
 f_json='s|("formatVersion": ")[^"]*(")|\1'"$format_version"'\2|g'
 f_fv_quoted='s|(`formatVersion` `")[^"]*(")|\1'"$format_version"'\2|g'
 f_xattr='s|(`x-vectr-formatVersion: ")[^"]*(")|\1'"$format_version"'\2|g'
@@ -190,10 +206,31 @@ f_scene='s|(scene `formatVersion` `)[^`]*`|\1'"$format_version"'`|g'
 
 apply README.md -e "$f_json"
 apply skills/vectr/SKILL.md -e "$f_fv_quoted" -e "$f_scene"
-apply skills/vectr/references/authoring-guide.md \
-  -e "$f_json" -e "$f_fv_quoted" -e "$f_xattr" -e "$f_mustbe" -e "$f_isnot" -e "$f_scene"
-apply crates/vectr-project/references/authoring-guide.md \
-  -e "$f_json" -e "$f_fv_quoted" -e "$f_xattr" -e "$f_mustbe" -e "$f_isnot" -e "$f_scene"
+
+# Every on-demand reference in the skill is covered, not just the procedure:
+# the split moved the worked scenes and the format-version statements out of the
+# guide into separate references (FEAT-020, D-042), so a format-version literal
+# in any of them must be synced too. A reference that carries no literal is a
+# no-op, so the whole directory is swept rather than a hand-kept list a new
+# reference could fall outside of.
+for reference in skills/vectr/references/*.md; do
+  apply "$reference" \
+    -e "$f_json" -e "$f_fv_quoted" -e "$f_xattr" -e "$f_mustbe" -e "$f_isnot" -e "$f_scene"
+done
+
+# The skill's worked examples are scenes under `examples/`, one file each
+# (FEAT-020, D-047); a scene states the format version, so a bump must reach
+# them or a shipped example stops validating against the built tool. The
+# examples ship as markdown documents that embed the scene, so the JSON literal
+# inside each is swept; a definition example carries no format-version literal,
+# so the whole directory is a no-op for it and stays correct as examples are
+# added.
+for example in skills/vectr/examples/*.md; do
+  apply "$example" -e "$f_json"
+done
+# The minimal agent guide states the format version only in its target line
+# ("scene `formatVersion` `X`"), so only that pattern applies to it.
+apply crates/vectr-project/references/authoring-guide.md -e "$f_scene"
 
 if (( status != 0 )); then
   echo "version sync check failed: run scripts/sync-version.sh and commit the result" >&2

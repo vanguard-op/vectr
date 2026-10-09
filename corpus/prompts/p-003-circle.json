@@ -1,0 +1,9 @@
+{
+  "id": "p-003-circle",
+  "corpusId": "vectr-authoring",
+  "intent": "A plain filled circle.",
+  "text": "Draw a filled circle.",
+  "order": 2,
+  "complexity": "simple",
+  "qualities": []
+}

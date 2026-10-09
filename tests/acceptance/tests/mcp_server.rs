@@ -1,14 +1,19 @@
-//! Acceptance tests for the MCP server (FEAT-019, FEAT-031, C-005).
+//! Acceptance tests for the MCP server (FEAT-019, FEAT-022, FEAT-031, C-005).
 //!
 //! Drives the built `vectr-mcp` binary as an agent host would. Over stdio: the
-//! server publishes its five tools with input and output schemas; a scene is
+//! server publishes its six tools with input and output schemas; a scene is
 //! addressed exactly as the command line addresses it — by its identifier among
 //! a project's scenes, or the project's default when none is named — and an
 //! inline draft is accepted instead of a project scene without ever becoming or
 //! reading the default; a valid scene compiles and renders, an invalid scene or
 //! an unsupported capability is a structured error, a call naming both a scene
 //! and a draft is malformed, the server refuses to leave the filesystem scope,
-//! and it leaves no partial or temporary output behind. The render-part tool
+//! and it leaves no partial or temporary output behind. The inspect tool renders
+//! a whole-scene preview at a configurable size for a person or a model to
+//! compare against the request, notes that the comparison is the caller's, and
+//! gates the preview on the same structural checks validation runs (FEAT-022).
+//! The render tool writes PDF as well as SVG and PNG, but only when the
+//! `enable_pdf_export` rollout flag is enabled (FEAT-014). The render-part tool
 //! previews one part on its own — a reusable definition or a named element
 //! subtree, each addressed by its identifier — framed to its own bounds or to a
 //! requested size, with the part's resolved style (FEAT-031). Over its opt-in
@@ -115,7 +120,7 @@ fn render_part(dir: &TempDir, arguments: Value) -> Value {
 }
 
 #[test]
-fn an_mcp_client_lists_five_tools_with_their_schemas_and_the_server_version() {
+fn an_mcp_client_lists_six_tools_with_their_schemas_and_the_server_version() {
     let dir = TempDir::new("mcp-list");
     let run = run_mcp_session(
         dir.path(),
@@ -158,7 +163,14 @@ fn an_mcp_client_lists_five_tools_with_their_schemas_and_the_server_version() {
         .collect();
     assert_eq!(
         names,
-        vec!["validate", "compile", "render", "render-part", "schema"]
+        vec![
+            "validate",
+            "compile",
+            "render",
+            "inspect",
+            "render-part",
+            "schema"
+        ]
     );
     for tool in tools {
         assert!(
@@ -179,7 +191,7 @@ fn an_mcp_client_lists_five_tools_with_their_schemas_and_the_server_version() {
     for tool in tools.iter().filter(|tool| {
         matches!(
             tool["name"].as_str(),
-            Some("validate" | "compile" | "render")
+            Some("validate" | "compile" | "render" | "inspect")
         )
     }) {
         let properties = &tool["inputSchema"]["properties"];
@@ -200,6 +212,44 @@ fn an_mcp_client_lists_five_tools_with_their_schemas_and_the_server_version() {
                 .any(|name| name == "scene" || name == "draft"),
             "{} does not require a scene or draft, so the default applies: {tool}",
             tool["name"]
+        );
+    }
+
+    // The inspect tool takes a preview format (SVG or PNG) and a configurable
+    // size, and reports the size it rendered at so a preview too small to judge
+    // can be raised (FEAT-022).
+    let inspect = tools
+        .iter()
+        .find(|tool| tool["name"] == "inspect")
+        .expect("the inspect tool is published");
+    let properties = &inspect["inputSchema"]["properties"];
+    for name in ["format", "out", "width", "height", "density", "background"] {
+        assert!(
+            properties.get(name).is_some(),
+            "inspect publishes `{name}`: {inspect}"
+        );
+    }
+    assert_eq!(
+        properties["format"]["enum"],
+        json!(["svg", "png"]),
+        "inspection is a preview image, not a PDF: {inspect}"
+    );
+    let required: Vec<&str> = inspect["inputSchema"]["required"]
+        .as_array()
+        .expect("required")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert_eq!(required, vec!["format"]);
+    let size = &inspect["outputSchema"]["properties"]["size"];
+    assert!(size["properties"]["width"].is_object(), "{inspect}");
+    assert!(size["properties"]["height"].is_object(), "{inspect}");
+    for name in ["path", "format", "size", "diagnostics"] {
+        assert!(
+            inspect["outputSchema"]["required"]
+                .as_array()
+                .is_some_and(|required| required.iter().any(|field| field == name)),
+            "inspect's result requires `{name}`: {inspect}"
         );
     }
 
@@ -736,7 +786,7 @@ fn an_unsupported_capability_is_a_structured_error_and_the_server_survives() {
     let tools = response(&run, 2)["result"]["tools"]
         .as_array()
         .map(Vec::len);
-    assert_eq!(tools, Some(5));
+    assert_eq!(tools, Some(6));
 }
 
 #[test]
@@ -844,6 +894,391 @@ fn no_partial_or_temporary_output_is_left_behind() {
         .filter(|name| name.contains(".tmp-"))
         .collect();
     assert!(leftovers.is_empty(), "no temp files remain: {leftovers:?}");
+}
+
+// ---------------------------------------------------------------------------
+// Render-in-the-loop inspection over MCP (FEAT-022, C-005)
+// ---------------------------------------------------------------------------
+
+/// Runs one inspect call against an inline draft and returns the tool result.
+fn inspect_draft(dir: &TempDir, arguments: Value) -> Value {
+    let run = run_mcp_session(dir.path(), &[], &[mcp_tool_call(1, "inspect", arguments)]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    response(&run, 1)["result"].clone()
+}
+
+/// Inspects a scene document as SVG and returns the written preview text.
+fn inspect_svg(dir: &TempDir, document: Value, out: &str) -> String {
+    let result = inspect_draft(
+        dir,
+        json!({ "draft": document, "format": "svg", "out": out }),
+    );
+    assert_eq!(result["isError"], false, "{result}");
+    let path = result["structuredContent"]["path"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the written path is returned: {result}"));
+    std::fs::read_to_string(path).expect("the preview was written")
+}
+
+/// A compiled scene inspected over MCP yields a preview image, and the tool
+/// reports where it was written and the size it came out at (FEAT-022).
+#[test]
+fn an_inspected_scene_yields_a_preview_image_through_mcp() {
+    let dir = TempDir::new("mcp-inspect-png");
+    let result = inspect_draft(
+        &dir,
+        json!({ "draft": scene_with_rects(1), "format": "png", "out": "dist/preview.png" }),
+    );
+    assert_eq!(result["isError"], false, "{result}");
+    let body = &result["structuredContent"];
+    assert_eq!(body["format"], "png");
+    assert_eq!(body["size"]["width"], 400.0, "{body}");
+    assert_eq!(body["size"]["height"], 400.0, "{body}");
+    let path = body["path"].as_str().expect("the written path is returned");
+    let bytes = std::fs::read(path).expect("the preview was written");
+    assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n", "a PNG preview");
+}
+
+/// The preview can be an SVG, so an inspecting model reads the vector form
+/// (FEAT-022).
+#[test]
+fn an_inspected_scene_yields_an_svg_preview_through_mcp() {
+    let dir = TempDir::new("mcp-inspect-svg");
+    let document: Value = serde_json::from_str(&scene_with_rects(1)).expect("a scene object");
+    let svg = inspect_svg(&dir, document, "dist/preview.svg");
+    assert!(svg.contains("<svg"), "{svg}");
+    assert!(svg.contains("</svg>"), "{svg}");
+    assert!(svg.contains("<rect"), "the scene's element is drawn: {svg}");
+}
+
+/// The server has no inspection capability of its own, so it reports that the
+/// visual comparison with the request is the caller's rather than hiding the
+/// limitation (FEAT-022).
+#[test]
+fn inspection_reports_that_the_visual_comparison_is_the_callers() {
+    let dir = TempDir::new("mcp-inspect-note");
+    let result = inspect_draft(
+        &dir,
+        json!({ "draft": scene_with_rects(1), "format": "png" }),
+    );
+    assert_eq!(result["isError"], false, "{result}");
+    let diagnostics = result["structuredContent"]["diagnostics"]
+        .as_array()
+        .expect("diagnostics");
+    assert!(
+        diagnostics.iter().any(|finding| {
+            finding["code"] == "W_INSPECTION_UNAVAILABLE"
+                && finding["message"]
+                    .as_str()
+                    .is_some_and(|message| !message.is_empty())
+        }),
+        "the missing inspection capability is noted: {result}"
+    );
+}
+
+/// A preview too small to judge can be raised, and PNG density composes with the
+/// requested size (FEAT-022).
+#[test]
+fn a_preview_too_small_to_judge_can_be_enlarged_through_mcp() {
+    let dir = TempDir::new("mcp-inspect-size");
+    let run = run_mcp_session(
+        dir.path(),
+        &[],
+        &[
+            mcp_tool_call(
+                1,
+                "inspect",
+                json!({ "draft": scene_with_rects(1), "format": "png", "width": 800.0 }),
+            ),
+            mcp_tool_call(
+                2,
+                "inspect",
+                json!({ "draft": scene_with_rects(1), "format": "png", "width": 100.0, "density": 2.0 }),
+            ),
+        ],
+    );
+    assert_eq!(run.code, 0, "{}", run.stderr);
+
+    let enlarged = &response(&run, 1)["result"];
+    assert_eq!(enlarged["isError"], false, "{:?}", run.responses);
+    assert_eq!(enlarged["structuredContent"]["size"]["width"], 800.0);
+    assert_eq!(enlarged["structuredContent"]["size"]["height"], 800.0);
+
+    let dense = &response(&run, 2)["result"];
+    assert_eq!(dense["isError"], false, "{:?}", run.responses);
+    assert_eq!(
+        dense["structuredContent"]["size"]["width"], 200.0,
+        "density multiplies the requested size: {:?}",
+        run.responses
+    );
+    assert_eq!(dense["structuredContent"]["size"]["height"], 200.0);
+}
+
+/// A scene that fails validation, or references an asset that resolves nowhere,
+/// is reported before any inspection is attempted and nothing is written
+/// (FEAT-022, NFR-011).
+#[test]
+fn an_unrenderable_scene_is_reported_before_inspection_is_attempted() {
+    let dir = TempDir::new("mcp-inspect-failure");
+    let mut invalid: Value = serde_json::from_str(&scene_with_rects(1)).expect("a scene");
+    invalid["elements"][0]["opacity"] = json!(2);
+    let mut unresolved: Value = serde_json::from_str(&scene_with_rects(1)).expect("a scene");
+    unresolved["elements"][0]["stroke"] = stroke("outline", "accent");
+
+    let run = run_mcp_session(
+        dir.path(),
+        &[],
+        &[
+            mcp_tool_call(
+                1,
+                "inspect",
+                json!({ "draft": invalid, "format": "png", "out": "dist/invalid.png" }),
+            ),
+            mcp_tool_call(
+                2,
+                "inspect",
+                json!({ "draft": unresolved, "format": "png", "out": "dist/unresolved.png" }),
+            ),
+        ],
+    );
+    assert_eq!(run.code, 0, "{}", run.stderr);
+
+    let invalid = &response(&run, 1)["result"];
+    assert_eq!(invalid["isError"], true, "{:?}", run.responses);
+    assert_eq!(invalid["structuredContent"]["code"], "E_SCHEMA");
+    assert!(
+        invalid["structuredContent"]["diagnostics"]
+            .as_array()
+            .is_some_and(|findings| !findings.is_empty()),
+        "the findings are reported: {invalid}"
+    );
+    assert!(
+        invalid["structuredContent"]["location"].is_object(),
+        "the failure is located: {invalid}"
+    );
+    assert!(
+        !dir.path().join("dist/invalid.png").exists(),
+        "nothing is written for an invalid scene"
+    );
+
+    let unresolved = &response(&run, 2)["result"];
+    assert_eq!(unresolved["isError"], true, "{:?}", run.responses);
+    assert_eq!(
+        unresolved["structuredContent"]["code"],
+        "E_UNDEFINED_STROKE"
+    );
+    assert!(
+        !dir.path().join("dist/unresolved.png").exists(),
+        "nothing is written for an unresolved reference"
+    );
+}
+
+/// A corrected scene re-inspected reflects the correction: the same preview path
+/// shows the edited geometry (FEAT-022).
+#[test]
+fn a_corrected_scene_re_inspected_reflects_the_correction_through_mcp() {
+    let dir = TempDir::new("mcp-inspect-correction");
+    let before = inspect_svg(
+        &dir,
+        scene_with(vec![rect("r1", 0, 0.0, 0.0, 10.0, 10.0)], None, None),
+        "dist/preview.svg",
+    );
+    assert!(
+        before.contains("width=\"10\""),
+        "the first preview shows the original geometry: {before}"
+    );
+
+    let after = inspect_svg(
+        &dir,
+        scene_with(vec![rect("r1", 0, 0.0, 0.0, 120.0, 10.0)], None, None),
+        "dist/preview.svg",
+    );
+    assert!(
+        after.contains("width=\"120\""),
+        "the re-inspection shows the correction: {after}"
+    );
+}
+
+/// Inspecting a project scene by identifier resolves its assets through the
+/// shared project loader and defaults the preview to the scene's name
+/// (FEAT-016, FEAT-019, FEAT-022).
+#[test]
+fn an_inspected_project_scene_resolves_its_assets_and_defaults_its_output() {
+    let dir = two_scene_project("mcp-inspect-project", Some("red"));
+    let run = run_mcp_session(
+        dir.path(),
+        &[],
+        &[mcp_tool_call(
+            1,
+            "inspect",
+            json!({ "scene": "blue", "format": "svg" }),
+        )],
+    );
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let result = &response(&run, 1)["result"];
+    assert_eq!(result["isError"], false, "{:?}", run.responses);
+    let path = result["structuredContent"]["path"]
+        .as_str()
+        .expect("the written path is returned");
+    assert!(
+        path.ends_with("dist/blue.svg"),
+        "the preview is named for the addressed scene: {path}"
+    );
+    let svg = std::fs::read_to_string(path).expect("the preview was written");
+    assert!(
+        svg.contains("#0000ff"),
+        "the named scene's own palette resolved: {svg}"
+    );
+}
+
+/// Inspection is a preview image: a PDF format is an unsupported capability, a
+/// missing format is a malformed call, and density applies only to PNG
+/// (FEAT-022, C-005).
+#[test]
+fn inspection_refuses_an_unsupported_format_and_requires_one() {
+    let dir = TempDir::new("mcp-inspect-refusals");
+    let run = run_mcp_session(
+        dir.path(),
+        &[],
+        &[
+            mcp_tool_call(
+                1,
+                "inspect",
+                json!({ "draft": scene_with_rects(1), "format": "pdf" }),
+            ),
+            mcp_tool_call(2, "inspect", json!({ "draft": scene_with_rects(1) })),
+            mcp_tool_call(
+                3,
+                "inspect",
+                json!({ "draft": scene_with_rects(1), "format": "svg", "density": 2.0 }),
+            ),
+        ],
+    );
+    assert_eq!(run.code, 0, "{}", run.stderr);
+
+    let pdf = &response(&run, 1)["result"];
+    assert_eq!(pdf["isError"], true, "{:?}", run.responses);
+    assert_eq!(pdf["structuredContent"]["code"], "E_UNSUPPORTED");
+    assert!(
+        !dir.path().join("dist/scene.pdf").exists(),
+        "nothing is written for an unsupported format"
+    );
+
+    assert_eq!(
+        response(&run, 2)["error"]["code"],
+        -32602,
+        "a missing format is a malformed call"
+    );
+    assert_eq!(
+        response(&run, 3)["result"]["structuredContent"]["code"],
+        "E_UNSUPPORTED"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// PDF export over MCP (FEAT-014, C-005)
+// ---------------------------------------------------------------------------
+
+/// With the `enable_pdf_export` rollout flag enabled, the render tool writes a
+/// vector PDF whose page matches the requested size, whose text is outlined,
+/// and whose vector content stays vector (FEAT-014). The off-by-default case is
+/// covered above, where PDF is an unsupported capability.
+#[test]
+fn an_enabled_pdf_render_writes_a_vector_document_through_mcp() {
+    let dir = two_scene_project("mcp-pdf-enabled", Some("red"));
+    // A draft naming the project's blue palette and drawing a text run, so the
+    // resolved fill and the outlined-text guarantee are both exercised.
+    let mut draft = colored_scene("d", "blue");
+    draft["canvas"] = json!({ "width": 200.0, "height": 100.0, "background": "#ffffff" });
+    let mut label = text("label", 1, 10.0, 60.0, "Vectr", 24.0);
+    label["sceneId"] = json!("d");
+    draft["elements"]
+        .as_array_mut()
+        .expect("the draft carries elements")
+        .push(label);
+
+    let run = run_mcp_session_with_env(
+        dir.path(),
+        &[],
+        &[(PDF_EXPORT_ENV, "1")],
+        &[mcp_tool_call(
+            1,
+            "render",
+            json!({
+                "draft": draft,
+                "format": "pdf",
+                "out": "dist/print.pdf",
+                "width": 200.0,
+                "height": 100.0
+            }),
+        )],
+    );
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let result = &response(&run, 1)["result"];
+    assert_eq!(result["isError"], false, "{:?}", run.responses);
+    let path = result["structuredContent"]["path"]
+        .as_str()
+        .expect("the written path is returned");
+    let bytes = std::fs::read(path).expect("the PDF was written");
+    assert!(bytes.starts_with(b"%PDF-"), "a PDF signature");
+    assert!(bytes.ends_with(b"%%EOF\n"), "a complete document");
+    let text = String::from_utf8_lossy(&bytes);
+    assert!(
+        !text.contains("/Subtype /Image"),
+        "vector content stays vector: {text}"
+    );
+    assert!(text.contains(" re\n"), "vector path operators: {text}");
+    assert!(
+        text.contains("0 0 1 rg"),
+        "the resolved fill colour: {text}"
+    );
+    assert!(
+        text.contains("/MediaBox [0 0 200 100]"),
+        "the page matches the requested size: {text}"
+    );
+    assert!(
+        !text.contains("/Font"),
+        "text is outlined, not font-dependent: {text}"
+    );
+}
+
+/// With no page size requested, PDF export applies the canvas size and reports
+/// that nobody chose the page, so a print page is never silently guessed
+/// (FEAT-014).
+#[test]
+fn a_pdf_render_without_a_page_size_defaults_to_the_canvas_and_warns_through_mcp() {
+    let dir = two_scene_project("mcp-pdf-default-page", Some("red"));
+    let draft = colored_scene("d", "blue");
+
+    let run = run_mcp_session_with_env(
+        dir.path(),
+        &[],
+        &[(PDF_EXPORT_ENV, "1")],
+        &[mcp_tool_call(
+            1,
+            "render",
+            json!({ "draft": draft, "format": "pdf", "out": "dist/default.pdf" }),
+        )],
+    );
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let result = &response(&run, 1)["result"];
+    assert_eq!(result["isError"], false, "{:?}", run.responses);
+    let body = &result["structuredContent"];
+    let path = body["path"].as_str().expect("the written path is returned");
+    let text =
+        String::from_utf8_lossy(&std::fs::read(path).expect("the PDF was written")).into_owned();
+    assert!(
+        text.contains("/MediaBox [0 0 400 400]"),
+        "the canvas size is the default page: {text}"
+    );
+    assert!(
+        body["diagnostics"]
+            .as_array()
+            .is_some_and(|findings| findings
+                .iter()
+                .any(|finding| finding["code"] == "W_PDF_NO_PAGE_SIZE")),
+        "the default page is reported: {body}"
+    );
 }
 
 /// An HTTP server child that is killed when the test ends.
@@ -1300,6 +1735,6 @@ fn an_unsupported_part_capability_is_a_structured_error_and_writes_nothing() {
         response(&run, 2)["result"]["tools"]
             .as_array()
             .map(Vec::len),
-        Some(5)
+        Some(6)
     );
 }

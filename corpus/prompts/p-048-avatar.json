@@ -1,0 +1,9 @@
+{
+  "id": "p-048-avatar",
+  "corpusId": "vectr-authoring",
+  "intent": "A single user avatar.",
+  "text": "Draw a user avatar icon.",
+  "order": 47,
+  "complexity": "moderate",
+  "qualities": []
+}

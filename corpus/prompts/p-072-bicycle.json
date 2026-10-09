@@ -1,0 +1,9 @@
+{
+  "id": "p-072-bicycle",
+  "corpusId": "vectr-authoring",
+  "intent": "A bicycle.",
+  "text": "Draw a bicycle.",
+  "order": 71,
+  "complexity": "moderate",
+  "qualities": []
+}

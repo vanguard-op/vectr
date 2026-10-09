@@ -1,0 +1,9 @@
+{
+  "id": "p-076-board-game",
+  "corpusId": "vectr-authoring",
+  "intent": "A board game with pieces.",
+  "text": "Draw a board game with pieces on it.",
+  "order": 75,
+  "complexity": "moderate",
+  "qualities": []
+}

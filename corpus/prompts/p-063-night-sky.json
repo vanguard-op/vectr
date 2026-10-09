@@ -1,0 +1,9 @@
+{
+  "id": "p-063-night-sky",
+  "corpusId": "vectr-authoring",
+  "intent": "A night sky with a moon and stars.",
+  "text": "Draw a night sky with a moon and stars.",
+  "order": 62,
+  "complexity": "moderate",
+  "qualities": []
+}

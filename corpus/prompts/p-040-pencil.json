@@ -1,0 +1,9 @@
+{
+  "id": "p-040-pencil",
+  "corpusId": "vectr-authoring",
+  "intent": "A pencil.",
+  "text": "Draw a pencil.",
+  "order": 39,
+  "complexity": "moderate",
+  "qualities": []
+}

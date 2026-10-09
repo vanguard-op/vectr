@@ -270,6 +270,8 @@ mod tests {
             "StyleRecipe",
             "Gradient",
             "Constraint",
+            "IconSet",
+            "IconEntry",
             "Asset",
         ] {
             assert!(definitions.contains_key(entity), "missing `{entity}`");
@@ -300,6 +302,7 @@ mod tests {
                 "alongPath",
                 "offset",
                 "projection",
+                "procedural",
                 "raster",
                 "instance"
             ]
@@ -324,6 +327,91 @@ mod tests {
 
         let palette = parsed(&schema_for("Palette").unwrap());
         assert!(palette["$defs"]["PaletteToken"]["properties"]["value"].is_object());
+    }
+
+    #[test]
+    fn the_prompt_carries_the_corpus_coverage_fields() {
+        // The harness classifies every prompt by its place in the complexity
+        // range and the hard-end qualities it exercises, so the contract a model
+        // authors against carries both fields with their allowed values.
+        let schema = parsed(&schema(SchemaForm::Full).unwrap());
+        let prompt = &schema["$defs"]["Prompt"];
+        let required: Vec<&str> = prompt["required"]
+            .as_array()
+            .expect("the prompt lists its required fields")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert!(required.contains(&"complexity"), "{required:?}");
+        assert!(required.contains(&"qualities"), "{required:?}");
+        assert_eq!(
+            prompt["properties"]["complexity"]["$ref"],
+            "#/$defs/PromptComplexity"
+        );
+        assert_eq!(
+            prompt["properties"]["qualities"]["items"]["$ref"],
+            "#/$defs/PromptQuality"
+        );
+        assert_eq!(
+            schema["$defs"]["PromptComplexity"]["enum"],
+            serde_json::json!(["simple", "moderate", "complex"])
+        );
+        assert_eq!(
+            schema["$defs"]["PromptQuality"]["enum"],
+            serde_json::json!([
+                "depth",
+                "relative_placement",
+                "shared_anchors",
+                "subject_accuracy",
+                "reusable_parts"
+            ])
+        );
+    }
+
+    #[test]
+    fn a_prompt_type_request_exposes_the_coverage_fields() {
+        let prompt = parsed(&schema_for("Prompt").unwrap());
+        assert!(prompt["$defs"]["Prompt"]["properties"]["complexity"].is_object());
+        assert_eq!(prompt["$defs"]["PromptComplexity"]["enum"][0], "simple");
+        assert_eq!(
+            prompt["$defs"]["PromptQuality"]["enum"][4],
+            "reusable_parts"
+        );
+    }
+
+    #[test]
+    fn the_project_config_declares_its_default_selections() {
+        // A project names the scene a request falls back to, the palette an
+        // element without a scene palette resolves against, and the recipe an
+        // isolated definition renders under (FEAT-016, C-001). The published
+        // contract must carry all three, or a project authored from it cannot
+        // state them.
+        let schema = parsed(&schema(SchemaForm::Full).unwrap());
+        let config = &schema["$defs"]["ProjectConfig"];
+        let properties = config["properties"].as_object().expect("properties");
+        for field in ["defaultSceneId", "defaultPaletteId", "defaultRecipeId"] {
+            assert!(properties.contains_key(field), "missing `{field}`");
+        }
+        let required: Vec<&str> = config["required"]
+            .as_array()
+            .expect("required fields")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        for optional in ["defaultSceneId", "defaultPaletteId", "defaultRecipeId"] {
+            assert!(!required.contains(&optional), "`{optional}` is optional");
+        }
+    }
+
+    #[test]
+    fn the_run_record_declares_the_median_token_field() {
+        // FEAT-023 requires a completed run to report the median per-prompt
+        // token count alongside compile success and fidelity, and C-006 fixes
+        // it as the record's `medianTokens`.
+        let schema = parsed(&schema(SchemaForm::Full).unwrap());
+        let median = &schema["$defs"]["EvaluationRun"]["properties"]["medianTokens"];
+        assert_eq!(median["type"], "integer");
+        assert_eq!(median["minimum"], 0);
     }
 
     #[test]

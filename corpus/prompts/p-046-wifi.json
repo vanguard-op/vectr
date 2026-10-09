@@ -1,0 +1,9 @@
+{
+  "id": "p-046-wifi",
+  "corpusId": "vectr-authoring",
+  "intent": "A Wi-Fi signal icon.",
+  "text": "Draw a Wi-Fi signal icon.",
+  "order": 45,
+  "complexity": "moderate",
+  "qualities": []
+}

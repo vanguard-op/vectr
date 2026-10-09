@@ -1,0 +1,9 @@
+{
+  "id": "p-001-dot",
+  "corpusId": "vectr-authoring",
+  "intent": "A single small filled dot.",
+  "text": "Draw a single small filled dot in the middle of the canvas.",
+  "order": 0,
+  "complexity": "simple",
+  "qualities": []
+}

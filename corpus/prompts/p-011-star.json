@@ -1,0 +1,9 @@
+{
+  "id": "p-011-star",
+  "corpusId": "vectr-authoring",
+  "intent": "A five-pointed star.",
+  "text": "Draw a five-pointed star.",
+  "order": 10,
+  "complexity": "simple",
+  "qualities": []
+}

@@ -1,0 +1,9 @@
+{
+  "id": "p-036-gear",
+  "corpusId": "vectr-authoring",
+  "intent": "A gear with teeth.",
+  "text": "Draw a gear with teeth.",
+  "order": 35,
+  "complexity": "moderate",
+  "qualities": []
+}

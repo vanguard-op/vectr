@@ -1,0 +1,9 @@
+{
+  "id": "p-002-square",
+  "corpusId": "vectr-authoring",
+  "intent": "A plain filled square.",
+  "text": "Draw a plain filled square.",
+  "order": 1,
+  "complexity": "simple",
+  "qualities": []
+}
