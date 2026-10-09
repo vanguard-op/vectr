@@ -7,7 +7,9 @@ name: Release
 #
 # Promotion rule: a release is built from the exact revision that passed
 # continuous integration. The `verify` job refuses to proceed unless the tagged
-# revision has a successful CI run, and every job below needs it. The version
+# revision has a successful CI run, and every job below needs it. It waits for a
+# CI run that is still in flight rather than failing the moment the tag is
+# pushed, so tagging a revision right after it lands is not a race. The version
 # tag is the release owner's approval.
 #
 # Go-Live preflight: `preflight` re-runs the dependency/advisory/licence scan
@@ -45,21 +47,17 @@ jobs:
     name: verify the tagged revision passed CI
     runs-on: ubuntu-latest
     permissions:
+      # `actions: read` reads the CI runs; `contents: read` lets the job check
+      # out the repository so it can run the local verify script.
       actions: read
+      contents: read
     steps:
+      - uses: actions/checkout@v4
+
       - name: Require a successful CI run on the tagged revision
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          runs="$(gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${GITHUB_SHA}&status=completed" \
-            --jq '[.workflow_runs[] | select(.conclusion == "success")] | length')"
-          echo "successful CI runs for ${GITHUB_SHA}: ${runs}"
-          if [ "${runs}" -eq 0 ]; then
-            echo "::error::no successful CI run for ${GITHUB_SHA}; refusing to release"
-            exit 1
-          fi
+        run: scripts/verify-ci.sh "${GITHUB_SHA}" "${GITHUB_REPOSITORY}"
 
   preflight:
     name: go-live preflight (NFR-020, NFR-040, NFR-041)
