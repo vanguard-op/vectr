@@ -71,8 +71,8 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 ### Active phase: Phase 3 — Any Model Can Author
 | Task | Feature | Owner | Status | Contract |
 |---|---|---|---|---|
-| T-061 | FEAT-017, FEAT-020 | backend-engineer | In Progress | C-002, C-004 |
-| T-062 | FEAT-016, FEAT-019, FEAT-020 | infra-engineer | Backlog | C-004, C-005 |
+| T-061 | FEAT-017, FEAT-020 | backend-engineer | Done | C-002, C-004 |
+| T-062 | FEAT-016, FEAT-019, FEAT-020 | infra-engineer | In Progress | C-004, C-005 |
 
 ## Decisions log
 | # | Decision | Rationale | By |
