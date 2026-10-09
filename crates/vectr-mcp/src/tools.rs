@@ -248,12 +248,12 @@ fn render_tool(scope: &Scope, arguments: &Map<String, Value>) -> Result<Value, C
     write_atomic(&target, &bytes).map_err(|error| {
         exec(ToolError::new(
             "E_OUTPUT",
-            format!("cannot write output `{}`: {error}", target.display()),
+            format!("cannot write output `{}`: {error}", report_path(&target)),
         ))
     })?;
 
     Ok(json!({
-        "path": target.display().to_string(),
+        "path": report_path(&target),
         "format": format,
         "diagnostics": serde_json::to_value(&diagnostics).unwrap_or(Value::Null),
     }))
@@ -407,6 +407,27 @@ fn compile_scene(input: &SceneInput) -> Result<(RenderModel, Diagnostics), CallE
 fn default_output(input: &SceneInput, extension: &str) -> PathBuf {
     let stem = input.stem.clone().unwrap_or_else(|| "scene".to_string());
     input.root.join("dist").join(format!("{stem}.{extension}"))
+}
+
+/// The written output's path as it is reported to a client (C-005, FEAT-019).
+///
+/// The path is a JSON string that crosses the tool boundary, so it must read
+/// the same on every platform. `fs::canonicalize` yields native separators and,
+/// on Windows, a `\\?\` extended-length prefix (or `\\?\UNC\` for a network
+/// path) — Windows-specific spellings a client would have to unwrap. The file
+/// is still written at the canonical path; only the reported string is
+/// normalized to forward slashes with the verbatim prefix removed, and every
+/// platform accepts that form for reading.
+fn report_path(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    let normalized = if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else if let Some(rest) = text.strip_prefix(r"\\?\") {
+        rest.to_string()
+    } else {
+        text.into_owned()
+    };
+    normalized.replace('\\', "/")
 }
 
 fn exec(error: ToolError) -> CallError {
@@ -1061,6 +1082,30 @@ mod tests {
         .expect("renders");
         let path = result["path"].as_str().expect("a path");
         assert!(path.ends_with("dist/logo.svg"), "{path}");
+    }
+
+    #[test]
+    fn a_reported_path_is_portable_across_platforms() {
+        // The written path is a JSON string a client reads on any platform, so
+        // a Windows canonical path is reported with forward slashes and without
+        // the `\\?\` extended-length prefix `fs::canonicalize` yields there
+        // (C-005, FEAT-019).
+        assert_eq!(
+            report_path(Path::new(r"\\?\C:\proj\dist\logo.svg")),
+            "C:/proj/dist/logo.svg"
+        );
+        assert_eq!(
+            report_path(Path::new(r"C:\proj\dist\logo.svg")),
+            "C:/proj/dist/logo.svg"
+        );
+        assert_eq!(
+            report_path(Path::new(r"\\?\UNC\server\share\dist\logo.svg")),
+            "//server/share/dist/logo.svg"
+        );
+        assert_eq!(
+            report_path(Path::new("/home/kenji/proj/dist/logo.svg")),
+            "/home/kenji/proj/dist/logo.svg"
+        );
     }
 
     #[test]
