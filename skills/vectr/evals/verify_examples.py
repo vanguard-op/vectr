@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 """Deterministic checks for the Vectr skill artifacts (FEAT-020).
 
-The skill's value is that a model can follow the authoring guide against the
+The skill's value is that a model can follow the authoring references against the
 published schema and the installed tool. These checks pin that contract: the
-frontmatter and JSON are well-formed, the guide stands alone as the single
-source of the authoring procedure (the scaffold embeds it verbatim, so it must
-not depend on the skill's other files), and every worked scene the guide ships,
-from the simple mark to the compositionally complex illustration, plus every
-reusable definition and the scene template, validate, compile, and export through
-the real toolchain.
+frontmatter and JSON are well-formed, the always-read entry point routes to the
+on-demand references, those references teach the whole workflow, and every
+worked scene they ship, from the simple mark to the compositionally complex
+illustration, plus every reusable definition and the scene template, validate,
+compile, and export through the real toolchain.
 
 Nothing here grades authored scenes; measuring cross-model authoring quality is
 the evaluation harness's job. This only proves the shipped examples still work.
@@ -92,12 +91,21 @@ def check_static(skill_dir: Path) -> list[str]:
     if evals.get("skill_name") != skill_dir.name:
         raise CheckError("evals.json skill_name does not match the skill folder")
 
-    guide = (skill_dir / "references/authoring-guide.md").read_text()
+    references = sorted((skill_dir / "references").glob("*.md"))
+    if not references:
+        raise CheckError("the skill ships no references")
+    guide = "\n\n".join(path.read_text() for path in references)
 
-    # The guide is the single source of the authoring procedure: it is what the
-    # scaffold embeds into a project, so it must carry the whole workflow, name
-    # the versions it targets, and stand alone — a scaffolded project has none
-    # of the skill's other files.
+    # The always-read entry point carries pointers to the references it routes
+    # to; the depth is loaded only when a step needs it (FEAT-020, D-042).
+    entry = (skill_dir / "SKILL.md").read_text()
+    for path in references:
+        name = f"references/{path.name}"
+        if name not in entry:
+            raise CheckError(f"the skill entry point does not point at `{name}`")
+
+    # The references together carry the whole workflow — a model reads the
+    # procedure and only the depth the current step needs.
     for command in ("vectr schema", "vectr validate", "vectr compile", "vectr export", "vectr render"):
         if command not in guide:
             raise CheckError(f"the guide does not teach `{command}`")
@@ -142,12 +150,6 @@ def check_static(skill_dir: Path) -> list[str]:
             raise CheckError(f"the guide is missing `{section}`")
     if version and version not in guide:
         raise CheckError(f"the guide does not name the tool version {version!r}")
-    for skill_only in ("SKILL.md", "assets/scene.template.json", "evals/"):
-        if skill_only in guide:
-            raise CheckError(
-                f"the guide references the skill-only {skill_only!r}; it must stand "
-                "alone so the scaffold can embed it verbatim"
-            )
 
     blocks = fenced_json_blocks(guide)
     palette = next((b for b in blocks if "tokens" in b), None)

@@ -73,10 +73,15 @@ mod tests {
         // The tool surface, including the command the scaffold's own contract
         // checks for.
         assert!(guide.contains("vectr validate"), "names `vectr validate`");
-        // A pointer to the skill's on-demand references and to the schema.
+        // A pointer to the skill's on-demand references (plural) and to the
+        // schema; the depth is not embedded here (FEAT-020, D-042, D-043).
+        assert!(
+            guide.contains("on-demand references"),
+            "points at the skill's on-demand references"
+        );
         assert!(
             guide.contains("references/authoring-guide.md"),
-            "points at the skill's references"
+            "names the procedure reference to start from"
         );
         assert!(guide.contains("vectr schema"), "points at the schema");
     }

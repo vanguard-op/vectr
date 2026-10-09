@@ -36,11 +36,12 @@ location and writes nothing.
 
 ## Where the depth lives
 
-When you author, read the Vectr skill's `references/authoring-guide.md`: the
-single source of the procedure, the worked examples, and the rules the schema
-does not state. A complex request follows its **Author for depth and structure**
-and **Build a complex graphic up in verified parts**. If the Vectr skill is not
-available to you, author from the published schema (`vectr schema`); the skill
-is not required.
+When you author, read the Vectr skill's on-demand references. Start with
+`references/authoring-guide.md` — the procedure, the worked examples, and the
+failure catalogue — and follow its pointers to the reference for the step you
+are on: `rules.md`, `reusable-parts.md`, `depth-and-structure.md`,
+`inspect-and-correct.md`, `defaults.md`, and `licensing.md`. If the Vectr skill
+is not available to you, author from the published schema (`vectr schema`); the
+skill is not required.
 
 This guide targets `vectr` 0.1.0-pre.2 and scene `formatVersion` `0.2`.

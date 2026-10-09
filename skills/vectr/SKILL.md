@@ -25,26 +25,22 @@ render model and exports as SVG or PNG. Read the schema, author the scene,
 validate, render, look at the render, and fix what is wrong. The schema and the
 tools are the source of truth; this skill is the workflow around them.
 
-**Read `references/authoring-guide.md` before authoring your first scene, and
-treat it as the single source of the procedure.** It holds the end-to-end
-walkthrough, the worked examples for a simple mark and for a very complex
-illustration, the rules the schema does not state, the default set for
-ambiguous requests, and the inspect-and-correct loop. This file only orients
-you: the workflow, the tool surface, and the version check.
+**Read `references/authoring-guide.md` before authoring your first scene: it is
+the procedure.** This file only orients you — the workflow, the tool surface,
+and the version check. The depth for each step is in the references below, read
+only when the step needs them.
 
 A request's complexity sets the scene's scope: a detailed illustration is
 composed in full from its elements, never simplified to a simple mark. A simple
 mark is authored in one pass; a complex graphic is built up in verified parts —
 each part authored as a reusable definition, verified on its own, then composed
-one at a time. The guide carries the method.
+one at a time. The procedure carries the method.
 
-For a request that implies depth or several parts, follow the guide's **Author
-for depth and structure**: order parts back to front and group them by depth
-layer, place parts relatively by transform rather than by absolute coordinates,
-join each part at a shared anchor, and — when the host exposes research tools
-and the request names a concrete subject — research the subject before
-authoring. If no research capability is available, author from your own
-knowledge and state that the subject could not be researched rather than
+For a request that implies depth or several parts, read
+`references/depth-and-structure.md`: it directs back-to-front paint order and
+depth grouping, relative placement by transform, parts joined at shared anchors,
+and subject research. If no research capability is available, author from your
+own knowledge and state that the subject could not be researched rather than
 stalling.
 
 ## Workflow
@@ -135,5 +131,11 @@ installed tool disagree; report that the same way.
 
 | File | Read it when |
 |---|---|
-| `references/authoring-guide.md` | Before authoring your first scene; the end-to-end walkthrough, worked examples (including the build-up method for a complex graphic), the depth and structure directives, the default set, and the inspect-and-correct loop. The single source of the procedure. |
+| `references/authoring-guide.md` | Before authoring your first scene: the procedure, the worked examples, and the failure catalogue. |
+| `references/rules.md` | While authoring: the rules the schema does not state. |
+| `references/reusable-parts.md` | When a request needs a reusable part: definitions and instances. |
+| `references/depth-and-structure.md` | When a request implies depth or several parts. |
+| `references/inspect-and-correct.md` | After a render: comparing it to the request and correcting it. |
+| `references/defaults.md` | When the request leaves something open. |
+| `references/licensing.md` | Before shipping generated graphics. |
 | `assets/scene.template.json` | As the starting point for a new scene. |
