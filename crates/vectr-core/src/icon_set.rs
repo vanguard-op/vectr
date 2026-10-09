@@ -25,6 +25,7 @@ use crate::scene::{
     ElementKind, Geometry, IconEntry, IconSet, Location, NumberValue, Scene, Transform,
     CURRENT_FORMAT_VERSION,
 };
+use crate::style::UNUSED_GRADIENT;
 
 /// An icon's element strokes with a profile other than the set's shared one.
 pub const ICON_STROKE: DiagnosticCode = DiagnosticCode::new("E_ICON_STROKE");
@@ -180,12 +181,13 @@ pub fn export_icon_set(
         };
 
         // An icon renders in isolation, so a definition the set's other icons
-        // place — or that the project carries for its scenes — is not unused and
-        // must not be reported against this icon (FEAT-025, FEAT-030).
+        // place — or a gradient the project carries but this icon does not
+        // reference — is not unused and must not be reported against it
+        // (FEAT-025, FEAT-030, FEAT-031).
         let mut warnings: Diagnostics = model
             .diagnostics
             .iter()
-            .filter(|finding| finding.code != UNUSED_DEFINITION)
+            .filter(|finding| finding.code != UNUSED_DEFINITION && finding.code != UNUSED_GRADIENT)
             .cloned()
             .collect();
         if let Some(warning) = icon_detail_warning(set, icon, &model) {
@@ -451,6 +453,13 @@ mod tests {
         .expect("a stroke profile")
     }
 
+    fn gradient(id: &str) -> crate::style::Gradient {
+        crate::style::parse_gradient(&format!(
+            r##"{{"id":"{id}","projectId":"p","name":"{id}","type":"linear","stops":[{{"offset":0,"token":"ink"}},{{"offset":1,"token":"ink"}}]}}"##
+        ))
+        .expect("a gradient")
+    }
+
     #[test]
     fn every_icon_exports_to_its_own_named_file() {
         let definitions = [
@@ -592,6 +601,35 @@ mod tests {
                     .iter()
                     .all(|finding| finding.code != UNUSED_DEFINITION),
                 "an isolated icon must not report the set's other definitions: {:?}",
+                export.diagnostics
+            );
+        }
+    }
+
+    #[test]
+    fn an_icon_does_not_warn_about_the_sets_other_gradients() {
+        let definitions = [definition(
+            "plus",
+            &rect("plus-body", "plus", 0.0, 0.0, 10.0, 10.0, ""),
+        )];
+        let set = set(&[("plus", "plus")], None, 24.0);
+        let palette = palette();
+        let strokes = [stroke_profile("line")];
+        let gradients = [gradient("halo")];
+
+        let mut context = style(&palette, &strokes);
+        context.gradients = &gradients;
+
+        let exports = export_icon_set(&set, &definitions, &context, &ExportOptions::default())
+            .expect("exports");
+
+        for export in &exports {
+            assert!(
+                export
+                    .diagnostics
+                    .iter()
+                    .all(|finding| finding.code != UNUSED_GRADIENT),
+                "an isolated icon must not report the set's other gradients: {:?}",
                 export.diagnostics
             );
         }

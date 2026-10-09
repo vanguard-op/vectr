@@ -3564,6 +3564,13 @@ mod tests {
             "recipes/flat.json",
             r#"{"id":"flat","projectId":"project","name":"flat","parameters":{}}"#,
         );
+        // A gradient the project carries but no icon references; an icon renders
+        // in isolation, so it must not be reported as unused (FEAT-025).
+        write_at(
+            dir,
+            "gradients/halo.json",
+            r##"{"id":"halo","projectId":"project","name":"Halo","type":"linear","stops":[{"offset":0,"token":"ink"},{"offset":1,"token":"ink"}]}"##,
+        );
         write_at(dir, "definitions/plus.json", &icon_definition("plus", 10.0));
         write_at(
             dir,
@@ -3683,6 +3690,11 @@ mod tests {
         assert!(
             !report.stderr.contains("W_UNUSED_DEFINITION"),
             "an icon is rendered in isolation, so the set's other definitions are not unused: {}",
+            report.stderr
+        );
+        assert!(
+            !report.stderr.contains("W_UNUSED_GRADIENT"),
+            "an icon is rendered in isolation, so the set's other gradients are not unused: {}",
             report.stderr
         );
     }
