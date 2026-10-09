@@ -129,8 +129,9 @@ fn every_prompt_conforms_to_the_corpus_contract() {
 
     let mut orders: BTreeSet<i64> = BTreeSet::new();
     for (id, prompt) in &prompts {
-        // The schema's Prompt fields, plus the two coverage fields the harness
-        // reads (`complexity`, `qualities`). No other field is expected.
+        // The published Prompt fields (`docs/Vectr/schema.md`), including the
+        // coverage classification (`complexity`, `qualities`). No other field
+        // is expected.
         let fields: BTreeSet<&str> = prompt
             .as_object()
             .expect("a prompt is an object")
