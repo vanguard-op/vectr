@@ -84,7 +84,7 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | T-097 | FEAT-025 | backend-engineer | Ready | C-004 |
 | T-098 | FEAT-020 | qa-engineer | In Progress | C-004 |
 | T-099 | FEAT-016, FEAT-020 | infra-engineer | In Progress | C-004 |
-| T-100 | FEAT-023 | infra-engineer | Blocked | C-006 |
+| T-100 | FEAT-023 | infra-engineer | In Progress | C-006 |
 
 ## Decisions log
 | # | Decision | Rationale | By |
@@ -133,6 +133,7 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | D-042 | Authoring guidance is structured for a model's context budget: always-read entry points stay small and route to material loaded only on demand, and anything loaded in full and kept across iterations is minimal data — including a generated, always-loaded summary of a project's available style assets. | Context is a budget; loading material the model does not need yet degrades it, and a file kept across iterations is a permanent tax. | user |
 | D-043 | Supersedes D-042: the always-loaded file is the project's scaffolded agent guide (AGENTS.md), which stays minimal because the model reads it in full and keeps it across the authoring loop; the depth lives in the skill's references, loaded on demand. There is no separate generated asset summary. | The user corrected the artifact: AGENTS.md, not an assets summary; and a scaffold that writes the whole procedure into it makes every iteration pay for unneeded material. | user |
 | D-044 | The hard-end quality directives enter the spec as a new FEAT-032 (P1) with NFR-031 as their judged bar; the context-budget packaging amends FEAT-020 (a small always-read skill entry point, depth in on-demand references, and a minimal scaffolded AGENTS.md with schema-only orientation when no skill is present). | The user chose a new feature over amending the shipped features, so the guidance carries its own acceptance criteria and a bar the harness can score; and a bare project keeps working from orientation plus the schema. | user |
+| D-045 | CDLA-Permissive-2.0 is added to the dependency licence allow-list, so the evaluation harness may depend on `webpki-root-certs` through the rustls TLS path. | The harness calls model providers over HTTPS and needs a root-cert bundle; the licence is permissive and the harness is maintainer-only. | user |
 
 ## Definition of Done
 - Every acceptance criterion in the task's FEAT file is met, including its edge cases and failure states.
