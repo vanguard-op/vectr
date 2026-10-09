@@ -8,9 +8,10 @@
 #     crates/vectr-core/src/scene/version.rs (`CURRENT_FORMAT_VERSION`).
 #
 # The derived copies are the crate dependency pins, the acceptance crate and
-# both lockfiles, the README, the agent skill, and both copies of the authoring
-# guide. Bumping a release means editing the one source and running this script,
-# never editing the copies by hand.
+# both lockfiles, the README, the agent skill and its authoring guide, and the
+# crate's minimal agent guide (the scaffold's AGENTS.md template). Bumping a
+# release means editing the one source and running this script, never editing
+# the copies by hand.
 #
 # Usage:
 #   scripts/sync-version.sh          # rewrite the derived copies to match
@@ -166,10 +167,10 @@ p_guide_prints='s|(# prints: vectr )[^ ]*|\1'"$version"'|'
 p_guide_written='s|(versions: this guide was written for )[^,]*|\1'"$version"'|'
 apply skills/vectr/references/authoring-guide.md \
   -e "$p_guide_targets" -e "$p_guide_prints" -e "$p_guide_written"
-# The crate carries its own copy of the guide so it packages standalone; a test
-# keeps it byte-identical to the skill's reference (FEAT-020).
-apply crates/vectr-project/references/authoring-guide.md \
-  -e "$p_guide_targets" -e "$p_guide_prints" -e "$p_guide_written"
+# The crate carries the minimal agent guide the scaffold writes as AGENTS.md,
+# not the skill's full authoring guide: it states the tool version only in its
+# target line, so only that pattern applies (FEAT-020, D-043).
+apply crates/vectr-project/references/authoring-guide.md -e "$p_guide_targets"
 
 apply scripts/package-skill.sh \
   -e 's|(#   scripts/package-skill.sh dist )[^ ]*|\1'"$version"'|'
@@ -179,8 +180,8 @@ apply_lock tests/acceptance/Cargo.lock "vectr-acceptance vectr-core"
 
 # --- scene format version --------------------------------------------------
 
-# The guides and the skill state the format version in prose and in the worked
-# scenes; the README's scene example carries it too.
+# The skill's guide and the skill state the format version in prose and in the
+# worked scenes; the README's scene example carries it too.
 f_json='s|("formatVersion": ")[^"]*(")|\1'"$format_version"'\2|g'
 f_fv_quoted='s|(`formatVersion` `")[^"]*(")|\1'"$format_version"'\2|g'
 f_xattr='s|(`x-vectr-formatVersion: ")[^"]*(")|\1'"$format_version"'\2|g'
@@ -192,8 +193,9 @@ apply README.md -e "$f_json"
 apply skills/vectr/SKILL.md -e "$f_fv_quoted" -e "$f_scene"
 apply skills/vectr/references/authoring-guide.md \
   -e "$f_json" -e "$f_fv_quoted" -e "$f_xattr" -e "$f_mustbe" -e "$f_isnot" -e "$f_scene"
-apply crates/vectr-project/references/authoring-guide.md \
-  -e "$f_json" -e "$f_fv_quoted" -e "$f_xattr" -e "$f_mustbe" -e "$f_isnot" -e "$f_scene"
+# The minimal agent guide states the format version only in its target line
+# ("scene `formatVersion` `X`"), so only that pattern applies to it.
+apply crates/vectr-project/references/authoring-guide.md -e "$f_scene"
 
 if (( status != 0 )); then
   echo "version sync check failed: run scripts/sync-version.sh and commit the result" >&2
