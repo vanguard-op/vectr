@@ -14,7 +14,7 @@
 
 use std::collections::HashSet;
 
-use crate::compiler::expand::UNRESOLVED_DEFINITION;
+use crate::compiler::expand::{UNRESOLVED_DEFINITION, UNUSED_DEFINITION};
 use crate::compiler::{compile_with_style, model_bounds, StyleContext};
 use crate::export::pdf::{self as pdf_export, PdfOptions};
 use crate::export::png::{self as png_export, RasterOptions};
@@ -179,7 +179,15 @@ pub fn export_icon_set(
             }
         };
 
-        let mut warnings = model.diagnostics.clone();
+        // An icon renders in isolation, so a definition the set's other icons
+        // place — or that the project carries for its scenes — is not unused and
+        // must not be reported against this icon (FEAT-025, FEAT-030).
+        let mut warnings: Diagnostics = model
+            .diagnostics
+            .iter()
+            .filter(|finding| finding.code != UNUSED_DEFINITION)
+            .cloned()
+            .collect();
         if let Some(warning) = icon_detail_warning(set, icon, &model) {
             warnings.push(warning);
         }
@@ -553,6 +561,39 @@ mod tests {
             let after = String::from_utf8(after.bytes.clone()).expect("svg");
             assert!(before.contains("#111111"));
             assert!(after.contains("#ff0000"), "the restyle reaches {after}");
+        }
+    }
+
+    #[test]
+    fn an_icon_does_not_warn_about_the_sets_other_definitions() {
+        let definitions = [
+            definition("plus", &rect("plus-body", "plus", 0.0, 0.0, 10.0, 10.0, "")),
+            definition(
+                "minus",
+                &rect("minus-body", "minus", 0.0, 0.0, 10.0, 10.0, ""),
+            ),
+        ];
+        let set = set(&[("plus", "plus"), ("minus", "minus")], None, 24.0);
+        let palette = palette();
+        let strokes = [stroke_profile("line")];
+
+        let exports = export_icon_set(
+            &set,
+            &definitions,
+            &style(&palette, &strokes),
+            &ExportOptions::default(),
+        )
+        .expect("exports");
+
+        for export in &exports {
+            assert!(
+                export
+                    .diagnostics
+                    .iter()
+                    .all(|finding| finding.code != UNUSED_DEFINITION),
+                "an isolated icon must not report the set's other definitions: {:?}",
+                export.diagnostics
+            );
         }
     }
 

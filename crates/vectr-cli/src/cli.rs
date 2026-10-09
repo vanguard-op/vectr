@@ -3680,6 +3680,11 @@ mod tests {
             "{}",
             report.stdout
         );
+        assert!(
+            !report.stderr.contains("W_UNUSED_DEFINITION"),
+            "an icon is rendered in isolation, so the set's other definitions are not unused: {}",
+            report.stderr
+        );
     }
 
     #[test]
