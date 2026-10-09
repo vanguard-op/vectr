@@ -7,7 +7,7 @@ docs/Vectr/ — git submodule, remote https://github.com/vanguard-op/vectr-docs.
 | Member | Owns |
 |---|---|
 | lead | DELIVERY.md, CONTRACTS.md, ASSETS.md, .delivery/**, Cargo.lock |
-| infra-engineer | Cargo.toml, rust-toolchain.toml, .gitignore, .github/**, scripts/**, assets/fonts/** |
+| infra-engineer | Cargo.toml, rust-toolchain.toml, deny.toml, .gitignore, .github/**, scripts/**, assets/fonts/** |
 | backend-engineer | crates/vectr-core/**, crates/vectr-cli/**, schema/** |
 | ai-engineer | crates/vectr-mcp/**, crates/vectr-eval/**, skills/** |
 | qa-engineer | tests/**, fixtures/**, corpus/** |
@@ -72,7 +72,8 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | Task | Feature | Owner | Status | Contract |
 |---|---|---|---|---|
 | T-061 | FEAT-017, FEAT-020 | backend-engineer | Done | C-002, C-004 |
-| T-062 | FEAT-016, FEAT-019, FEAT-020 | infra-engineer | In Progress | C-004, C-005 |
+| T-062 | FEAT-016, FEAT-019, FEAT-020 | infra-engineer | Done | C-004, C-005 |
+| T-063 | FEAT-016, FEAT-019 | infra-engineer | In Progress | C-004, C-005 |
 
 ## Decisions log
 | # | Decision | Rationale | By |
