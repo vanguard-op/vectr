@@ -46,6 +46,7 @@
     "Axis",
     "ProjectionAxis",
     "BooleanOperation",
+    "Procedure",
     "TextAlign",
     "RecipeName",
     "Shading",
@@ -72,6 +73,7 @@
         "canvas": { "$ref": "#/$defs/Canvas" },
         "paletteId": { "type": "string", "description": "References the Palette whose tokens the scene's elements use." },
         "recipeId": { "type": "string", "description": "References the StyleRecipe applied to the scene, if any." },
+        "seed": { "type": "integer", "description": "Seed governing all generated geometry. A procedural element's effective seed derives deterministically from this value and the element's stable identifier, and, for an element owned by a reusable definition, additionally from the placing instance's identifier; when absent, a default seed of 0 applies and is recorded in the render model. A value that is not an integer is a validation error." },
         "title": { "type": "string", "description": "Accessible title carried into exported output." },
         "description": { "type": "string", "description": "Accessible description carried into exported output." },
         "elements": {
@@ -266,7 +268,9 @@
         "spacing": { "$ref": "#/$defs/NumberValue", "description": "Distance between successive copies for repeat elements, along the element's local x-axis. A literal number or a number parameter reference." },
         "operation": { "$ref": "#/$defs/BooleanOperation" },
         "distance": { "$ref": "#/$defs/NumberValue", "description": "Outline offset distance in scene units for offset elements; positive offsets outward and negative inward. A literal number or a number parameter reference." },
-        "axis": { "$ref": "#/$defs/ProjectionAxis" }
+        "axis": { "$ref": "#/$defs/ProjectionAxis" },
+        "procedure": { "$ref": "#/$defs/Procedure", "description": "The generation a procedural element applies to its children. A procedural element with no child, or missing a parameter its procedure requires, is a validation error." },
+        "amount": { "$ref": "#/$defs/NumberValue", "description": "Maximum displacement or feature amplitude for a procedural element, in scene units: the displacement bound for jitter and scatter, and the amplitude of ornament. A literal number or a number parameter reference." }
       },
       "additionalProperties": false
     },
@@ -558,7 +562,7 @@
       "title": "ElementKind",
       "description": "The element's role.",
       "type": "string",
-      "enum": ["rect", "ellipse", "polygon", "line", "path", "text", "group", "repeat", "boolean", "alongPath", "offset", "projection", "raster", "instance"]
+      "enum": ["rect", "ellipse", "polygon", "line", "path", "text", "group", "repeat", "boolean", "alongPath", "offset", "projection", "procedural", "raster", "instance"]
     },
     "PaintKind": {
       "title": "PaintKind",
@@ -589,6 +593,12 @@
       "description": "A boolean composition operation: union combines the children, subtract removes the later children from the first, and intersect keeps their common area.",
       "type": "string",
       "enum": ["union", "subtract", "intersect"]
+    },
+    "Procedure": {
+      "title": "Procedure",
+      "description": "The generation a procedural element applies to its children, in paint order. Triangulation decomposes the region enclosed by the children's resolved outlines into triangles, sized by spacing, which it requires. Scatter distributes count copies of the first child (the motif, lowest order) across the region enclosed by the remaining children, spaced by spacing and displaced by up to amount; it requires count. Jitter displaces each child's geometry by up to amount, which it requires. Stippling distributes count points within the region enclosed by the children's resolved outlines, spaced by spacing; it requires count. Ornament generates count ornamental features along the children's resolved outlines, with amplitude amount; it requires count and amount.",
+      "type": "string",
+      "enum": ["triangulation", "scatter", "jitter", "stippling", "ornament"]
     },
     "TextAlign": {
       "title": "TextAlign",

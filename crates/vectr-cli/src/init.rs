@@ -237,6 +237,7 @@ fn starter_scene() -> Scene {
         },
         palette_id: None,
         recipe_id: None,
+        seed: None,
         title: None,
         description: None,
         elements: Vec::new(),

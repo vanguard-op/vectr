@@ -654,6 +654,13 @@ fn resolve_element(
                 &mut diagnostics,
             ),
             axis: geometry.axis,
+            procedure: geometry.procedure,
+            amount: opt_number(
+                &geometry.amount,
+                values,
+                "/geometry/amount",
+                &mut diagnostics,
+            ),
         },
         transform: resolve_transform(&template.transform, values).unwrap_or_else(|findings| {
             diagnostics.extend(findings);

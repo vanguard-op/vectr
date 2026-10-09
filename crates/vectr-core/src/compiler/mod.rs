@@ -76,6 +76,10 @@ pub mod expand;
 
 use std::collections::{HashMap, HashSet};
 
+use crate::composition::procedural::{
+    self, effective_seed, ornament, sample_points, stipple_dot, stipple_radius, triangulate,
+    triangulation_cells, Rng,
+};
 use crate::composition::{
     self, along_path_placements, combine, flatten_shape, flatten_subpaths, offset_shape,
     placements as repeat_placements, Affine,
@@ -92,8 +96,8 @@ use crate::render::{
 };
 use crate::scene::{
     validate, BoolValue, BooleanOperation, Canvas, Definition, Diagnostic, DiagnosticCode,
-    Diagnostics, Element, ElementKind, Geometry, Location, NumberValue, Scene, TextAlign,
-    Transform, CURRENT_FORMAT_VERSION,
+    Diagnostics, Element, ElementKind, Geometry, Location, NumberValue, Procedure, Scene,
+    TextAlign, Transform, CURRENT_FORMAT_VERSION,
 };
 use crate::style::{self, Gradient, Palette, StrokeProfile, StyleRecipe, UNDEFINED_STROKE};
 
@@ -272,6 +276,7 @@ pub fn compile_with_style<'s>(
         snapped: HashMap::new(),
         compositions: Vec::new(),
         yield_cache: vec![None; scene.elements.len()],
+        scene_seed: scene.seed.unwrap_or(procedural::DEFAULT_SEED),
     };
 
     compiler.prepare();
@@ -410,6 +415,7 @@ fn definition_scene(definition: &Definition) -> Scene {
         },
         palette_id: None,
         recipe_id: None,
+        seed: None,
         title: None,
         description: None,
         elements: vec![instance],
@@ -494,6 +500,7 @@ fn subtree_scene(scene: &Scene, element_id: &str) -> Result<Scene, Diagnostics> 
         canvas: scene.canvas.clone(),
         palette_id: scene.palette_id.clone(),
         recipe_id: scene.recipe_id.clone(),
+        seed: scene.seed,
         title: scene.title.clone(),
         description: scene.description.clone(),
         elements,
@@ -651,6 +658,19 @@ fn normalize_extent(origin: f64, extent: f64) -> (f64, f64) {
     }
 }
 
+/// One generated feature of a procedural element (FEAT-006).
+enum Feature {
+    /// A copy of a child subtree at a placement in the element's frame.
+    Child {
+        /// The child's index in the scene's element list.
+        index: usize,
+        /// The placement, in the procedural element's local coordinates.
+        placement: Affine,
+    },
+    /// A generated shape in the procedural element's local coordinates.
+    Shape(Shape),
+}
+
 /// A stable suffix identifying one copy within a composition expansion.
 struct CopyTag {
     path: String,
@@ -692,6 +712,9 @@ struct Compiler<'a, 's> {
     /// node limit; memoised so a repeat's combined expansion is judged before
     /// its copies are materialised (FEAT-003, NFR-021).
     yield_cache: Vec<Option<u64>>,
+    /// The seed governing generated geometry; the scene's declared seed, or the
+    /// default `0` when it declares none (FEAT-006).
+    scene_seed: i64,
 }
 
 impl Compiler<'_, '_> {
@@ -934,6 +957,9 @@ impl Compiler<'_, '_> {
                 let projected = world.then(composition::projection_for(axis));
                 self.emit_children(index, projected, opacity, visible, copy, &descendant_groups);
             }
+            ElementKind::Procedural => {
+                self.emit_procedural(index, world, opacity, visible, copy, &descendant_groups)
+            }
             ElementKind::Boolean => {
                 let Some(operation) = self.scene.elements[index].geometry.operation else {
                     self.reject_composition(index, "must declare a boolean operation");
@@ -1104,6 +1130,11 @@ impl Compiler<'_, '_> {
                 let combined = self.union_all(shapes, index)?;
                 self.bake(combined, local)
             }
+            ElementKind::Procedural => {
+                let shapes = self.lower_procedural(index);
+                let combined = self.union_all(shapes, index)?;
+                self.bake(combined, local)
+            }
             ElementKind::Boolean => {
                 let Some(operation) = self.scene.elements[index].geometry.operation else {
                     self.reject_composition(index, "must declare a boolean operation");
@@ -1149,6 +1180,220 @@ impl Compiler<'_, '_> {
         if composed {
             self.compositions.pop();
         }
+    }
+
+    /// Emits a procedural element's generated geometry (FEAT-006).
+    ///
+    /// The element acts on its children: a jitter or scatter procedure emits
+    /// copies of a child at generated placements, while triangulation, stippling
+    /// and ornament emit generated shapes painted by the procedural element
+    /// itself. Every placement is drawn from one generator seeded by the scene's
+    /// seed and the element's stable identifier, so the output is identical on
+    /// every run and distinct instances of a definition differ.
+    fn emit_procedural(
+        &mut self,
+        index: usize,
+        world: Affine,
+        opacity: f64,
+        visible: bool,
+        copy: Option<&CopyTag>,
+        groups: &[NodeGroup],
+    ) {
+        let owner = self.scene.elements[index].id.clone();
+        self.compositions.push(owner.clone());
+        let features = self.generate_features(index);
+        for (feature_index, feature) in features.into_iter().enumerate() {
+            if self.limit_hit {
+                break;
+            }
+            let tag = CopyTag::child(copy, &owner, feature_index);
+            match feature {
+                Feature::Child {
+                    index: child,
+                    placement,
+                } => {
+                    self.emit(
+                        child,
+                        world.then(placement),
+                        opacity,
+                        visible,
+                        Some(&tag),
+                        groups,
+                    );
+                }
+                Feature::Shape(shape) => {
+                    self.push_node(index, shape, world, opacity, visible, Some(&tag), groups);
+                }
+            }
+        }
+        self.compositions.pop();
+    }
+
+    /// Lowers a procedural element to the shapes its generation produces, used
+    /// where the element is an operand rather than a drawing (FEAT-006).
+    fn lower_procedural(&mut self, index: usize) -> Vec<Shape> {
+        let mut shapes = Vec::new();
+        for feature in self.generate_features(index) {
+            if self.limit_hit {
+                break;
+            }
+            match feature {
+                Feature::Child {
+                    index: child,
+                    placement,
+                } => {
+                    if let Some(shape) = self.lower(child) {
+                        if let Some(baked) = self.bake(shape, placement) {
+                            shapes.push(baked);
+                        }
+                    }
+                }
+                Feature::Shape(shape) => shapes.push(shape),
+            }
+        }
+        shapes
+    }
+
+    /// The generated features of a procedural element, in a fixed order
+    /// (FEAT-006).
+    fn generate_features(&mut self, index: usize) -> Vec<Feature> {
+        let (procedure, count, spacing, amount, element_id) = {
+            let element = &self.scene.elements[index];
+            (
+                element.geometry.procedure,
+                element.geometry.count().unwrap_or(0),
+                element.geometry.spacing().unwrap_or(0.0),
+                element.geometry.amount().unwrap_or(0.0),
+                element.id.clone(),
+            )
+        };
+        let Some(procedure) = procedure else {
+            self.reject_composition(index, "must declare a procedure");
+            return Vec::new();
+        };
+
+        let mut children = self.children[index].clone();
+        self.order_siblings(&mut children);
+        if children.is_empty() {
+            self.reject_composition(index, "has no child to generate from");
+            return Vec::new();
+        }
+
+        let mut rng = Rng::new(effective_seed(self.scene_seed, &element_id));
+        match procedure {
+            Procedure::Jitter => children
+                .into_iter()
+                .map(|child| Feature::Child {
+                    index: child,
+                    placement: Affine::translate(
+                        rng.range(-amount, amount),
+                        rng.range(-amount, amount),
+                    ),
+                })
+                .collect(),
+            Procedure::Scatter => {
+                if !self.guard_features(index, count) {
+                    return Vec::new();
+                }
+                let motif = children[0];
+                let region = self.child_contours(&children[1..]);
+                let Some(bounds) = procedural::bounds(&region) else {
+                    return Vec::new();
+                };
+                sample_points(&mut rng, &region, bounds, count as usize, spacing)
+                    .into_iter()
+                    .map(|point| Feature::Child {
+                        index: motif,
+                        placement: Affine::translate(
+                            point[0] + rng.range(-amount, amount),
+                            point[1] + rng.range(-amount, amount),
+                        ),
+                    })
+                    .collect()
+            }
+            Procedure::Stippling => {
+                if !self.guard_features(index, count) {
+                    return Vec::new();
+                }
+                let contours = self.child_contours(&children);
+                let Some(bounds) = procedural::bounds(&contours) else {
+                    return Vec::new();
+                };
+                let radius = stipple_radius(spacing);
+                sample_points(&mut rng, &contours, bounds, count as usize, spacing)
+                    .into_iter()
+                    .map(|point| Feature::Shape(stipple_dot(point, radius)))
+                    .collect()
+            }
+            Procedure::Triangulation => {
+                if !(spacing.is_finite() && spacing > 0.0) {
+                    self.reject_composition(index, "requires a positive spacing");
+                    return Vec::new();
+                }
+                let contours = self.child_contours(&children);
+                if triangulation_cells(&contours, spacing)
+                    .is_some_and(|cells| cells > procedural::MAX_PROCEDURAL_FEATURES)
+                {
+                    let id = self.scene.elements[index].id.clone();
+                    self.diagnostics.push(
+                        Diagnostic::error(
+                            DiagnosticCode::SIZE_LIMIT,
+                            format!(
+                                "procedural element `{id}` triangulates a grid finer than the {}-cell limit; it is refused rather than truncated",
+                                procedural::MAX_PROCEDURAL_FEATURES
+                            ),
+                        )
+                        .with_location(Location::element(id)),
+                    );
+                    return Vec::new();
+                }
+                triangulate(&contours, spacing, procedural::MAX_PROCEDURAL_FEATURES)
+                    .into_iter()
+                    .map(Feature::Shape)
+                    .collect()
+            }
+            Procedure::Ornament => {
+                if !self.guard_features(index, count) {
+                    return Vec::new();
+                }
+                let contours = self.child_contours(&children);
+                ornament(&contours, count as usize, amount, &mut rng)
+                    .into_iter()
+                    .map(Feature::Shape)
+                    .collect()
+            }
+        }
+    }
+
+    /// Lowers a procedural element's children to their filled contours, in the
+    /// procedural element's local frame (FEAT-006).
+    fn child_contours(&mut self, children: &[usize]) -> Vec<Vec<[f64; 2]>> {
+        let mut contours = Vec::new();
+        for &child in children {
+            if let Some(shape) = self.lower(child) {
+                contours.extend(flatten_shape(&shape));
+            }
+        }
+        contours
+    }
+
+    /// Refuses a procedural count above the feature cap (NFR-021).
+    fn guard_features(&mut self, index: usize, count: u32) -> bool {
+        if count as usize <= procedural::MAX_PROCEDURAL_FEATURES {
+            return true;
+        }
+        let id = self.scene.elements[index].id.clone();
+        self.diagnostics.push(
+            Diagnostic::error(
+                DiagnosticCode::SIZE_LIMIT,
+                format!(
+                    "procedural element `{id}` generates {count} features, above the {}-feature limit",
+                    procedural::MAX_PROCEDURAL_FEATURES
+                ),
+            )
+            .with_location(Location::element(id)),
+        );
+        false
     }
 
     /// Lowers each child of an element to a shape.
@@ -1982,6 +2227,29 @@ impl Compiler<'_, '_> {
                 });
                 count.saturating_mul(per_copy).min(cap)
             }
+            ElementKind::Procedural => {
+                let procedure = self.scene.elements[index].geometry.procedure;
+                let count = u64::from(self.scene.elements[index].geometry.count().unwrap_or(0));
+                let children = self.children[index].clone();
+                match procedure {
+                    Some(Procedure::Jitter) => children
+                        .into_iter()
+                        .fold(0u64, |sum, child| {
+                            sum.saturating_add(self.subtree_nodes(child))
+                        })
+                        .min(cap),
+                    Some(Procedure::Scatter) => {
+                        let per_copy = children
+                            .first()
+                            .map(|&child| self.subtree_nodes(child))
+                            .unwrap_or(0);
+                        count.saturating_mul(per_copy).min(cap)
+                    }
+                    Some(Procedure::Stippling) | Some(Procedure::Ornament) => count.min(cap),
+                    Some(Procedure::Triangulation) => procedural::MAX_PROCEDURAL_FEATURES as u64,
+                    None => 0,
+                }
+            }
         };
         if let Some(slot) = self.yield_cache.get_mut(index) {
             *slot = Some(value);
@@ -2039,6 +2307,7 @@ impl Compiler<'_, '_> {
                     .style
                     .recipe
                     .map(|recipe| recipe.name_str().to_string()),
+                seed: self.scene_seed,
             },
             diagnostics: self.diagnostics,
             fonts: self.fonts,
@@ -2101,6 +2370,7 @@ fn is_composition(kind: ElementKind) -> bool {
             | ElementKind::Boolean
             | ElementKind::Offset
             | ElementKind::Projection
+            | ElementKind::Procedural
     )
 }
 
@@ -4281,6 +4551,230 @@ mod tests {
             compile_definition(&badge, &style).expect("compiles"),
             compile_definition(&badge, &style).expect("compiles"),
             "repeated part previews must be identical (NFR-010)"
+        );
+    }
+
+    /// A scene with an optional seed, so generated geometry can be compared
+    /// across runs and across seeds (FEAT-006).
+    fn scene_with_seed(seed: Option<i64>, elements: Value) -> Scene {
+        let mut document = json!({
+            "id": "s",
+            "projectId": "p",
+            "name": "S",
+            "formatVersion": "0.2",
+            "canvas": { "width": 200.0, "height": 200.0, "background": "transparent" },
+            "elements": elements
+        });
+        if let Some(seed) = seed {
+            document["seed"] = json!(seed);
+        }
+        crate::scene::parse(&document.to_string()).expect("a valid scene")
+    }
+
+    /// A procedural element with one rectangular child that fills its region.
+    fn stipple_scene(seed: Option<i64>) -> Scene {
+        let procedural = base(
+            "p1",
+            0,
+            "procedural",
+            json!({ "procedure": "stippling", "count": 12, "spacing": 3.0 }),
+        );
+        let mut region = rect("c1", 0, 60.0, 60.0);
+        region["parentId"] = json!("p1");
+        scene_with_seed(seed, json!([procedural, region]))
+    }
+
+    #[test]
+    fn a_seeded_procedural_scene_compiles_identically_twice() {
+        let scene = stipple_scene(Some(7));
+        let first = compile(&scene).expect("compiles");
+        let second = compile(&scene).expect("compiles");
+        assert_eq!(first.nodes.len(), 12, "one node per generated point");
+        assert_eq!(first, second, "repeated runs must be identical (NFR-010)");
+    }
+
+    #[test]
+    fn two_seeds_generate_different_geometry() {
+        let first = compile(&stipple_scene(Some(1))).expect("compiles");
+        let second = compile(&stipple_scene(Some(2))).expect("compiles");
+        assert_ne!(first.nodes, second.nodes, "distinct seeds must vary");
+    }
+
+    #[test]
+    fn a_scene_without_a_seed_records_the_default_and_stays_reproducible() {
+        let model = compile(&stipple_scene(None)).expect("compiles");
+        assert_eq!(model.meta.seed, 0, "the default seed is recorded");
+        assert_eq!(
+            model,
+            compile(&stipple_scene(None)).expect("compiles"),
+            "a scene without a seed is still reproducible"
+        );
+    }
+
+    #[test]
+    fn an_extreme_seed_remains_deterministic() {
+        for seed in [i64::MIN, i64::MAX, -1, 0] {
+            let scene = stipple_scene(Some(seed));
+            let first = compile(&scene).expect("compiles");
+            assert_eq!(first.meta.seed, seed);
+            assert_eq!(
+                first,
+                compile(&scene).expect("compiles"),
+                "seed {seed} must be reproducible"
+            );
+        }
+    }
+
+    #[test]
+    fn every_procedure_compiles_to_generated_geometry() {
+        let jitter = base(
+            "p1",
+            0,
+            "procedural",
+            json!({ "procedure": "jitter", "amount": 4.0 }),
+        );
+        let mut child = rect("c1", 0, 10.0, 10.0);
+        child["parentId"] = json!("p1");
+        let model = compile(&scene_with_seed(Some(3), json!([jitter, child]))).expect("compiles");
+        assert_eq!(model.nodes.len(), 1);
+        assert_eq!(
+            model.nodes[0].kind, "rect",
+            "jitter displaces the child it acts on"
+        );
+
+        let scatter = base(
+            "p1",
+            0,
+            "procedural",
+            json!({ "procedure": "scatter", "count": 5, "spacing": 4.0, "amount": 1.0 }),
+        );
+        let mut motif = rect("m", 0, 4.0, 4.0);
+        motif["parentId"] = json!("p1");
+        let mut region = rect("r", 1, 60.0, 60.0);
+        region["parentId"] = json!("p1");
+        let model =
+            compile(&scene_with_seed(Some(3), json!([scatter, motif, region]))).expect("compiles");
+        assert_eq!(model.nodes.len(), 5, "one copy per scattered motif");
+
+        let triangulation = base(
+            "p1",
+            0,
+            "procedural",
+            json!({ "procedure": "triangulation", "spacing": 10.0 }),
+        );
+        let mut region = rect("r", 0, 40.0, 40.0);
+        region["parentId"] = json!("p1");
+        let model =
+            compile(&scene_with_seed(Some(3), json!([triangulation, region]))).expect("compiles");
+        assert!(!model.nodes.is_empty(), "triangulation fills the region");
+
+        let ornament = base(
+            "p1",
+            0,
+            "procedural",
+            json!({ "procedure": "ornament", "count": 6, "amount": 2.0 }),
+        );
+        let mut region = rect("r", 0, 40.0, 40.0);
+        region["parentId"] = json!("p1");
+        let model =
+            compile(&scene_with_seed(Some(3), json!([ornament, region]))).expect("compiles");
+        assert_eq!(model.nodes.len(), 6, "one feature per ornament position");
+    }
+
+    #[test]
+    fn a_definition_parameter_binds_into_a_procedural_count() {
+        let mut region = def_element(
+            "region",
+            "field",
+            0,
+            "rect",
+            json!({ "x": 0.0, "y": 0.0, "width": 40.0, "height": 40.0 }),
+        );
+        region["parentId"] = json!("p");
+        let field = definition(
+            "field",
+            json!([{ "name": "n", "type": "number", "default": 3 }]),
+            json!([
+                def_element(
+                    "p",
+                    "field",
+                    0,
+                    "procedural",
+                    json!({ "procedure": "stippling", "count": { "param": "n" }, "spacing": 4.0 })
+                ),
+                region
+            ]),
+        );
+
+        let mut instance = base("i1", 0, "instance", json!({}));
+        instance["definitionRef"] = json!("field");
+        let scene = scene_with_seed(Some(5), json!([instance]));
+        let style = StyleContext {
+            definitions: std::slice::from_ref(&field),
+            ..StyleContext::default()
+        };
+        let model = compile_with_style(&scene, &style).expect("compiles");
+        assert_eq!(
+            model.nodes.len(),
+            3,
+            "the bound count drives the generation"
+        );
+    }
+
+    #[test]
+    fn distinct_instances_of_one_definition_generate_differently_and_reproducibly() {
+        let mut dot = def_element(
+            "dot",
+            "cloud",
+            0,
+            "rect",
+            json!({ "x": 0.0, "y": 0.0, "width": 2.0, "height": 2.0 }),
+        );
+        dot["parentId"] = json!("p");
+        let cloud = definition(
+            "cloud",
+            json!([]),
+            json!([
+                def_element(
+                    "p",
+                    "cloud",
+                    0,
+                    "procedural",
+                    json!({ "procedure": "jitter", "amount": 5.0 })
+                ),
+                dot
+            ]),
+        );
+
+        let mut first = base("i1", 0, "instance", json!({}));
+        first["definitionRef"] = json!("cloud");
+        let mut second = base("i2", 1, "instance", json!({}));
+        second["definitionRef"] = json!("cloud");
+        let scene = scene_with_seed(Some(0), json!([first, second]));
+
+        let style = StyleContext {
+            definitions: std::slice::from_ref(&cloud),
+            ..StyleContext::default()
+        };
+        let first_run = compile_with_style(&scene, &style).expect("compiles");
+        assert_eq!(
+            first_run,
+            compile_with_style(&scene, &style).expect("compiles"),
+            "each instance stays reproducible (NFR-010)"
+        );
+
+        let offset = |model: &RenderModel, instance: &str| {
+            let node = model
+                .nodes
+                .iter()
+                .find(|node| node.id.starts_with("dot") && node.id.contains(instance))
+                .expect("the placed dot");
+            node.transform.apply([0.0, 0.0])
+        };
+        assert_ne!(
+            offset(&first_run, "i1"),
+            offset(&first_run, "i2"),
+            "two instances of one definition must vary"
         );
     }
 }

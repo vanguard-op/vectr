@@ -129,6 +129,12 @@ pub struct RenderMeta {
     /// (C-003, FEAT-007).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recipe: Option<String>,
+    /// The seed that governed generated geometry (C-003, FEAT-006).
+    ///
+    /// A scene that declares no seed compiles with the default `0`, recorded
+    /// here so a run can be reproduced exactly from the model alone.
+    #[serde(default)]
+    pub seed: i64,
 }
 
 /// One ancestor group in a node's chain (C-003).

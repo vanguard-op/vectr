@@ -57,8 +57,8 @@ pub use scene::{
     parse, parse_definition, validate, validate_definition, Binding, BindingValue, BoolValue,
     Canvas, Constraint, ConstraintKind, Definition, Diagnostic, DiagnosticCode, Diagnostics,
     Element, ElementKind, Geometry, Location, NumberValue, Origin, PaintKind, PaintValue, ParamRef,
-    Parameter, ParameterType, ParameterValue, ProjectionAxis, Scene, Severity, StringValue,
-    TextAlign, Transform, CURRENT_FORMAT_VERSION, MAX_SCENE_BYTES,
+    Parameter, ParameterType, ParameterValue, Procedure, ProjectionAxis, Scene, Severity,
+    StringValue, TextAlign, Transform, CURRENT_FORMAT_VERSION, MAX_SCENE_BYTES,
 };
 pub use schema::{schema, schema_for, SchemaForm, SCHEMA_VERSION, UNKNOWN_SCHEMA_TYPE};
 pub use style::{

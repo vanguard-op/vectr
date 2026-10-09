@@ -300,6 +300,7 @@ mod tests {
                 "alongPath",
                 "offset",
                 "projection",
+                "procedural",
                 "raster",
                 "instance"
             ]

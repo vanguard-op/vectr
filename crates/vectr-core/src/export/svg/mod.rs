@@ -813,6 +813,7 @@ mod tests {
             title: Some("Logo".to_string()),
             description: Some("A mark".to_string()),
             recipe: None,
+            seed: 0,
         };
         let svg = export(&document);
         assert!(svg.contains("<title>Logo</title>"), "{svg}");
