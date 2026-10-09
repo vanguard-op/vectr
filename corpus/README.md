@@ -23,10 +23,10 @@ other than the manifest is read as a prompt), but this corpus keeps them under
 ## Coverage
 
 The published `Prompt` entity (`docs/Vectr/schema.md`) carries `id`,
-`corpusId`, `intent`, `text`, and `order`. The harness additionally reads two
-coverage fields on each prompt, because FEAT-023 requires it to classify the
-complex end and to report a corpus that omits part of the range or a hard-end
-quality:
+`corpusId`, `intent`, `text`, `order`, `complexity`, and `qualities`. The two
+coverage fields classify each prompt, because FEAT-023 requires the harness to
+classify the complex end and to report a corpus that omits part of the range or
+a hard-end quality:
 
 | Field | Values | Meaning |
 |---|---|---|
@@ -97,12 +97,3 @@ scores fidelity against; `text` is the natural-language request given to the
 authoring model. The guidance the model follows (the skill and authoring
 guide, FEAT-020, FEAT-032) is supplied separately by the harness, so the
 prompts stay plain requests.
-
-## Known spec gap
-
-The published `Prompt` entity declares `additionalProperties: false` and names
-neither `complexity` nor `qualities`, yet the harness reads both to satisfy
-FEAT-023's coverage requirements. The two coverage fields are therefore a
-corpus extension over the published schema that `docs/Vectr/schema.md` should
-absorb. This is recorded as a doc gap rather than hidden: the corpus cannot
-meet FEAT-023's coverage checks from the published fields alone.
