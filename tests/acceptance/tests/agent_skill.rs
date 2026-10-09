@@ -209,6 +209,35 @@ fn export_png_arg(path: &Path) -> &str {
     path.to_str().expect("a utf-8 path")
 }
 
+/// Whether `version` is a semver string: `MAJOR.MINOR.PATCH`, optionally with a
+/// `-prerelease` and/or `+build` suffix.
+///
+/// The skill tracks the release it was written for, and the release channel is
+/// a pre-release (`0.1.0-pre.1`) until the first stable 0.1 ships (release.md,
+/// "Rollout Phases & Feature Flags"), so a pre-release is a valid skill version
+/// and a naive dot-count must not reject it (FEAT-020).
+fn is_semver(version: &str) -> bool {
+    let (without_build, build) = match version.split_once('+') {
+        Some((head, build)) => (head, Some(build)),
+        None => (version, None),
+    };
+    let (core, pre) = match without_build.split_once('-') {
+        Some((core, pre)) => (core, Some(pre)),
+        None => (without_build, None),
+    };
+
+    let numbers: Vec<&str> = core.split('.').collect();
+    let numeric = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
+    let identifier = |part: &str| {
+        !part.is_empty() && part.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    };
+
+    numbers.len() == 3
+        && numbers.iter().all(|part| numeric(part))
+        && pre.is_none_or(|pre| pre.split('.').all(identifier))
+        && build.is_none_or(|build| build.split('.').all(identifier))
+}
+
 #[test]
 fn the_skill_package_is_well_formed_and_targets_the_installed_tool() {
     let root = workspace_root();
@@ -223,8 +252,10 @@ fn the_skill_package_is_well_formed_and_targets_the_installed_tool() {
         "the description tells the model when to load it"
     );
     let version = field(&fields, "version").expect("a version");
-    let parts: Vec<&str> = version.split('.').collect();
-    assert_eq!(parts.len(), 3, "`{version}` is semver");
+    assert!(
+        is_semver(version),
+        "`{version}` is semver, pre-release allowed"
+    );
 
     // The packaged files the skill promises are present.
     assert!(skill_dir.join("references/authoring-guide.md").is_file());
@@ -244,6 +275,86 @@ fn the_skill_package_is_well_formed_and_targets_the_installed_tool() {
     assert!(
         skill.contains(VERSION),
         "the skill names the format version"
+    );
+}
+
+/// `text` with every run of whitespace collapsed to one space.
+///
+/// A phrase in a prose document wraps across lines, so a phrase check reads the
+/// flattened text rather than the wrapped source.
+fn flatten(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+#[test]
+fn a_skill_version_mismatch_is_reported_against_the_installed_tool() {
+    // FEAT-020's edge case: a skill version that does not match the installed
+    // tool is reported. The skill and its guide tell the agent to compare the
+    // installed tool's version before authoring and, on a difference, to report
+    // the mismatch naming both versions rather than author against a tool the
+    // skill was not written for.
+    let root = workspace_root();
+    let skill = fs::read_to_string(root.join("skills/vectr/SKILL.md")).expect("SKILL.md");
+    let guide = fs::read_to_string(root.join("skills/vectr/references/authoring-guide.md"))
+        .expect("the authoring guide");
+
+    // A pre-release channel version is a valid skill version, so the package is
+    // accepted on the pre-release channel (release.md, "Rollout Phases &
+    // Feature Flags"); a version that is not semver is not.
+    assert!(
+        is_semver("0.1.0-pre.1"),
+        "a pre-release version is accepted"
+    );
+    assert!(
+        is_semver("1.2.3-alpha.1+build.5"),
+        "a pre-release with build metadata is accepted"
+    );
+    assert!(!is_semver("0.1"), "major.minor alone is not semver");
+    assert!(!is_semver("0.1.0.1"), "four numeric parts is not semver");
+
+    let fields = frontmatter(&skill);
+    let version = field(&fields, "version").expect("a version");
+    assert!(
+        is_semver(version),
+        "the shipped skill version `{version}` is accepted"
+    );
+
+    // The comparison the agent is told to run: the installed tool reports the
+    // version the skill was written for, so a difference is the mismatch to
+    // report and both versions are nameable.
+    let dir = TempDir::new("skill-mismatch");
+    assert_eq!(
+        version,
+        cli_version(&dir),
+        "the skill targets the installed tool's version"
+    );
+
+    // The skill names the two version surfaces an agent compares: `vectr
+    // --version` and the MCP `serverInfo.version`.
+    let skill = flatten(&skill);
+    let guide = flatten(&guide);
+    assert!(
+        skill.contains("vectr --version") && skill.contains("serverInfo.version"),
+        "the skill names the surfaces to compare: {skill}"
+    );
+
+    // Both artifacts direct the mismatch report and require naming both
+    // versions; the guide names the concrete version it was written for.
+    assert!(
+        skill.contains("report the mismatch") && skill.contains("name both versions"),
+        "the skill directs the mismatch report naming both versions: {skill}"
+    );
+    assert!(
+        guide.contains("report the mismatch") && guide.contains("naming both versions"),
+        "the guide directs the mismatch report naming both versions: {guide}"
+    );
+    assert!(
+        guide.contains(version),
+        "the guide names the skill's version"
+    );
+    assert!(
+        guide.contains(VERSION),
+        "the guide names the format version"
     );
 }
 
