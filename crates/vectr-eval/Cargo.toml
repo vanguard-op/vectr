@@ -4,6 +4,13 @@ description = "Vectr evaluation harness."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+# The evaluation harness is maintainer-only and not a distributed artifact
+# (release.md, "Rollout Phases & Feature Flags": enable_eval_harness), so it
+# stays out of crates.io. The product crates are vectr-core, vectr-project,
+# vectr-cli and vectr-mcp.
 publish = false
 
 [[bin]]

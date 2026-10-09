@@ -7,7 +7,9 @@
 //! text elements name. The two open-licensed fonts Vectr ships are supplied for
 //! any scene with text, so a text element that names no font renders with the
 //! default and a glyph the chosen font lacks is covered by the fallback
-//! (FEAT-024, D-017, D-018).
+//! (FEAT-024, D-017, D-018). The bundled font files are carried inside the crate
+//! so it packages and builds standalone; a test keeps them identical to the
+//! licensed sources.
 //!
 //! References resolve by identifier, not by file name: palettes live under
 //! `palettes/`, style recipes under `recipes/`, stroke profiles under `strokes/`,
@@ -81,10 +83,17 @@ const DEFAULT_FONT_NAME: &str = "Inter";
 const FALLBACK_FONT_NAME: &str = "Noto Sans";
 
 /// The bundled default sans, read into the binary at build time (A-001).
-const DEFAULT_FONT_BYTES: &[u8] = include_bytes!("../../../assets/fonts/Inter.ttf");
+///
+/// The font is carried inside the crate so `cargo package` and a standalone
+/// build never reach outside the package; a test keeps it byte-identical to the
+/// licensed source under the repository's `assets/fonts/`.
+const DEFAULT_FONT_BYTES: &[u8] = include_bytes!("../assets/fonts/Inter.ttf");
 
 /// The bundled fallback sans, read into the binary at build time (A-002).
-const FALLBACK_FONT_BYTES: &[u8] = include_bytes!("../../../assets/fonts/NotoSans.ttf");
+///
+/// Carried inside the crate alongside the default font, with its OFL licence
+/// text (NFR-040).
+const FALLBACK_FONT_BYTES: &[u8] = include_bytes!("../assets/fonts/NotoSans.ttf");
 
 /// The assets a scene's project provides, ready to resolve into a
 /// [`StyleContext`] (C-002).
@@ -820,8 +829,23 @@ mod tests {
     }
 
     fn bundled(file: &str) -> Vec<u8> {
-        let path = format!("{}/../../assets/fonts/{file}", env!("CARGO_MANIFEST_DIR"));
+        let path = format!("{}/assets/fonts/{file}", env!("CARGO_MANIFEST_DIR"));
         fs::read(&path).unwrap_or_else(|error| panic!("could not read {path}: {error}"))
+    }
+
+    #[test]
+    fn the_bundled_fonts_match_the_licensed_sources() {
+        // The crate carries its own copies so it packages standalone; this
+        // keeps them from drifting from the licensed sources under the
+        // repository's `assets/fonts/`.
+        for file in ["Inter.ttf", "NotoSans.ttf"] {
+            let source = format!("{}/../../assets/fonts/{file}", env!("CARGO_MANIFEST_DIR"));
+            let Ok(source) = fs::read(&source) else {
+                // A packaged crate has no repository around it; nothing to compare.
+                return;
+            };
+            assert_eq!(bundled(file), source, "the bundled `{file}` has drifted");
+        }
     }
 
     #[test]

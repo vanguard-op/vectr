@@ -5,9 +5,13 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-# Not published until the remaining crates.io metadata is settled; see
-# DELIVERY.md.
-publish = false
+repository.workspace = true
+homepage.workspace = true
+# Published to crates.io as the embeddable library (D-006). The package carries
+# its own copy of the published JSON Schema so it builds standalone; the release
+# workflow publishes it before the crates that depend on it.
+keywords = ["svg", "vector-graphics", "graphics", "renderer"]
+categories = ["graphics", "rendering", "multimedia::images"]
 
 [lints]
 workspace = true

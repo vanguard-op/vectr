@@ -5,7 +5,12 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish = false
+repository.workspace = true
+homepage.workspace = true
+# Published to crates.io as the command-line tool (D-006, C-004). Published
+# after the library crates it depends on.
+keywords = ["svg", "vector-graphics", "cli", "graphics"]
+categories = ["command-line-utilities", "graphics"]
 
 [[bin]]
 name = "vectr"

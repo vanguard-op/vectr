@@ -19,6 +19,12 @@ rust-version = "1.99"
 # full texts in LICENSE-MIT and LICENSE-APACHE at the repository root. Each
 # crate opts in with `license.workspace = true`.
 license = "MIT OR Apache-2.0"
+# The published crates name their source so crates.io links back to it and
+# `cargo publish`'s package-metadata check passes (D-006, NFR-025). The version
+# every crate inherits is the release version published to crates.io and tagged
+# for the GitHub Release binaries; bump it in one place.
+repository = "https://github.com/vanguard-op/vectr"
+homepage = "https://github.com/vanguard-op/vectr"
 
 [workspace.lints.rust]
 # NFR-021: the shipped crates parse untrusted input; keep them free of
