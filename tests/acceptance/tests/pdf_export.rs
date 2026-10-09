@@ -161,3 +161,37 @@ fn a_print_colour_profile_is_honoured_and_an_unknown_one_is_refused() {
         "nothing is written for a refused profile"
     );
 }
+
+/// A print profile that cannot carry per-paint transparency flattens it and
+/// reports that it did, while a profile that can carry it reports nothing
+/// (FEAT-014).
+#[test]
+fn a_profile_that_cannot_carry_transparency_flattens_it_and_reports_it() {
+    let dir = TempDir::new("pdf-transparency");
+    dir.write("vectr.project.json", "{}");
+    dir.write(
+        "palettes/brand.json",
+        &palette("brand", &[("fade", "#ff000080")]),
+    );
+    let mut card = rect("card", 0, 5.0, 5.0, 30.0, 20.0);
+    card["fill"] = token_paint("fade");
+    let mut document = scene_with(vec![card], None, Some("brand"));
+    document["canvas"] = json!({ "width": 120.0, "height": 80.0, "background": "#ffffff" });
+    write_scene_as(&dir, "card", document);
+
+    let cmyk = export_pdf(&dir, "dist/cmyk.pdf", &["--profile", "cmyk"]);
+    assert_eq!(code(&cmyk), 0, "{}", stderr(&cmyk));
+    assert!(
+        stderr(&cmyk).contains("W_PDF_TRANSPARENCY_FLATTENED"),
+        "the flattened transparency is reported: {}",
+        stderr(&cmyk)
+    );
+
+    let srgb = export_pdf(&dir, "dist/srgb.pdf", &["--profile", "srgb"]);
+    assert_eq!(code(&srgb), 0, "{}", stderr(&srgb));
+    assert!(
+        !stderr(&srgb).contains("W_PDF_TRANSPARENCY_FLATTENED"),
+        "rgb carries transparency, so nothing is flattened: {}",
+        stderr(&srgb)
+    );
+}

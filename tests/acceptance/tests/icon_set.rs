@@ -265,3 +265,37 @@ fn an_unresolved_definition_is_reported_and_no_partial_set_is_written() {
         "no partial set is written"
     );
 }
+
+/// An icon whose geometry reaches beyond the shared canvas is warned about
+/// rather than silently clipped, and the rest of the set still exports
+/// (FEAT-025).
+#[test]
+fn an_icon_that_overflows_the_shared_canvas_warns_that_detail_may_be_lost() {
+    let dir = icon_set_project("icon-set-detail");
+    dir.write("definitions/plus.json", &icon_definition("plus", 40.0));
+
+    let output = run_vectr_env(
+        dir.path(),
+        &[
+            "icon-set",
+            "export",
+            "ui",
+            "--format",
+            "svg",
+            "--out-dir",
+            "icons",
+        ],
+        &[ENABLE],
+        &[(ENABLE, "1")],
+    );
+    assert_eq!(code(&output), 0, "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("W_ICON_DETAIL"),
+        "the icon that overflows the canvas is warned about: {}",
+        stderr(&output)
+    );
+    assert!(
+        dir.path().join("icons/icon-plus.svg").is_file(),
+        "the overflowing icon is still exported"
+    );
+}

@@ -501,6 +501,55 @@ pub fn vectr_mcp_bin() -> PathBuf {
     target.join("debug").join(name)
 }
 
+/// The path to the built `vectr-eval` binary.
+///
+/// Mirrors [`vectr_bin`]: the acceptance crate is a separate workspace, so the
+/// binary is resolved from the product workspace's target directory, honouring
+/// `CARGO_TARGET_DIR` and the `VECTR_EVAL_BIN` override. Build the workspace
+/// first.
+pub fn vectr_eval_bin() -> PathBuf {
+    if let Some(path) = std::env::var_os("VECTR_EVAL_BIN") {
+        return PathBuf::from(path);
+    }
+    let target = std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| workspace_root().join("target"));
+    let name = format!("vectr-eval{}", std::env::consts::EXE_SUFFIX);
+    target.join("debug").join(name)
+}
+
+/// Runs the `vectr-eval` binary in `cwd` with `args`, first removing every name
+/// in `remove` from the child's environment and then applying `env`.
+///
+/// The harness is gated by `enable_eval_harness` (off by default), so a test
+/// that measures the enabled harness sets `VECTR_ENABLE_EVAL_HARNESS`
+/// explicitly and a test that measures the documented default removes it
+/// (FEAT-023, C-006).
+pub fn run_vectr_eval_env(
+    cwd: &Path,
+    args: &[&str],
+    remove: &[&str],
+    env: &[(&str, &str)],
+) -> Output {
+    let binary = vectr_eval_bin();
+    assert!(
+        binary.is_file(),
+        "build the workspace before the acceptance suite: `{}` is missing",
+        binary.display()
+    );
+    let mut command = Command::new(&binary);
+    command.args(args).current_dir(cwd);
+    for name in remove {
+        command.env_remove(name);
+    }
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    command
+        .output()
+        .unwrap_or_else(|error| panic!("could not run `{}`: {error}", binary.display()))
+}
+
 /// The captured result of one `vectr-mcp` stdio session.
 pub struct McpRun {
     /// Every response line, decoded as JSON, in the order the server emitted them.

@@ -728,3 +728,94 @@ fn a_part_renders_to_png_from_the_cli() {
     let bytes = std::fs::read(dir.path().join("badge.png")).expect("the png");
     assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
 }
+
+/// `vectr inspect` renders a whole-scene preview, reports where it was written
+/// and the size it came out at, and notes that the visual comparison with the
+/// request is the caller's (FEAT-022, C-004).
+#[test]
+fn inspect_writes_a_preview_and_notes_the_missing_capability() {
+    let dir = project_with("cli-inspect", VALID_SCENE);
+    let output = run_vectr(
+        dir.path(),
+        &["inspect", "scene", "--out", "dist/preview.png"],
+    );
+    assert_eq!(code(&output), 0, "{}", stderr(&output));
+
+    let bytes =
+        std::fs::read(dir.path().join("dist/preview.png")).expect("the preview was written");
+    assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n", "a PNG preview");
+    assert!(
+        stdout(&output).contains("dist/preview.png"),
+        "the written path is reported: {}",
+        stdout(&output)
+    );
+    assert!(
+        stdout(&output).contains("preview 100x100"),
+        "the rendered size is reported: {}",
+        stdout(&output)
+    );
+    assert!(
+        stderr(&output).contains("W_INSPECTION_UNAVAILABLE"),
+        "the command line has no inspection capability of its own: {}",
+        stderr(&output)
+    );
+}
+
+/// A preview too small to judge can be raised from the command line (FEAT-022).
+#[test]
+fn inspect_size_is_configurable_from_the_cli() {
+    let dir = project_with("cli-inspect-size", VALID_SCENE);
+    let output = run_vectr(
+        dir.path(),
+        &[
+            "inspect",
+            "scene",
+            "--width",
+            "64",
+            "--height",
+            "48",
+            "--out",
+            "dist/preview.png",
+        ],
+    );
+    assert_eq!(code(&output), 0, "{}", stderr(&output));
+    assert!(
+        stdout(&output).contains("preview 64x48"),
+        "the requested size is honoured: {}",
+        stdout(&output)
+    );
+}
+
+/// A preview with no `--out` defaults to `dist/<scene>.png` (FEAT-022).
+#[test]
+fn inspect_defaults_its_output_to_dist_scene_png() {
+    let dir = project_with("cli-inspect-default-out", VALID_SCENE);
+    let output = run_vectr(dir.path(), &["inspect", "scene"]);
+    assert_eq!(code(&output), 0, "{}", stderr(&output));
+    assert!(
+        dir.path().join("dist/scene.png").is_file(),
+        "{}",
+        stdout(&output)
+    );
+}
+
+/// A scene that fails the structural gate is reported before any preview is
+/// rendered and nothing is written (FEAT-022, NFR-011).
+#[test]
+fn inspect_reports_a_structural_failure_before_rendering() {
+    let dir = project_with("cli-inspect-invalid", INVALID_SCENE);
+    let output = run_vectr(
+        dir.path(),
+        &["inspect", "scene", "--out", "dist/preview.png"],
+    );
+    assert_ne!(code(&output), 0, "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("E_SCHEMA"),
+        "the structural finding is reported: {}",
+        stderr(&output)
+    );
+    assert!(
+        !dir.path().join("dist/preview.png").exists(),
+        "nothing is rendered for an invalid scene"
+    );
+}

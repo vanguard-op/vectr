@@ -182,3 +182,30 @@ fn distinct_instances_of_one_definition_generate_differently_and_reproducibly() 
         "two instances of one definition must vary"
     );
 }
+
+#[test]
+fn a_seed_that_is_not_an_integer_is_a_validation_error_naming_it() {
+    let dir = TempDir::new("procedural-bad-seed");
+    dir.write("vectr.project.json", r#"{"defaultSceneId":"s"}"#);
+
+    let mut document = scene_with(vec![rect("c1", 0, 0.0, 0.0, 10.0, 10.0)], None, None);
+    document["seed"] = json!("abc");
+    write_scene_as(&dir, "s", document);
+
+    let output = run_vectr(dir.path(), &["validate", "s", "--json"]);
+    assert_eq!(code(&output), 1, "{}", stderr(&output));
+    let findings: Value =
+        serde_json::from_str(stdout(&output).trim()).expect("validate --json prints an array");
+    let finding = findings
+        .as_array()
+        .expect("an array of findings")
+        .iter()
+        .find(|finding| finding["code"] == "E_SCHEMA")
+        .unwrap_or_else(|| panic!("the invalid seed is reported: {findings}"));
+    assert!(
+        finding["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("seed")),
+        "the finding names the invalid seed: {finding}"
+    );
+}
