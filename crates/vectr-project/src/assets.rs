@@ -73,6 +73,11 @@ const PALETTE_FIELD: &str = "/paletteId";
 /// The scene field that names the style recipe a scene renders in (C-001).
 const RECIPE_FIELD: &str = "/recipeId";
 
+/// The project configuration field that names the default palette (FEAT-005,
+/// D-039). A scene that names no palette resolves against it, and an isolated
+/// reusable definition resolves its tokens against it.
+const DEFAULT_PALETTE_FIELD: &str = "/defaultPaletteId";
+
 /// The project configuration field that names the default style recipe (D-009).
 const DEFAULT_RECIPE_FIELD: &str = "/defaultRecipeId";
 
@@ -125,15 +130,23 @@ impl ProjectAssets {
     pub fn load(root: &Path, scene: &Scene) -> Result<Self, Diagnostics> {
         let mut diagnostics = Diagnostics::new();
 
-        let palette = match scene.palette_id.as_deref() {
-            Some(id) => match load_palette(root, id) {
-                Ok(palette) => Some(palette),
-                Err(findings) => {
-                    diagnostics.extend(findings);
-                    None
-                }
-            },
-            None => None,
+        // A scene resolves its tokens against the palette it names or, when it
+        // names none, the project's default (docs/Vectr/schema.md,
+        // "ProjectConfig"). A project that names neither resolves no palette,
+        // and a token reference then fails rather than falling back silently
+        // (FEAT-005).
+        let default_palette = match load_default_palette_id(root) {
+            Ok(id) => id,
+            Err(findings) => {
+                diagnostics.extend(findings);
+                None
+            }
+        };
+        let palette_id = scene.palette_id.clone().or(default_palette);
+        let palette_field = if scene.palette_id.is_some() {
+            PALETTE_FIELD
+        } else {
+            DEFAULT_PALETTE_FIELD
         };
 
         // A scene renders in the recipe it names, or, when it names none, the
@@ -156,7 +169,74 @@ impl ProjectAssets {
             DEFAULT_RECIPE_FIELD
         };
         let recipe_id = scene.recipe_id.clone().or(default_recipe);
-        let recipe = match recipe_id.as_deref() {
+
+        Self::assemble(
+            root,
+            &mut diagnostics,
+            palette_id.as_deref(),
+            palette_field,
+            recipe_id.as_deref(),
+            recipe_field,
+            |definitions| has_text(scene, definitions),
+        )
+    }
+
+    /// Loads the assets an isolated reusable definition renders against.
+    ///
+    /// A definition carries no palette or recipe of its own, so rendered in
+    /// isolation it resolves its tokens against the project's default palette
+    /// and renders under the project's default recipe (FEAT-005, FEAT-031,
+    /// D-039). A project that names no default palette cannot resolve the
+    /// definition's colours and is reported naming the missing palette rather
+    /// than rendering an unresolved token (FEAT-005, FEAT-016).
+    pub fn load_for_definition(root: &Path, definition: &Definition) -> Result<Self, Diagnostics> {
+        let palette_id = match load_default_palette_id(root) {
+            Ok(Some(id)) => id,
+            Ok(None) => return Err(missing_default_palette(root, &definition.id)),
+            Err(findings) => return Err(findings),
+        };
+        // A project that names no default recipe renders flat (FEAT-005).
+        let recipe_id = load_default_recipe_id(root)?;
+
+        let mut diagnostics = Diagnostics::new();
+        Self::assemble(
+            root,
+            &mut diagnostics,
+            Some(&palette_id),
+            DEFAULT_PALETTE_FIELD,
+            recipe_id.as_deref(),
+            DEFAULT_RECIPE_FIELD,
+            |definitions| definition_has_text(definition, definitions),
+        )
+    }
+
+    /// Loads the strokes, gradients, definitions, and fonts a part shares,
+    /// resolving the palette and recipe the caller selected.
+    ///
+    /// A document that cannot be read is accumulated in `diagnostics` rather
+    /// than skipped, so a broken project fails loudly instead of compiling
+    /// against partial assets (NFR-011).
+    fn assemble(
+        root: &Path,
+        diagnostics: &mut Diagnostics,
+        palette_id: Option<&str>,
+        palette_field: &str,
+        recipe_id: Option<&str>,
+        recipe_field: &str,
+        needs_text: impl Fn(&[Definition]) -> bool,
+    ) -> Result<Self, Diagnostics> {
+        let palette = match palette_id {
+            Some(id) => match load_palette(root, id, palette_field) {
+                Ok(palette) => Some(palette),
+                Err(findings) => {
+                    diagnostics.extend(findings);
+                    None
+                }
+            },
+            None => None,
+        };
+
+        let recipe = match recipe_id {
             Some(id) => match load_recipe(root, id, recipe_field) {
                 Ok(recipe) => Some(recipe),
                 Err(findings) => {
@@ -191,11 +271,11 @@ impl ProjectAssets {
             }
         };
 
-        // The bundled fonts are only meaningful for a scene that draws text,
-        // directly or through a placed definition; carrying them otherwise would
-        // embed a font file nothing uses.
+        // The bundled fonts are only meaningful for a part that draws text,
+        // directly or through a placed definition; carrying them otherwise
+        // would embed a font file nothing uses.
         let mut fonts = Vec::new();
-        if has_text(scene, &definitions) {
+        if needs_text(&definitions) {
             fonts.extend(bundled_fonts());
             match load_font_assets(root) {
                 Ok(user) => fonts.extend(user),
@@ -204,7 +284,7 @@ impl ProjectAssets {
         }
 
         if diagnostics.has_errors() {
-            return Err(diagnostics);
+            return Err(std::mem::take(diagnostics));
         }
         Ok(Self {
             palette,
@@ -404,6 +484,15 @@ fn has_text(scene: &Scene, definitions: &[Definition]) -> bool {
             .any(|definition| definition.elements.iter().any(is_text_element))
 }
 
+/// Whether an isolated definition draws any text, directly or through a
+/// definition it places, and so needs a font at all (FEAT-024, FEAT-030).
+fn definition_has_text(definition: &Definition, definitions: &[Definition]) -> bool {
+    definition.elements.iter().any(is_text_element)
+        || definitions
+            .iter()
+            .any(|other| other.elements.iter().any(is_text_element))
+}
+
 /// Whether a definition element is a text run.
 fn is_text_element(element: &Element) -> bool {
     element.kind == ElementKind::Text
@@ -463,16 +552,16 @@ pub(crate) fn safe_id(id: &str, field: &str) -> Result<(), Diagnostics> {
 /// A reference that resolves nowhere is a located error at the scene's
 /// `/paletteId`, so a front end reports the reference and where it is declared
 /// (FEAT-005, FEAT-019).
-fn load_palette(root: &Path, id: &str) -> Result<Palette, Diagnostics> {
-    safe_id(id, PALETTE_FIELD)?;
+fn load_palette(root: &Path, id: &str, field: &str) -> Result<Palette, Diagnostics> {
+    safe_id(id, field)?;
     let dir = root.join(PALETTE_DIR);
     let direct = dir.join(format!("{id}.json"));
     if direct.is_file() {
         let palette = read_document(&direct, "palette", parse_palette, validate_palette)
-            .map_err(|findings| located(findings, PALETTE_FIELD))?;
+            .map_err(|findings| located(findings, field))?;
         if palette.id != id {
             return Err(style_error_at(
-                PALETTE_FIELD,
+                field,
                 format!(
                     "palette `{}` declares id `{}`, not `{id}`",
                     direct.display(),
@@ -490,9 +579,38 @@ fn load_palette(root: &Path, id: &str) -> Result<Palette, Diagnostics> {
         }
     }
     Err(style_error_at(
-        PALETTE_FIELD,
+        field,
         format!("palette `{id}` was not found under `{}`", dir.display()),
     ))
+}
+
+/// Reads the project's default palette id, when its configuration names one
+/// (docs/Vectr/schema.md, "ProjectConfig").
+///
+/// A project configuration that cannot be read or parsed is reported rather
+/// than ignored, so a mistyped `defaultPaletteId` cannot silently leave a
+/// scene or an isolated definition without the palette it meant to resolve
+/// (NFR-011).
+fn load_default_palette_id(root: &Path) -> Result<Option<String>, Diagnostics> {
+    project_string_field(root, "defaultPaletteId")
+}
+
+/// A definition rendered in isolation when the project names no default palette.
+///
+/// The palette is the only source of a definition's colours (FEAT-005), so a
+/// missing default is a hard failure naming the project rather than an
+/// unresolved token at render time (FEAT-016, FEAT-031).
+fn missing_default_palette(root: &Path, definition_id: &str) -> Diagnostics {
+    Diagnostics::from(
+        Diagnostic::error(
+            STYLE_ASSET,
+            format!(
+                "definition `{definition_id}` renders in isolation, but the project at `{}` names no default palette",
+                root.display()
+            ),
+        )
+        .with_location(Location::path(DEFAULT_PALETTE_FIELD)),
+    )
 }
 
 /// Reads the project's default style-recipe id, when its configuration names one
@@ -648,7 +766,10 @@ fn load_gradients(root: &Path) -> Result<Vec<Gradient>, Diagnostics> {
 }
 
 /// Loads every reusable definition the project defines (FEAT-030, D-036).
-fn load_definitions(root: &Path) -> Result<Vec<Definition>, Diagnostics> {
+///
+/// Shared with part resolution, which looks a definition up by identifier
+/// before falling back to an element subtree (FEAT-031, D-039).
+pub(crate) fn load_definitions(root: &Path) -> Result<Vec<Definition>, Diagnostics> {
     let dir = root.join(DEFINITION_DIR);
     let mut definitions = Vec::new();
     let mut diagnostics = Diagnostics::new();
@@ -972,6 +1093,63 @@ mod tests {
         assert_eq!(
             assets.palette().map(|palette| palette.id.as_str()),
             Some("brand")
+        );
+    }
+
+    #[test]
+    fn a_scene_that_names_no_palette_resolves_the_project_default() {
+        let dir = TempDir::new("assets-default-palette");
+        write(
+            dir.path(),
+            "vectr.project.json",
+            r#"{"defaultPaletteId":"brand"}"#,
+        );
+        write(dir.path(), "palettes/brand.json", INK_PALETTE);
+        let scene_path = write(dir.path(), "scenes/scene.json", RECT_SCENE);
+        let scene = parse_scene(RECT_SCENE).expect("a valid scene");
+
+        let assets = ProjectAssets::load_for_scene(&scene_path, &scene).expect("loads");
+        assert_eq!(
+            assets.palette().map(|palette| palette.id.as_str()),
+            Some("brand"),
+            "a scene that names no palette falls back to the project default"
+        );
+    }
+
+    #[test]
+    fn an_isolated_definition_resolves_the_project_default_palette_and_recipe() {
+        let dir = TempDir::new("assets-definition-defaults");
+        write(
+            dir.path(),
+            "vectr.project.json",
+            r#"{"defaultPaletteId":"brand","defaultRecipeId":"line"}"#,
+        );
+        write(dir.path(), "palettes/brand.json", INK_PALETTE);
+        write(dir.path(), "recipes/line.json", LINE_RECIPE);
+        write(
+            dir.path(),
+            "definitions/badge.json",
+            r##"{"id":"badge","projectId":"p","name":"Badge","parameters":[],"origin":{"x":0,"y":0},"elements":[{"id":"r1","definitionId":"badge","order":0,"kind":"rect","geometry":{"x":0,"y":0,"width":10,"height":10},"transform":{"translateX":0,"translateY":0,"rotate":0,"scaleX":1,"scaleY":1},"fill":{"kind":"token","ref":"accent"},"opacity":1,"visible":true}]}"##,
+        );
+        let definition = parse_definition(
+            &fs::read_to_string(dir.path().join("definitions/badge.json")).expect("reads"),
+        )
+        .expect("a valid definition");
+
+        let assets = ProjectAssets::load_for_definition(dir.path(), &definition).expect("loads");
+        assert_eq!(
+            assets.palette().map(|palette| palette.id.as_str()),
+            Some("brand")
+        );
+        let style = assets.style_context();
+        assert_eq!(style.recipe.map(|recipe| recipe.id.as_str()), Some("line"));
+        let model = vectr_core::compile_definition(&definition, &style).expect("compiles");
+        assert_eq!(model.meta.recipe.as_deref(), Some("line-art"));
+        assert_eq!(
+            model.nodes[0].paint.fill,
+            Some(vectr_core::render::Paint::Color {
+                value: "#ff0000".to_string()
+            })
         );
     }
 

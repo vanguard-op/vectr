@@ -111,6 +111,45 @@ pub fn resolve_scene(root: &Path, requested: Option<&str>) -> Result<ProjectScen
     })
 }
 
+/// The project's scenes, the default first, each resolved by its identifier.
+///
+/// Part resolution locates an element subtree across the whole project without
+/// the caller naming a scene, so it needs every scene document. The order is
+/// deterministic — the default scene first, then the rest by file name — so the
+/// same identifier resolves the same way every run (FEAT-031, D-039, NFR-010).
+pub fn project_scenes(root: &Path) -> Vec<ProjectScene> {
+    let mut ids: Vec<String> = Vec::new();
+    if let Ok(entries) = fs::read_dir(root.join(SCENE_DIR)) {
+        let mut paths: Vec<PathBuf> = entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.is_file()
+                    && path
+                        .extension()
+                        .and_then(std::ffi::OsStr::to_str)
+                        .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
+            })
+            .collect();
+        paths.sort();
+        for path in paths {
+            if let Some(stem) = path.file_stem().and_then(std::ffi::OsStr::to_str) {
+                ids.push(stem.to_string());
+            }
+        }
+    }
+
+    if let Ok(default) = resolve_scene(root, None) {
+        let default = default.id().to_string();
+        ids.retain(|id| id != &default);
+        ids.insert(0, default);
+    }
+
+    ids.into_iter()
+        .filter_map(|id| resolve_scene(root, Some(&id)).ok())
+        .collect()
+}
+
 fn scene_error(message: impl Into<String>) -> Diagnostics {
     Diagnostics::from(Diagnostic::error(SCENE, message))
 }

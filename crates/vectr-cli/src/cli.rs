@@ -32,14 +32,15 @@ use vectr_core::scene::INVALID_COLOR;
 use vectr_core::{
     compile_definition, compile_subtree, compile_with_style, export_png_reporting,
     export_svg_reporting, parse as parse_scene_source, schema, schema_for,
-    validate as validate_scene_model, validate_gradient_usage, validate_palette_usage, Canvas,
-    Definition, Diagnostic, DiagnosticCode, Diagnostics, RasterOptions, RenderModel, Scene,
-    SchemaForm, SvgOptions, CURRENT_FORMAT_VERSION, PART,
+    validate as validate_scene_model, validate_gradient_usage, validate_palette_usage, Diagnostic,
+    DiagnosticCode, Diagnostics, RasterOptions, RenderModel, Scene, SchemaForm, SvgOptions,
 };
 
 use crate::init;
 use crate::output::write_atomic;
-use vectr_project::{project_root_from, resolve_scene, ProjectAssets, ProjectScene, SCENE_DIR};
+use vectr_project::{
+    project_root_from, resolve_part, resolve_scene, ProjectAssets, ProjectScene, ResolvedPart,
+};
 
 /// The command succeeded.
 pub const EXIT_SUCCESS: i32 = 0;
@@ -861,24 +862,15 @@ fn export_scene(
     write_report(target, &bytes, &warnings)
 }
 
-/// A part resolved within a project, with the assets it renders against.
-enum ResolvedPart {
-    /// A reusable definition, project-scoped and previewed with its defaults.
-    Definition {
-        definition: Definition,
-        assets: ProjectAssets,
-    },
-    /// An element subtree inside one of the project's scenes.
-    Element { scene: Scene, assets: ProjectAssets },
-}
-
 /// Renders one part on its own, framed to its own bounds (FEAT-031).
 ///
-/// The part is a reusable definition, resolved project-wide, or an element
-/// subtree resolved among the project's scenes. A definition is previewed
-/// against the project's default scene's style, so its palette tokens resolve;
-/// an element subtree is previewed against the style of the scene that owns it.
-/// A part identifier that resolves to neither is missing input (exit 2).
+/// The part is a reusable definition or an element subtree, resolved in the
+/// project's shared definition-and-element namespace. A definition is previewed
+/// against the project's default palette and default recipe, so its tokens and
+/// style resolve with no placing scene; an element subtree is previewed against
+/// the style of the scene that owns it (FEAT-005, D-039). A part identifier
+/// that resolves to nothing, or to more than one definition or element, is
+/// missing input (exit 2).
 #[allow(clippy::too_many_arguments)]
 fn render_part(
     cwd: &Path,
@@ -987,129 +979,6 @@ fn output_frame(
         resolved_height *= density;
     }
     (resolved_width, resolved_height)
-}
-
-/// Resolves a part identifier to a definition or an element subtree.
-///
-/// Definitions are project-scoped, so one is looked up once; an element subtree
-/// is looked up across the project's scenes, with the default scene tried
-/// first, then the rest in a deterministic order, so the same identifier
-/// resolves the same way every run (NFR-010).
-fn resolve_part(root: &Path, part: &str) -> Result<ResolvedPart, Diagnostics> {
-    if let Some((definition, assets)) = find_definition(root, part)? {
-        return Ok(ResolvedPart::Definition { definition, assets });
-    }
-
-    for scene in project_scenes(root) {
-        let source = scene.source()?;
-        let parsed = match parse_scene_source(&source) {
-            Ok(parsed) => parsed,
-            Err(_) => continue,
-        };
-        if parsed.element(part).is_none() {
-            continue;
-        }
-        let assets = ProjectAssets::load(root, &parsed)?;
-        return Ok(ResolvedPart::Element {
-            scene: parsed,
-            assets,
-        });
-    }
-
-    Err(Diagnostics::from(Diagnostic::error(
-        PART,
-        format!(
-            "part `{part}` resolves to no definition or element in the project at `{}`",
-            root.display()
-        ),
-    )))
-}
-
-/// Finds a project definition by identifier, with the assets to render it.
-///
-/// The project's default scene supplies the style context, so a definition's
-/// palette tokens and recipe resolve as they would when a scene places it. A
-/// project that names no default scene — or whose default cannot be loaded —
-/// still resolves its definitions, with no palette.
-fn find_definition(
-    root: &Path,
-    part: &str,
-) -> Result<Option<(Definition, ProjectAssets)>, Diagnostics> {
-    if let Ok(scene) = resolve_scene(root, None) {
-        if let Ok(parsed) = scene.parse() {
-            if let Ok(assets) = ProjectAssets::load(root, &parsed) {
-                let found = assets
-                    .definitions()
-                    .iter()
-                    .find(|definition| definition.id == part)
-                    .cloned();
-                return Ok(found.map(|definition| (definition, assets)));
-            }
-        }
-    }
-
-    let assets = ProjectAssets::load(root, &probe_scene())?;
-    let found = assets
-        .definitions()
-        .iter()
-        .find(|definition| definition.id == part)
-        .cloned();
-    Ok(found.map(|definition| (definition, assets)))
-}
-
-/// The project's scenes, the default first, each resolved by its identifier.
-fn project_scenes(root: &Path) -> Vec<ProjectScene> {
-    let mut ids: Vec<String> = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(root.join(SCENE_DIR)) {
-        let mut paths: Vec<PathBuf> = entries
-            .flatten()
-            .map(|entry| entry.path())
-            .filter(|path| {
-                path.is_file()
-                    && path
-                        .extension()
-                        .and_then(std::ffi::OsStr::to_str)
-                        .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
-            })
-            .collect();
-        paths.sort();
-        for path in paths {
-            if let Some(stem) = path.file_stem().and_then(std::ffi::OsStr::to_str) {
-                ids.push(stem.to_string());
-            }
-        }
-    }
-
-    if let Ok(default) = resolve_scene(root, None) {
-        let default = default.id().to_string();
-        ids.retain(|id| id != &default);
-        ids.insert(0, default);
-    }
-
-    ids.into_iter()
-        .filter_map(|id| resolve_scene(root, Some(&id)).ok())
-        .collect()
-}
-
-/// A minimal scene used only to load a project's assets without a palette.
-fn probe_scene() -> Scene {
-    Scene {
-        id: "probe".to_string(),
-        project_id: String::new(),
-        name: "probe".to_string(),
-        format_version: CURRENT_FORMAT_VERSION.to_string(),
-        canvas: Canvas {
-            width: 1.0,
-            height: 1.0,
-            background: "transparent".to_string(),
-        },
-        palette_id: None,
-        recipe_id: None,
-        title: None,
-        description: None,
-        elements: Vec::new(),
-        constraints: None,
-    }
 }
 
 /// Exports a compiled model to bytes, mapping an export failure to a report.
@@ -2328,9 +2197,18 @@ mod tests {
       ]
     }"##;
 
-    /// Writes a project with a default scene, a palette, and two definitions.
+    /// Writes a project with a default scene, a default palette, and two
+    /// definitions.
+    ///
+    /// The project names `brand` as its default palette, so an isolated
+    /// definition resolves its `accent` token without a placing scene
+    /// (FEAT-005, D-039).
     fn part_project(dir: &TempDir) {
-        write_at(dir, "vectr.project.json", r#"{"defaultSceneId":"main"}"#);
+        write_at(
+            dir,
+            "vectr.project.json",
+            r#"{"defaultSceneId":"main","defaultPaletteId":"brand"}"#,
+        );
         write_at(dir, "palettes/brand.json", PALETTE);
         write_at(dir, "definitions/badge.json", BADGE_DEFINITION);
         write_at(dir, "definitions/empty.json", EMPTY_DEFINITION);
@@ -2521,5 +2399,89 @@ mod tests {
         assert_eq!(report.code, EXIT_SUCCESS, "{}", report.stderr);
         let bytes = fs::read(&out).expect("reads the png");
         assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n", "PNG signature");
+    }
+
+    #[test]
+    fn render_resolves_a_definition_from_the_project_default_palette() {
+        // The default scene names a different palette, so a preview that still
+        // resolves `accent` to the project default proves an isolated definition
+        // takes the project's default palette, not its default scene's
+        // (FEAT-005, FEAT-031).
+        let dir = TempDir::new("render-project-palette");
+        part_project(&dir);
+        write_at(
+            &dir,
+            "palettes/scene.json",
+            r##"{"id":"scene","projectId":"project","name":"Scene","tokens":[{"name":"accent","value":"#0000ff"}]}"##,
+        );
+        write_at(
+            &dir,
+            "scenes/main.json",
+            &SUBTREE_SCENE.replace(r##""paletteId": "brand""##, r##""paletteId": "scene""##),
+        );
+
+        let out = dir.path().join("badge.svg");
+        let report = run_in(
+            render("badge", Some(out.clone()), Format::Svg, None),
+            dir.path(),
+        );
+        assert_eq!(report.code, EXIT_SUCCESS, "{}", report.stderr);
+        let svg = fs::read_to_string(&out).expect("reads the preview");
+        assert!(
+            svg.contains("fill=\"#ff0000\""),
+            "the project default palette resolved: {svg}"
+        );
+    }
+
+    #[test]
+    fn render_refuses_a_definition_when_the_project_names_no_default_palette() {
+        let dir = TempDir::new("render-no-default-palette");
+        write_at(&dir, "vectr.project.json", r#"{"defaultSceneId":"main"}"#);
+        write_at(&dir, "palettes/brand.json", PALETTE);
+        write_at(&dir, "definitions/badge.json", BADGE_DEFINITION);
+        write_at(&dir, "scenes/main.json", SUBTREE_SCENE);
+
+        let out = dir.path().join("badge.svg");
+        let report = run_in(
+            render("badge", Some(out.clone()), Format::Svg, None),
+            dir.path(),
+        );
+        assert_eq!(report.code, EXIT_USAGE, "{}", report.stderr);
+        assert!(
+            report.stderr.contains("default palette"),
+            "the missing palette is named: {}",
+            report.stderr
+        );
+        assert!(!out.exists(), "no preview is written");
+    }
+
+    #[test]
+    fn render_refuses_a_part_identifier_that_is_not_unique() {
+        // The `mark` element in the default scene and a `mark` definition share
+        // one namespace, so the identifier is a duplicate rather than resolved
+        // by an arbitrary ordering (FEAT-016, FEAT-031).
+        let dir = TempDir::new("render-duplicate");
+        part_project(&dir);
+        write_at(
+            &dir,
+            "definitions/mark.json",
+            r##"{"id":"mark","projectId":"project","name":"Mark","parameters":[],"origin":{"x":0,"y":0},"elements":[]}"##,
+        );
+
+        let out = dir.path().join("mark.svg");
+        let report = run_in(
+            render("mark", Some(out.clone()), Format::Svg, None),
+            dir.path(),
+        );
+        assert_eq!(report.code, EXIT_USAGE, "{}", report.stderr);
+        assert!(
+            report.stderr.contains("E_DUPLICATE_ID"),
+            "the duplicate is reported: {}",
+            report.stderr
+        );
+        assert!(
+            !out.exists(),
+            "no preview is written before the duplicate fails"
+        );
     }
 }

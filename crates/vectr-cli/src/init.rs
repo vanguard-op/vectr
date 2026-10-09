@@ -13,7 +13,9 @@ use std::path::Path;
 
 use serde_json::json;
 use vectr_core::scene::CURRENT_FORMAT_VERSION;
-use vectr_core::{parse_style_recipe, validate_style_recipe, Canvas, Scene};
+use vectr_core::{
+    parse_palette, parse_style_recipe, validate_palette, validate_style_recipe, Canvas, Scene,
+};
 
 use crate::cli::{diagnostics_text, Report, EXIT_OUTPUT, EXIT_SUCCESS};
 use crate::output::write_atomic;
@@ -33,6 +35,28 @@ const DEFAULT_RECIPE_ID: &str = "flat";
 
 /// The default recipe's file name within `recipes/`.
 const DEFAULT_RECIPE_FILE: &str = "flat.json";
+
+/// The default palette a new project resolves its tokens against (FEAT-005,
+/// FEAT-016, D-039).
+const DEFAULT_PALETTE_ID: &str = "brand";
+
+/// The default palette's file name within `palettes/`.
+const DEFAULT_PALETTE_FILE: &str = "brand.json";
+
+/// The starter palette document a new project ships.
+///
+/// Kept as source text so the scaffold writes exactly what a project document
+/// holds; a test parses and validates it so the starter project always
+/// compiles.
+const DEFAULT_PALETTE_JSON: &str = r##"{
+  "id": "brand",
+  "projectId": "project",
+  "name": "Brand",
+  "tokens": [
+    { "name": "ink", "value": "#111111" },
+    { "name": "paper", "value": "#ffffff" }
+  ]
+}"##;
 
 /// The flat recipe document a new project ships, ready to compile against.
 ///
@@ -75,6 +99,7 @@ pub fn scaffold(dir: &Path) -> Report {
         "formatVersion": CURRENT_FORMAT_VERSION,
         "defaultSceneId": STARTER_SCENE_ID,
         "defaultRecipeId": DEFAULT_RECIPE_ID,
+        "defaultPaletteId": DEFAULT_PALETTE_ID,
         "output": {
             "format": "svg",
             "width": 512,
@@ -88,9 +113,13 @@ pub fn scaffold(dir: &Path) -> Report {
         Err(error) => return write_failure(&config_path, &error.to_string()),
     };
 
-    // The default recipe is validated before anything is written, so a scaffold
-    // never ships a project whose starter recipe cannot compile (NFR-011).
+    // The default recipe and palette are validated before anything is written,
+    // so a scaffold never ships a project whose starter style cannot compile
+    // (NFR-011).
     if let Err(diagnostics) = validate_default_recipe() {
+        return Report::failure(EXIT_OUTPUT, diagnostics_text(&diagnostics));
+    }
+    if let Err(diagnostics) = validate_default_palette() {
         return Report::failure(EXIT_OUTPUT, diagnostics_text(&diagnostics));
     }
 
@@ -127,6 +156,16 @@ pub fn scaffold(dir: &Path) -> Report {
         }
     }
 
+    // The project names a starter palette as its default, so a scene that names
+    // none resolves its tokens and an isolated definition has a palette to
+    // render against (FEAT-005, FEAT-016).
+    let palette_path = dir.join("palettes").join(DEFAULT_PALETTE_FILE);
+    if !palette_path.exists() {
+        if let Err(error) = write_atomic(&palette_path, DEFAULT_PALETTE_JSON.as_bytes()) {
+            return write_failure(&palette_path, &error.to_string());
+        }
+    }
+
     // The authoring guide a coding agent loads from the project root. An
     // existing file is left alone: a project the user already runs has its own
     // agent instructions, and the scaffold never clobbers them (FEAT-020).
@@ -148,6 +187,17 @@ pub fn scaffold(dir: &Path) -> Report {
 fn validate_default_recipe() -> Result<(), vectr_core::Diagnostics> {
     let recipe = parse_style_recipe(DEFAULT_RECIPE_JSON)?;
     let findings = validate_style_recipe(&recipe);
+    if findings.has_errors() {
+        Err(findings)
+    } else {
+        Ok(())
+    }
+}
+
+/// Checks the bundled default palette parses and validates (FEAT-005).
+fn validate_default_palette() -> Result<(), vectr_core::Diagnostics> {
+    let palette = parse_palette(DEFAULT_PALETTE_JSON)?;
+    let findings = validate_palette(&palette);
     if findings.has_errors() {
         Err(findings)
     } else {
@@ -220,6 +270,7 @@ mod tests {
         assert_eq!(value["name"], "habit-tracker");
         assert_eq!(value["formatVersion"], CURRENT_FORMAT_VERSION);
         assert_eq!(value["defaultRecipeId"], "flat");
+        assert_eq!(value["defaultPaletteId"], DEFAULT_PALETTE_ID);
         assert_eq!(value["output"]["format"], "svg");
         // The project names its starter scene as the default, and the scene
         // lives under the scene directory, not at the project root (FEAT-016,
@@ -247,6 +298,15 @@ mod tests {
         let recipe = vectr_core::parse_style_recipe(&recipe_text).expect("a valid recipe");
         assert!(recipe.is_flat());
         assert!(vectr_core::validate_style_recipe(&recipe).is_empty());
+
+        // The starter project names a starter palette as its default, so a
+        // scene that names none resolves its tokens and an isolated definition
+        // has a palette to render against (FEAT-005, FEAT-016).
+        let palette_text = fs::read_to_string(target.join("palettes").join(DEFAULT_PALETTE_FILE))
+            .expect("palette");
+        let palette = vectr_core::parse_palette(&palette_text).expect("a valid palette");
+        assert_eq!(palette.id, DEFAULT_PALETTE_ID);
+        assert!(!palette.tokens.is_empty());
 
         for sub in PROJECT_DIRS {
             assert!(target.join(sub).is_dir(), "{sub} is created");
