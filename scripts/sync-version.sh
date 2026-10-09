@@ -8,10 +8,11 @@
 #     crates/vectr-core/src/scene/version.rs (`CURRENT_FORMAT_VERSION`).
 #
 # The derived copies are the crate dependency pins, the acceptance crate and
-# both lockfiles, the README, the agent skill, its authoring guide and its
-# on-demand references, and the crate's minimal agent guide (the scaffold's
-# AGENTS.md template). Bumping a release means editing the one source and
-# running this script, never editing the copies by hand.
+# both lockfiles, the README, the agent skill, its on-demand references
+# (references/*.md) and its worked examples (examples/*.json), and the crate's
+# minimal agent guide (the scaffold's AGENTS.md template). Bumping a release
+# means editing the one source and running this script, never editing the copies
+# by hand.
 #
 # Usage:
 #   scripts/sync-version.sh          # rewrite the derived copies to match
@@ -32,7 +33,10 @@
 # The format version also appears in the shipped skill's scene template and its
 # evaluation prompts (skills/vectr/assets, skills/vectr/evals), which this
 # script does not own; the acceptance suite validates the template against the
-# built tool, so a stale copy is caught there.
+# built tool, so a stale copy is caught there. The skill's worked examples
+# (skills/vectr/examples/*.json) are scenes this script does own and sweep, so a
+# format-version bump reaches the shipped examples rather than leaving one that
+# no longer validates against the built tool.
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
@@ -201,6 +205,15 @@ apply skills/vectr/SKILL.md -e "$f_fv_quoted" -e "$f_scene"
 for reference in skills/vectr/references/*.md; do
   apply "$reference" \
     -e "$f_json" -e "$f_fv_quoted" -e "$f_xattr" -e "$f_mustbe" -e "$f_isnot" -e "$f_scene"
+done
+
+# The skill's worked examples are scenes under `examples/`, one file each
+# (FEAT-020, D-047); a scene states the format version, so a bump must reach
+# them or a shipped example stops validating against the built tool. A
+# definition example carries no format-version literal, so sweeping the whole
+# directory is a no-op for it and stays correct as examples are added.
+for example in skills/vectr/examples/*.json; do
+  apply "$example" -e "$f_json"
 done
 # The minimal agent guide states the format version only in its target line
 # ("scene `formatVersion` `X`"), so only that pattern applies to it.
