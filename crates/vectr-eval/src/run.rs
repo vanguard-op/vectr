@@ -161,7 +161,7 @@ pub fn compare(baseline: &Path, candidate: &Path) -> Result<Comparison, RunFailu
 mod tests {
     use super::*;
     use crate::provider::parse_model_spec;
-    use crate::testing::{corpus_dir, replay_dir};
+    use crate::testing::{corpus_dir, replay_dir, write_usage};
 
     #[test]
     fn a_replay_run_produces_a_record_and_is_reproducible() {
@@ -280,6 +280,49 @@ mod tests {
             value["prompts"].as_array().map(Vec::len),
             Some(2),
             "one result per prompt"
+        );
+    }
+
+    fn two_prompt_replies() -> crate::testing::TempDir {
+        replay_dir(&[
+            (
+                "p1",
+                r##"{"scene": {"id":"s","projectId":"eval","name":"S","formatVersion":"0.2","canvas":{"width":100,"height":100,"background":"#ffffff"},"elements":[]}}"##,
+                r#"{"fidelity": 0.9, "qualities": {}}"#,
+            ),
+            (
+                "p2",
+                r##"{"scene": {"id":"s2","projectId":"eval","name":"S","formatVersion":"0.2","canvas":{"width":100,"height":100,"background":"#ffffff"},"elements":[]}}"##,
+                r#"{"fidelity": 0.9, "qualities": {"depth": true, "relative_placement": true, "shared_anchors": true, "subject_accuracy": true}}"#,
+            ),
+        ])
+    }
+
+    #[test]
+    fn a_run_reports_the_median_of_the_reported_token_usage() {
+        let dir = two_prompt_replies();
+        write_usage(dir.path(), "p1", 1_000);
+        write_usage(dir.path(), "p2", 3_000);
+        let spec = parse_model_spec(&format!("replay:{}", dir.path().display())).expect("spec");
+
+        let record = execute(&corpus_dir(), &spec).expect("runs");
+        assert_eq!(record.median_tokens, Some(2_000));
+        assert!(record.thresholds.tokens);
+        let value = serde_json::to_value(&record).expect("serializes");
+        assert_eq!(value["medianTokens"], serde_json::json!(2_000));
+    }
+
+    #[test]
+    fn a_run_whose_provider_reports_no_usage_reports_no_median() {
+        let dir = two_prompt_replies();
+        let spec = parse_model_spec(&format!("replay:{}", dir.path().display())).expect("spec");
+
+        let record = execute(&corpus_dir(), &spec).expect("runs");
+        assert_eq!(record.median_tokens, None);
+        let value = serde_json::to_value(&record).expect("serializes");
+        assert!(
+            value.get("medianTokens").is_none(),
+            "the median is absent, not fabricated"
         );
     }
 }

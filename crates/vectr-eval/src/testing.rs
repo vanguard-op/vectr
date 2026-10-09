@@ -76,6 +76,17 @@ pub fn replay_dir(replies: &[(&str, &str, &str)]) -> TempDir {
     dir
 }
 
+/// Records a prompt's authoring-model token usage alongside its replies, so a
+/// replay run reports a median (FEAT-023). A prompt with no usage file reports
+/// none.
+pub fn write_usage(dir: &Path, id: &str, tokens: u64) {
+    write(
+        dir,
+        &format!("{id}.usage.json"),
+        &format!("{{\"tokens\": {tokens}}}"),
+    );
+}
+
 fn write(dir: &Path, name: &str, text: &str) {
     let path = dir.join(name);
     if let Some(parent) = path.parent() {

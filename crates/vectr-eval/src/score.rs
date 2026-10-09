@@ -21,6 +21,9 @@ pub const COMPILE_SUCCESS_BAR: f64 = 0.95;
 pub const FIDELITY_BAR: f64 = 0.80;
 /// NFR-031's complex-end rubric bar.
 pub const HARD_END_BAR: f64 = 0.80;
+/// NFR-030's per-prompt token budget: the median per-prompt token count the
+/// harness reports must stay at or below this figure.
+pub const TOKEN_BUDGET: u64 = 20_000;
 
 /// The tolerance below which two scores are the same measurement.
 const EPSILON: f64 = 1e-9;
@@ -44,10 +47,12 @@ pub fn summarize(
     };
 
     let hard_end = hard_end_scores(&results);
+    let median_tokens = median_tokens(&results);
     let thresholds = Thresholds {
         compile_success: compile_success_rate + EPSILON >= COMPILE_SUCCESS_BAR,
         fidelity: fidelity_score + EPSILON >= FIDELITY_BAR,
         hard_end: hard_end.rubric_pass_rate + EPSILON >= HARD_END_BAR,
+        tokens: median_tokens.is_none_or(|median| median <= TOKEN_BUDGET),
     };
 
     let model_id = model.id.clone();
@@ -62,6 +67,7 @@ pub fn summarize(
         model,
         compile_success_rate,
         fidelity_score,
+        median_tokens,
         regression: false,
         notes: None,
         hard_end,
@@ -127,6 +133,27 @@ fn ratio(part: usize, whole: usize) -> f64 {
     } else {
         part as f64 / whole as f64
     }
+}
+
+/// The median of the per-prompt token counts whose providers reported usage, or
+/// `None` when no prompt reported usage. A prompt whose provider reported no
+/// usage is excluded rather than counted as zero, so a run with no reported
+/// usage has no median rather than a fabricated one (FEAT-023). The record's
+/// `medianTokens` is an integer, so an even-sized sample takes the mean of its
+/// two middle values, rounded to the nearest token.
+fn median_tokens(results: &[PromptResult]) -> Option<u64> {
+    let mut reported: Vec<u64> = results.iter().filter_map(|result| result.tokens).collect();
+    if reported.is_empty() {
+        return None;
+    }
+    reported.sort_unstable();
+    let middle = reported.len() / 2;
+    Some(if reported.len() % 2 == 1 {
+        reported[middle]
+    } else {
+        let sum = u128::from(reported[middle - 1]) + u128::from(reported[middle]);
+        sum.div_ceil(2) as u64
+    })
 }
 
 /// Compares a baseline run with a candidate run of the same corpus.
@@ -283,6 +310,78 @@ mod tests {
         );
         assert_eq!(record.compile_success_rate, 0.0);
         assert_eq!(record.fidelity_score, 0.0);
+    }
+
+    fn with_tokens(mut result: PromptResult, tokens: Option<u64>) -> PromptResult {
+        result.tokens = tokens;
+        result
+    }
+
+    fn model() -> ModelInfo {
+        ModelInfo {
+            id: "replay:x".to_string(),
+            name: "x".to_string(),
+            version: "x".to_string(),
+        }
+    }
+
+    #[test]
+    fn the_median_token_count_covers_the_prompts_that_reported_usage() {
+        let results = vec![
+            with_tokens(result("a", true, 1.0, &[]), Some(9_000)),
+            with_tokens(result("b", true, 1.0, &[]), Some(1_000)),
+            with_tokens(result("c", true, 1.0, &[]), Some(2_000)),
+        ];
+        let record = summarize(&corpus(), &Coverage::default(), model(), results);
+        assert_eq!(record.median_tokens, Some(2_000));
+        assert!(record.thresholds.tokens, "within the NFR-030 budget");
+    }
+
+    #[test]
+    fn an_even_sample_takes_the_rounded_mean_of_its_two_middle_values() {
+        let results = vec![
+            with_tokens(result("a", true, 1.0, &[]), Some(1_000)),
+            with_tokens(result("b", true, 1.0, &[]), Some(2_001)),
+        ];
+        let record = summarize(&corpus(), &Coverage::default(), model(), results);
+        assert_eq!(record.median_tokens, Some(1_501));
+    }
+
+    #[test]
+    fn a_prompt_without_reported_usage_is_excluded_from_the_median() {
+        let results = vec![
+            with_tokens(result("a", true, 1.0, &[]), Some(5_000)),
+            with_tokens(result("b", true, 1.0, &[]), None),
+        ];
+        let record = summarize(&corpus(), &Coverage::default(), model(), results);
+        assert_eq!(record.median_tokens, Some(5_000));
+    }
+
+    #[test]
+    fn a_run_that_reports_no_usage_reports_no_median() {
+        let results = vec![with_tokens(result("a", true, 1.0, &[]), None)];
+        let record = summarize(&corpus(), &Coverage::default(), model(), results);
+        assert_eq!(record.median_tokens, None);
+        let value = serde_json::to_value(&record).expect("serializes");
+        assert!(
+            value.get("medianTokens").is_none(),
+            "the median is absent, not fabricated"
+        );
+        assert!(
+            record.thresholds.tokens,
+            "no measured median cannot breach the budget"
+        );
+    }
+
+    #[test]
+    fn a_median_over_the_budget_fails_the_token_threshold() {
+        let results = vec![with_tokens(
+            result("a", true, 1.0, &[]),
+            Some(TOKEN_BUDGET + 1),
+        )];
+        let record = summarize(&corpus(), &Coverage::default(), model(), results);
+        assert_eq!(record.median_tokens, Some(TOKEN_BUDGET + 1));
+        assert!(!record.thresholds.tokens);
     }
 
     #[test]

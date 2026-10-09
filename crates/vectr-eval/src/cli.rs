@@ -208,8 +208,15 @@ fn summary(record: &crate::record::RunRecord) -> String {
         .iter()
         .filter(|result| result.compiled)
         .count();
+    let tokens = match record.median_tokens {
+        Some(median) => format!(
+            "median tokens {median} (budget {})",
+            crate::score::TOKEN_BUDGET
+        ),
+        None => "median tokens none reported".to_string(),
+    };
     format!(
-        "compile success {:.1}% ({compiled}/{total}), fidelity {:.1}%, hard-end rubric {:.1}%",
+        "compile success {:.1}% ({compiled}/{total}), fidelity {:.1}%, hard-end rubric {:.1}%, {tokens}",
         record.compile_success_rate * 100.0,
         record.fidelity_score * 100.0,
         record.hard_end.rubric_pass_rate * 100.0,
@@ -337,5 +344,53 @@ mod tests {
         assert!(!enabled_value(Some("false")));
         assert!(enabled_value(Some("1")));
         assert!(enabled_value(Some("true")));
+    }
+
+    #[test]
+    fn the_summary_reports_the_median_token_count_against_the_budget() {
+        let text = summary(&sample_record(Some(12_345)));
+        assert!(text.contains("median tokens 12345"), "{text}");
+        assert!(text.contains("20000"), "names the budget: {text}");
+    }
+
+    #[test]
+    fn the_summary_reports_a_missing_median_as_unreported() {
+        let text = summary(&sample_record(None));
+        assert!(text.contains("median tokens none reported"), "{text}");
+    }
+
+    fn sample_record(median_tokens: Option<u64>) -> crate::record::RunRecord {
+        crate::record::RunRecord {
+            id: "c@1.0.0#replay:x".to_string(),
+            corpus_id: "c".to_string(),
+            corpus_version: "1.0.0".to_string(),
+            authoring_model_id: "replay:x".to_string(),
+            model: crate::record::ModelInfo {
+                id: "replay:x".to_string(),
+                name: "x".to_string(),
+                version: "x".to_string(),
+            },
+            compile_success_rate: 1.0,
+            fidelity_score: 1.0,
+            median_tokens,
+            regression: false,
+            notes: None,
+            hard_end: crate::record::HardEndScores {
+                complex_prompts: 0,
+                rubric_pass_rate: 0.0,
+                qualities: std::collections::BTreeMap::new(),
+            },
+            thresholds: crate::record::Thresholds {
+                compile_success: true,
+                fidelity: true,
+                hard_end: true,
+                tokens: true,
+            },
+            coverage: crate::record::CoverageReport {
+                satisfied: true,
+                omissions: Vec::new(),
+            },
+            prompts: Vec::new(),
+        }
     }
 }

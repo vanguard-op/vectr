@@ -36,6 +36,11 @@ pub struct RunRecord {
     pub compile_success_rate: f64,
     /// Judged visual fidelity score for the run.
     pub fidelity_score: f64,
+    /// The median authoring-model token usage per prompt across the run, over
+    /// the prompts whose provider reported usage; absent when no prompt
+    /// reported usage (FEAT-023, schema.md "EvaluationRun").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub median_tokens: Option<u64>,
     /// Whether the run regressed against the previous run of the same corpus
     /// and model. False on a fresh run.
     pub regression: bool,
@@ -100,6 +105,9 @@ pub struct Thresholds {
     pub fidelity: bool,
     /// The complex-end rubric pass rate is at or above the NFR-031 bar.
     pub hard_end: bool,
+    /// The median per-prompt token count is within NFR-030's budget. True when
+    /// no prompt reported usage, because no measured median can exceed it.
+    pub tokens: bool,
 }
 
 /// The corpus coverage findings carried into the record.

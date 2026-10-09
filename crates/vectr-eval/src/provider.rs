@@ -13,7 +13,7 @@
 //! never calls a model on behalf of a scene (NFR-024, C-006).
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use serde_json::{json, Value};
@@ -309,8 +309,47 @@ impl AuthoringModel for ReplayAuthor {
                 path.display()
             ))
         })?;
-        Ok(Authored { text, tokens: None })
+        Ok(Authored {
+            text,
+            tokens: recorded_tokens(&self.dir, &prompt.id)?,
+        })
     }
+}
+
+/// Reads a recorded token usage, when the recording carries one. A
+/// `<id>.usage.json` file holds `{"tokens": <count>}`; a missing file means the
+/// provider reported no usage, so the prompt is excluded from the run's median
+/// rather than counted as zero (FEAT-023). A malformed recording is a failure,
+/// never a silent absence (NFR-011).
+fn recorded_tokens(dir: &Path, id: &str) -> Result<Option<u64>, ProviderError> {
+    let path = dir.join(format!("{id}.usage.json"));
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            let message = format!(
+                "the replay provider cannot read the recorded usage for prompt `{id}` at `{}`: {error}",
+                path.display()
+            );
+            return Err(ProviderError(message));
+        }
+    };
+    let value: Value = serde_json::from_str(text.trim()).map_err(|error| {
+        ProviderError(format!(
+            "the replay provider's recorded usage for prompt `{id}` at `{}` is not valid JSON: {error}",
+            path.display()
+        ))
+    })?;
+    value
+        .get("tokens")
+        .and_then(Value::as_u64)
+        .map(Some)
+        .ok_or_else(|| {
+            ProviderError(format!(
+                "the replay provider's recorded usage for prompt `{id}` at `{}` names no `tokens` count",
+                path.display()
+            ))
+        })
 }
 
 struct ReplayJudge {
@@ -677,5 +716,45 @@ mod tests {
         let (author, _) = build(&spec).expect("builds");
         let error = author.author(&prompt("absent")).expect_err("refused");
         assert!(error.0.contains("absent"), "{}", error.0);
+    }
+
+    #[test]
+    fn replay_reads_a_recorded_usage_and_treats_a_missing_one_as_unreported() {
+        let dir = crate::testing::TempDir::new("replay-usage");
+        std::fs::write(
+            dir.path().join("p1.scene.json"),
+            r#"{"scene": {"id": "s"}}"#,
+        )
+        .expect("writes");
+        let spec = ModelSpec {
+            provider: ProviderKind::Replay,
+            model: dir.path().display().to_string(),
+        };
+        let (author, _) = build(&spec).expect("builds");
+
+        assert_eq!(author.author(&prompt("p1")).expect("authors").tokens, None);
+        crate::testing::write_usage(dir.path(), "p1", 12_345);
+        assert_eq!(
+            author.author(&prompt("p1")).expect("authors").tokens,
+            Some(12_345)
+        );
+    }
+
+    #[test]
+    fn replay_refuses_a_malformed_usage_recording() {
+        let dir = crate::testing::TempDir::new("replay-usage-bad");
+        std::fs::write(
+            dir.path().join("p1.scene.json"),
+            r#"{"scene": {"id": "s"}}"#,
+        )
+        .expect("writes");
+        std::fs::write(dir.path().join("p1.usage.json"), r#"{"cost": 3}"#).expect("writes");
+        let spec = ModelSpec {
+            provider: ProviderKind::Replay,
+            model: dir.path().display().to_string(),
+        };
+        let (author, _) = build(&spec).expect("builds");
+        let error = author.author(&prompt("p1")).expect_err("refused");
+        assert!(error.0.contains("tokens"), "{}", error.0);
     }
 }
