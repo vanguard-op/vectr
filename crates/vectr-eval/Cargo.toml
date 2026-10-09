@@ -21,3 +21,23 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
+# The engine and the shared project loader the harness drives: a model-authored
+# scene is parsed, validated and compiled against the same assets a project
+# supplies, so compile success measures the real toolchain (FEAT-023, C-006).
+# The explicit versions keep the path dependencies from registering as `*`
+# wildcards in the dependency graph (NFR-020).
+vectr-core = { version = "0.1.0-pre.2", path = "../vectr-core" }
+vectr-project = { version = "0.1.0-pre.2", path = "../vectr-project" }
+
+# The run record and corpus documents are the schema's EvaluationCorpus, Prompt
+# and EvaluationRun entities, serialized as camelCase JSON (schema.md).
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Authoring-model providers (D-005): OpenAI, Anthropic, Google and the OpenCode
+# adapter, plus the offline replay provider the acceptance suite runs against.
+# Declared with its own feature set rather than `workspace = true`: the
+# workspace entry names reqwest 0.13's `rustls-tls`, which that release renamed
+# to `rustls`, so inheriting it fails to resolve (a change for the workspace
+# manifest's owner). The blocking client keeps the batch harness synchronous.
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls", "blocking"] }
