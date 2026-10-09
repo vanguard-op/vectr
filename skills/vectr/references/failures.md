@@ -47,6 +47,11 @@ report `E_SCENE` and exit `2`, naming the scene or the missing default.
 - `E_FORMAT_VERSION` — `formatVersion` is not `"0.2"`; set it and retry.
 - `E_INVALID_COLOR` — a canvas background or export background is not a colour
   SVG supports and not `transparent`.
+- `E_SIZE_LIMIT` — the scene document, a definition's expansion, or a
+  composition's expansion is past the supported size limit; the error names the
+  document, definition, or element that overflowed. Reduce its repetition or
+  nesting, or split the section, and re-verify; the tool refuses the whole rather
+  than truncating it.
 - `E_PROJECT_ASSET` — a referenced palette, recipe, gradient, or stroke
   document is missing, unreadable, or declares a different `id`; check the
   folder and the `id`.
@@ -81,6 +86,13 @@ the integration step, not the sections: the diagnostic points at the constraint
 that cannot hold or the reference the composition introduced. A composition
 failure names the composition step, not the parts — correct the integration (the
 placement or the constraint), not the verified sections.
+
+## When an increment exceeds the size limit
+
+An increment that exceeds the supported size limit is reported with a defined
+size limit naming the increment, and the whole is refused rather than truncated.
+Reduce the section's repetition or nesting, or split it into smaller sections,
+and re-verify; never ship a truncated or guessed whole.
 
 ## Retry once, then report
 
