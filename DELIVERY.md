@@ -1,7 +1,7 @@
 # Delivery
 
 ## Source of truth
-docs/Vectr/ — git submodule, remote https://github.com/vanguard-op/vectr-docs.git; working tree at ae5eb2c (authoring-quality guidance specified as FEAT-032 with NFR-031; the skill and project guide packaged for a model's context budget; the scene seed, the procedural element kind, the icon-set document, and element accessible names settled; the corpus coverage fields and the always-read size budget settled; the authoring method made universal — sketch the whole, then refine sections, with the work deduced from the prompt), the recorded pointer advancing with the build. The docs are authoritative for what to build; this file tracks state only and never restates the spec.
+docs/Vectr/ — git submodule, remote https://github.com/vanguard-op/vectr-docs.git; working tree at 07774b3 (authoring-quality guidance specified as FEAT-032 with NFR-031; the skill and project guide packaged for a model's context budget; the scene seed, the procedural element kind, the icon-set document, and element accessible names settled; the corpus coverage fields and the always-read size budget settled; the authoring method made universal — sketch the whole, then refine sections, with the work deduced from the prompt; the evaluation cost budget quantified), the recorded pointer advancing with the build. The docs are authoritative for what to build; this file tracks state only and never restates the spec.
 
 ## Team & file ownership
 | Member | Owns |
@@ -102,7 +102,8 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | T-116 | FEAT-020 | infra-engineer | Done | C-004 |
 | T-117 | FEAT-016, FEAT-020 | infra-engineer | Done | C-004 |
 | T-118 | FEAT-016, FEAT-023 | infra-engineer | Done | C-006 |
-| T-120 | FEAT-025 | backend-engineer | In Progress | C-004 |
+| T-120 | FEAT-025 | backend-engineer | Done | C-004 |
+| T-121 | FEAT-025 | backend-engineer | In Progress | C-004 |
 | T-110 | FEAT-022, FEAT-014 | qa-engineer | Done | C-005 |
 | T-111 | FEAT-016, FEAT-020 | infra-engineer | Done | C-004 |
 
