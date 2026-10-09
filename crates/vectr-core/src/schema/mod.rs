@@ -3,10 +3,13 @@
 //!
 //! [`schema`] prints the whole machine-readable contract — the Scene document
 //! and every entity it references — in a full or compact form; [`schema_for`]
-//! prints one named type's properties and allowed values. The contract is the
-//! published artifact under `schema/`, carried into the binary at build time so
-//! discovery works with no filesystem access (NFR-021) and is byte-identical
-//! run to run (NFR-010).
+//! prints one named type's properties and allowed values. The contract is
+//! carried inside the crate at `schema/vectr.schema.json` and embedded into the
+//! binary at build time, so discovery works with no filesystem access (NFR-021)
+//! and is byte-identical run to run (NFR-010). The copy travels with the crate,
+//! so a packaged or standalone build never reaches outside the package; the
+//! repository's `schema/vectr.schema.json` remains the published artifact, and a
+//! test keeps the two byte-identical.
 //!
 //! An unknown type is a located error naming the types closest to it; a
 //! published artifact whose declared format version does not match this build
@@ -19,8 +22,12 @@ use serde_json::{Map, Value};
 
 use crate::scene::{Diagnostic, DiagnosticCode, Diagnostics, CURRENT_FORMAT_VERSION};
 
-/// The published language contract, embedded at build time.
-const CONTRACT: &str = include_str!("../../../../schema/vectr.schema.json");
+/// The language contract carried inside the crate, embedded at build time.
+///
+/// The copy lives under the crate so `cargo package` and a standalone build
+/// never reach outside the package; the repository's `schema/vectr.schema.json`
+/// is the published artifact, and a test keeps the two byte-identical.
+const CONTRACT: &str = include_str!("../../schema/vectr.schema.json");
 
 /// The complete contract, or a single type, as full or compact JSON.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -380,5 +387,18 @@ mod tests {
         assert_eq!(kebab("Element"), "element");
         assert_eq!(kebab("StrokeProfile"), "stroke-profile");
         assert_eq!(kebab("EvaluationRun"), "evaluation-run");
+    }
+
+    #[test]
+    fn the_embedded_contract_matches_the_published_artifact() {
+        // The crate carries its own copy so it packages standalone; this keeps
+        // the copy from drifting from the published `schema/vectr.schema.json`.
+        let published =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../schema/vectr.schema.json");
+        let Ok(published) = std::fs::read_to_string(&published) else {
+            // A packaged crate has no repository around it; nothing to compare.
+            return;
+        };
+        assert_eq!(CONTRACT, published, "the embedded schema has drifted");
     }
 }

@@ -9,9 +9,9 @@
 //! NFR-011).
 //!
 //! The [`authoring_guide`] the scaffold writes into a new project (FEAT-020)
-//! lives here too, embedded from the agent skill's reference. Both front ends
-//! can hand a coding agent the one procedure without shipping a second copy of
-//! it.
+//! lives here too, embedded from the skill's reference carried inside the
+//! crate. Both front ends can hand a coding agent the one procedure without
+//! shipping a second copy of it.
 //!
 //! A command addresses a scene by its identifier rather than by a file path;
 //! [`resolve_scene`] turns the identifier a command named — or the project's

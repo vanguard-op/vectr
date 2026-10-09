@@ -2,24 +2,28 @@
 //!
 //! Coding agents load a project's `AGENTS.md` without bespoke setup, so the
 //! scaffold writes the authoring procedure there. The procedure is the agent
-//! skill's reference, embedded verbatim at build time rather than restated here:
-//! the skill is the single source of the guide, so an edit to it reaches the
-//! scaffold without a second copy drifting (FEAT-020).
+//! skill's reference, carried inside the crate at
+//! `references/authoring-guide.md` and embedded verbatim at build time rather
+//! than restated in Rust: the skill remains the single source of the guide, and
+//! a test keeps the embedded copy byte-identical to it (FEAT-020).
 //!
 //! Embedding rather than reading from disk keeps the scaffold honest: `vectr
 //! init` writes the same guide whether it runs from a checkout or an installed
-//! binary, and it never depends on the skill package being present.
+//! binary, and it never depends on the skill package being present. The copy
+//! lives under the crate so `cargo package` and a standalone build never reach
+//! outside the package.
 
 /// The file the scaffold writes the guide to, at the project root.
 pub const AUTHORING_GUIDE_FILE: &str = "AGENTS.md";
 
-/// The authoring guide the scaffold writes, embedded from the agent skill.
+/// The authoring guide the scaffold writes, embedded from the copy the crate
+/// carries.
 ///
 /// The skill's reference names the tool and format versions it targets, so a
 /// guide embedded into a project always tells an agent which contract it was
 /// written for (FEAT-020).
 pub fn authoring_guide() -> &'static str {
-    include_str!("../../../skills/vectr/references/authoring-guide.md")
+    include_str!("../references/authoring-guide.md")
 }
 
 #[cfg(test)]
@@ -56,6 +60,23 @@ mod tests {
         assert!(
             guide.contains(CURRENT_FORMAT_VERSION),
             "the guide names the target format version"
+        );
+    }
+
+    #[test]
+    fn the_embedded_guide_matches_the_skill_reference() {
+        // The crate carries its own copy so it packages standalone; this keeps
+        // the copy from drifting from the skill's reference.
+        let reference = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../skills/vectr/references/authoring-guide.md");
+        let Ok(reference) = std::fs::read_to_string(&reference) else {
+            // A packaged crate has no repository around it; nothing to compare.
+            return;
+        };
+        assert_eq!(
+            authoring_guide(),
+            reference,
+            "the embedded guide has drifted"
         );
     }
 }

@@ -1,0 +1,552 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vectr.dev/schema/vectr.schema.json",
+  "title": "Vectr language contract",
+  "description": "The complete, machine-readable Vectr scene language. A document that satisfies `$defs/Scene` is a well-formed scene. The parser additionally enforces the structural rules the descriptions here name, such as a text element never being an operand of a composition element.",
+  "x-vectr-formatVersion": "0.2",
+  "x-vectr-types": [
+    "Scene",
+    "Element",
+    "Canvas",
+    "Geometry",
+    "Transform",
+    "Paint",
+    "Stroke",
+    "Constraint",
+    "Palette",
+    "PaletteToken",
+    "StrokeProfile",
+    "StyleRecipe",
+    "RecipeParameters",
+    "Gradient",
+    "GradientStop",
+    "Asset",
+    "ProjectConfig",
+    "ProjectOutput",
+    "Export",
+    "EvaluationCorpus",
+    "Prompt",
+    "AuthoringModel",
+    "EvaluationRun",
+    "ElementKind",
+    "PaintKind",
+    "ConstraintKind",
+    "Axis",
+    "ProjectionAxis",
+    "BooleanOperation",
+    "TextAlign",
+    "RecipeName",
+    "Shading",
+    "LightDirection",
+    "StrokeCap",
+    "StrokeJoin",
+    "GradientType",
+    "Spread",
+    "AssetKind",
+    "ExportFormat",
+    "ExportStatus"
+  ],
+  "$ref": "#/$defs/Scene",
+  "$defs": {
+    "Scene": {
+      "title": "Scene",
+      "description": "A single authored graphic described in the Vectr language.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Stable identifier for the scene." },
+        "projectId": { "type": "string", "description": "References the ProjectConfig this scene belongs to." },
+        "name": { "type": "string", "maxLength": 120, "description": "Human-readable scene name." },
+        "formatVersion": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+$", "description": "The declared format version of this scene; this build supports 0.2." },
+        "canvas": { "$ref": "#/$defs/Canvas" },
+        "paletteId": { "type": "string", "description": "References the Palette whose tokens the scene's elements use." },
+        "recipeId": { "type": "string", "description": "References the StyleRecipe applied to the scene, if any." },
+        "title": { "type": "string", "description": "Accessible title carried into exported output." },
+        "description": { "type": "string", "description": "Accessible description carried into exported output." },
+        "elements": {
+          "type": "array",
+          "description": "The scene's elements; an empty list is a valid, empty scene.",
+          "items": { "$ref": "#/$defs/Element" }
+        },
+        "constraints": {
+          "type": "array",
+          "description": "Relationships resolved into concrete geometry at compile time.",
+          "items": { "$ref": "#/$defs/Constraint" }
+        }
+      },
+      "required": ["id", "projectId", "name", "formatVersion", "canvas"],
+      "additionalProperties": false
+    },
+    "Canvas": {
+      "title": "Canvas",
+      "description": "The drawing surface.",
+      "type": "object",
+      "properties": {
+        "width": { "type": "number", "minimum": 0, "description": "Canvas width in scene units." },
+        "height": { "type": "number", "minimum": 0, "description": "Canvas height in scene units." },
+        "background": { "type": "string", "description": "Canvas background color in any format SVG supports, or 'transparent'." }
+      },
+      "required": ["width", "height", "background"],
+      "additionalProperties": false
+    },
+    "Element": {
+      "title": "Element",
+      "description": "One drawing entity in a scene: a primitive, a group, a composition operation, or a text run. Elements form a tree through parentId, and paint order follows order. A group or composition element acts on its child elements, the elements whose parentId references it, in paint order. Fill and stroke are independent: an element may carry either, both, or neither. A stroke is well-formed only when profileId and paint are both present.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Stable identifier for the element." },
+        "sceneId": { "type": "string", "description": "References the Scene this element belongs to." },
+        "parentId": { "type": ["string", "null"], "description": "References the parent Element, or null for a root element." },
+        "order": { "type": "integer", "minimum": 0, "description": "Paint order among siblings; lower values paint first." },
+        "name": { "type": "string", "description": "Element name, preserved in exported output." },
+        "kind": { "$ref": "#/$defs/ElementKind" },
+        "geometry": { "$ref": "#/$defs/Geometry" },
+        "transform": { "$ref": "#/$defs/Transform" },
+        "fill": { "anyOf": [{ "$ref": "#/$defs/Paint" }, { "type": "null" }], "description": "The element's fill paint, or null for no fill." },
+        "stroke": { "anyOf": [{ "$ref": "#/$defs/Stroke" }, { "type": "null" }], "description": "The element's stroke, or null for no stroke." },
+        "fontId": { "type": ["string", "null"], "description": "References the Asset of kind font used to render a text element, or null to use the default open-licensed font. Applies only to a text element." },
+        "opacity": { "type": "number", "minimum": 0, "maximum": 1, "description": "Element opacity." },
+        "visible": { "type": "boolean", "description": "Whether the element is rendered." }
+      },
+      "required": ["id", "sceneId", "order", "kind", "geometry", "transform", "opacity", "visible"],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "text" } }, "required": ["kind"] },
+          "then": {
+            "properties": {
+              "geometry": {
+                "required": ["text", "fontSize"],
+                "properties": { "fontSize": { "exclusiveMinimum": 0 } }
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "kind": { "not": { "const": "text" } } }, "required": ["kind"] },
+          "then": { "not": { "required": ["fontId"] } }
+        }
+      ]
+    },
+    "Geometry": {
+      "title": "Geometry",
+      "description": "The element's geometry; which fields apply depends on kind. A rect and an ellipse are placed by the x and y origin of their bounding box and sized by width and height, with the ellipse inscribed in that box and rx and ry rounding a rect's corners. A text element is anchored by x and y at the baseline of its first line, sized by fontSize, and wrapped to width when width is set.",
+      "type": "object",
+      "properties": {
+        "x": { "type": "number", "description": "X origin of the bounding box in scene units; for a text element, the anchor of its first line." },
+        "y": { "type": "number", "description": "Y origin of the bounding box in scene units; for a text element, the baseline of its first line." },
+        "width": { "type": "number", "minimum": 0, "description": "Bounding-box width for rect-like and ellipse elements, and the wrap width for text elements." },
+        "height": { "type": "number", "minimum": 0, "description": "Bounding-box height for rect-like and ellipse elements." },
+        "rx": { "type": "number", "minimum": 0, "description": "Corner radius in X for rect elements." },
+        "ry": { "type": "number", "minimum": 0, "description": "Corner radius in Y for rect elements." },
+        "points": {
+          "type": "array",
+          "description": "Point list for polygon and line elements.",
+          "items": {
+            "type": "array",
+            "prefixItems": [{ "type": "number" }, { "type": "number" }],
+            "minItems": 2,
+            "maxItems": 2
+          }
+        },
+        "pathData": { "type": "string", "description": "Path data for path elements; for an alongPath element it is the guide path its children follow." },
+        "text": { "type": "string", "minLength": 1, "description": "The string a text element renders." },
+        "fontSize": { "type": "number", "minimum": 0, "description": "Em size in scene units for a text element." },
+        "align": { "$ref": "#/$defs/TextAlign" },
+        "lineHeight": { "type": "number", "minimum": 0, "description": "Baseline-to-baseline distance in scene units for a text element." },
+        "letterSpacing": { "type": "number", "description": "Additional advance between the glyphs of a text element, in scene units." },
+        "count": { "type": "integer", "minimum": 0, "description": "Number of copies for repeat elements." },
+        "spacing": { "type": "number", "description": "Distance between successive copies for repeat elements, along the element's local x-axis." },
+        "operation": { "$ref": "#/$defs/BooleanOperation" },
+        "distance": { "type": "number", "description": "Outline offset distance in scene units for offset elements; positive offsets outward and negative inward." },
+        "axis": { "$ref": "#/$defs/ProjectionAxis" }
+      },
+      "additionalProperties": false
+    },
+    "Transform": {
+      "title": "Transform",
+      "description": "Affine transform applied to the element and its children. The fields compose in a fixed order: a point in the element's local coordinates is first skewed by skewX and skewY, then scaled by scaleX and scaleY, then rotated by rotate degrees, and finally translated by translateX and translateY; rotation and scaling are about the element's origin.",
+      "type": "object",
+      "properties": {
+        "translateX": { "type": "number", "description": "Horizontal translation in scene units." },
+        "translateY": { "type": "number", "description": "Vertical translation in scene units." },
+        "rotate": { "type": "number", "description": "Rotation in degrees." },
+        "scaleX": { "type": "number", "description": "Horizontal scale factor." },
+        "scaleY": { "type": "number", "description": "Vertical scale factor." },
+        "skewX": { "type": "number", "description": "Horizontal skew in degrees." },
+        "skewY": { "type": "number", "description": "Vertical skew in degrees." }
+      },
+      "required": ["translateX", "translateY", "rotate", "scaleX", "scaleY"],
+      "additionalProperties": false
+    },
+    "Paint": {
+      "title": "Paint",
+      "description": "A paint names either a Palette token (a solid fill) or a Gradient (a gradient fill). The reference is a name, resolved by the compiler rather than at parse time.",
+      "type": "object",
+      "properties": {
+        "kind": { "$ref": "#/$defs/PaintKind" },
+        "ref": { "type": "string", "description": "The Palette token name when kind is token, or the Gradient id when kind is gradient." }
+      },
+      "required": ["kind", "ref"],
+      "additionalProperties": false
+    },
+    "Stroke": {
+      "title": "Stroke",
+      "description": "The element's stroke. A stroke pairs a StrokeProfile, supplying the width, cap, and join, with a paint.",
+      "type": "object",
+      "properties": {
+        "profileId": { "type": "string", "description": "References the StrokeProfile supplying the stroke's width, cap, and join." },
+        "paint": { "$ref": "#/$defs/Paint" }
+      },
+      "required": ["profileId", "paint"],
+      "additionalProperties": false
+    },
+    "Constraint": {
+      "title": "Constraint",
+      "description": "A stated relationship resolved into concrete geometry at compile time.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Stable identifier for the constraint." },
+        "sceneId": { "type": "string", "description": "References the Scene this constraint belongs to." },
+        "kind": { "$ref": "#/$defs/ConstraintKind" },
+        "elementIds": {
+          "type": "array",
+          "minItems": 2,
+          "description": "References the Elements the constraint relates.",
+          "items": { "type": "string" }
+        },
+        "axis": { "anyOf": [{ "$ref": "#/$defs/Axis" }, { "type": "null" }], "description": "The axis the constraint applies to, or null when not axis-specific." },
+        "value": { "type": ["number", "null"], "description": "The numeric value the constraint targets, such as spacing; null when not applicable." }
+      },
+      "required": ["id", "sceneId", "kind", "elementIds"],
+      "additionalProperties": false
+    },
+    "Palette": {
+      "title": "Palette",
+      "description": "A named set of color tokens that scenes reference by token name.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Stable identifier for the palette." },
+        "projectId": { "type": "string", "description": "References the ProjectConfig this palette belongs to." },
+        "name": { "type": "string", "description": "Human-readable palette name." },
+        "tokens": {
+          "type": "array",
+          "description": "The color tokens in the palette.",
+          "items": { "$ref": "#/$defs/PaletteToken" }
+        }
+      },
+      "required": ["id", "projectId", "name", "tokens"],
+      "additionalProperties": false
+    },
+    "PaletteToken": {
+      "title": "PaletteToken",
+      "description": "A single named color.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "Token name referenced by elements." },
+        "value": { "type": "string", "description": "Color value in any format SVG supports, optionally carrying alpha: 3-, 4-, 6-, or 8-digit hexadecimal, rgb() and rgba(), hsl() and hsla(), a named color, or 'transparent'. Alpha in the value sets that paint's opacity, so a fill and a stroke carry independent alpha." },
+        "description": { "type": "string", "description": "What the color is used for." }
+      },
+      "required": ["name", "value"],
+      "additionalProperties": false
+    },
+    "StrokeProfile": {
+      "title": "StrokeProfile",
+      "description": "A named stroke configuration that elements reference. It carries the stroke's geometry only — width, cap, and join; the stroke's paint comes from the element, not from the profile.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Stable identifier for the profile." },
+        "projectId": { "type": "string", "description": "References the ProjectConfig this profile belongs to." },
+        "name": { "type": "string", "description": "Human-readable profile name." },
+        "width": { "type": "number", "minimum": 0, "description": "Stroke width in scene units." },
+        "cap": { "$ref": "#/$defs/StrokeCap" },
+        "join": { "$ref": "#/$defs/StrokeJoin" }
+      },
+      "required": ["id", "projectId", "name", "width", "cap", "join"],
+      "additionalProperties": false
+    },
+    "StyleRecipe": {
+      "title": "StyleRecipe",
+      "description": "A named rendering recipe that governs how a scene is composed and shaded. Version one ships flat, line-art, geometric, and isometric.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Stable identifier for the recipe." },
+        "projectId": { "type": "string", "description": "References the ProjectConfig this recipe belongs to." },
+        "name": { "$ref": "#/$defs/RecipeName" },
+        "parameters": { "$ref": "#/$defs/RecipeParameters" }
+      },
+      "required": ["id", "projectId", "name", "parameters"],
+      "additionalProperties": false
+    },
+    "RecipeParameters": {
+      "title": "RecipeParameters",
+      "description": "Recipe-specific settings.",
+      "type": "object",
+      "properties": {
+        "gridSize": { "type": "number", "minimum": 0, "description": "Grid spacing for snapping, where the recipe uses a grid." },
+        "snap": { "type": "boolean", "description": "Whether elements snap to the grid." },
+        "shading": { "$ref": "#/$defs/Shading" },
+        "lightDirection": { "$ref": "#/$defs/LightDirection" },
+        "shadeToken": { "type": "string", "description": "Name of the Palette token supplying the single shading layer's color; required when shading is single-layer." },
+        "strokeWeight": { "type": "number", "minimum": 0, "description": "Default stroke weight for stroke-based recipes." }
+      },
+      "additionalProperties": false
+    },
+    "Gradient": {
+      "title": "Gradient",
+      "description": "A named gradient paint that an element's fill or stroke can reference. A gradient is linear or radial, and each of its color stops draws its color from a palette token.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Stable identifier for the gradient." },
+        "projectId": { "type": "string", "description": "References the ProjectConfig this gradient belongs to." },
+        "name": { "type": "string", "description": "Human-readable gradient name." },
+        "type": { "$ref": "#/$defs/GradientType" },
+        "stops": {
+          "type": "array",
+          "minItems": 2,
+          "description": "The gradient's color stops, ordered along the gradient vector.",
+          "items": { "$ref": "#/$defs/GradientStop" }
+        },
+        "x1": { "type": "number", "description": "Start x of a linear gradient in object bounding-box units; defaults to 0." },
+        "y1": { "type": "number", "description": "Start y of a linear gradient in object bounding-box units; defaults to 0." },
+        "x2": { "type": "number", "description": "End x of a linear gradient in object bounding-box units; defaults to 1." },
+        "y2": { "type": "number", "description": "End y of a linear gradient in object bounding-box units; defaults to 0." },
+        "cx": { "type": "number", "description": "Center x of a radial gradient in object bounding-box units; defaults to 0.5." },
+        "cy": { "type": "number", "description": "Center y of a radial gradient in object bounding-box units; defaults to 0.5." },
+        "r": { "type": "number", "minimum": 0, "description": "Radius of a radial gradient in object bounding-box units; defaults to 0.5." },
+        "fx": { "type": "number", "description": "Focal x of a radial gradient in object bounding-box units; defaults to the center x." },
+        "fy": { "type": "number", "description": "Focal y of a radial gradient in object bounding-box units; defaults to the center y." },
+        "spread": { "$ref": "#/$defs/Spread" }
+      },
+      "required": ["id", "projectId", "name", "type", "stops"],
+      "additionalProperties": false
+    },
+    "GradientStop": {
+      "title": "GradientStop",
+      "description": "A single color stop, taking its color from the palette token it names.",
+      "type": "object",
+      "properties": {
+        "offset": { "type": "number", "minimum": 0, "maximum": 1, "description": "Position of the stop along the gradient vector, from 0 to 1." },
+        "token": { "type": "string", "description": "Name of the Palette token supplying the stop's color." },
+        "opacity": { "type": "number", "minimum": 0, "maximum": 1, "description": "Stop opacity, from 0 to 1; defaults to 1." }
+      },
+      "required": ["offset", "token"],
+      "additionalProperties": false
+    },
+    "Asset": {
+      "title": "Asset",
+      "description": "An external file a scene references, such as a font or an image.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Stable identifier for the asset." },
+        "sceneId": { "type": "string", "description": "References the Scene that uses the asset." },
+        "kind": { "$ref": "#/$defs/AssetKind" },
+        "path": { "type": "string", "description": "Location of the asset file." },
+        "license": { "type": "string", "description": "The license governing the asset." },
+        "description": { "type": "string", "description": "What the asset is used for." }
+      },
+      "required": ["id", "sceneId", "kind", "path", "license"],
+      "additionalProperties": false
+    },
+    "ProjectConfig": {
+      "title": "ProjectConfig",
+      "description": "The per-project settings that govern how scenes in the project are compiled and exported.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Stable identifier for the project." },
+        "name": { "type": "string", "maxLength": 120, "description": "Human-readable project name." },
+        "formatVersion": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+$", "description": "The scene format version this project targets; this build supports 0.2." },
+        "defaultRecipeId": { "type": "string", "description": "References the StyleRecipe applied when a scene does not name one." },
+        "output": { "$ref": "#/$defs/ProjectOutput" }
+      },
+      "required": ["id", "name", "formatVersion", "output"],
+      "additionalProperties": false
+    },
+    "ProjectOutput": {
+      "title": "ProjectOutput",
+      "description": "Default export settings for the project.",
+      "type": "object",
+      "properties": {
+        "format": { "$ref": "#/$defs/ExportFormat" },
+        "width": { "type": "integer", "minimum": 1, "description": "Default output width in pixels." },
+        "height": { "type": "integer", "minimum": 1, "description": "Default output height in pixels." },
+        "density": { "type": "number", "minimum": 0.1, "description": "Default pixel density multiplier." },
+        "background": { "type": "string", "description": "Default background color in any format SVG supports, or 'transparent'." }
+      },
+      "required": ["format", "width", "height", "density", "background"],
+      "additionalProperties": false
+    },
+    "Export": {
+      "title": "Export",
+      "description": "A record of one export of a scene to a format.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Stable identifier for the export." },
+        "sceneId": { "type": "string", "description": "References the Scene that was exported." },
+        "format": { "$ref": "#/$defs/ExportFormat" },
+        "path": { "type": "string", "description": "Location of the written output file." },
+        "width": { "type": "integer", "minimum": 1, "description": "Output width in pixels." },
+        "height": { "type": "integer", "minimum": 1, "description": "Output height in pixels." },
+        "density": { "type": "number", "minimum": 0.1, "description": "Pixel density multiplier applied." },
+        "status": { "$ref": "#/$defs/ExportStatus" }
+      },
+      "required": ["id", "sceneId", "format", "path", "status"],
+      "additionalProperties": false
+    },
+    "EvaluationCorpus": {
+      "title": "EvaluationCorpus",
+      "description": "A versioned set of authoring prompts used to measure cross-model quality.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Stable identifier for the corpus." },
+        "version": { "type": "string", "description": "Version of the corpus; comparisons are only valid within one version." },
+        "description": { "type": "string", "description": "What the corpus covers." }
+      },
+      "required": ["id", "version", "description"],
+      "additionalProperties": false
+    },
+    "Prompt": {
+      "title": "Prompt",
+      "description": "One authoring task in an evaluation corpus.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Stable identifier for the prompt." },
+        "corpusId": { "type": "string", "description": "References the EvaluationCorpus this prompt belongs to." },
+        "intent": { "type": "string", "description": "The graphic the prompt asks for." },
+        "text": { "type": "string", "description": "The natural-language request given to the authoring model." },
+        "order": { "type": "integer", "minimum": 0, "description": "Order of the prompt in the corpus." }
+      },
+      "required": ["id", "corpusId", "intent", "text", "order"],
+      "additionalProperties": false
+    },
+    "AuthoringModel": {
+      "title": "AuthoringModel",
+      "description": "A model used to author scenes during evaluation, with the pinned version the score applies to.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Stable identifier for the model entry." },
+        "name": { "type": "string", "description": "Model name." },
+        "version": { "type": "string", "description": "Pinned model version the score applies to." }
+      },
+      "required": ["id", "name", "version"],
+      "additionalProperties": false
+    },
+    "EvaluationRun": {
+      "title": "EvaluationRun",
+      "description": "The result of running one corpus through one authoring model.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Stable identifier for the run." },
+        "corpusId": { "type": "string", "description": "References the EvaluationCorpus that was run." },
+        "authoringModelId": { "type": "string", "description": "References the AuthoringModel that authored the scenes." },
+        "compileSuccessRate": { "type": "number", "minimum": 0, "maximum": 1, "description": "Share of authored scenes that compiled without error." },
+        "fidelityScore": { "type": "number", "minimum": 0, "maximum": 1, "description": "Judged visual fidelity score for the run." },
+        "regression": { "type": "boolean", "description": "Whether the run regressed against the previous run of the same corpus and model." },
+        "notes": { "type": "string", "description": "Anything notable about the run." }
+      },
+      "required": ["id", "corpusId", "authoringModelId", "compileSuccessRate", "fidelityScore", "regression"],
+      "additionalProperties": false
+    },
+    "ElementKind": {
+      "title": "ElementKind",
+      "description": "The element's role.",
+      "type": "string",
+      "enum": ["rect", "ellipse", "polygon", "line", "path", "text", "group", "repeat", "boolean", "alongPath", "offset", "projection", "raster"]
+    },
+    "PaintKind": {
+      "title": "PaintKind",
+      "description": "Whether the reference names a palette token or a gradient.",
+      "type": "string",
+      "enum": ["token", "gradient"]
+    },
+    "ConstraintKind": {
+      "title": "ConstraintKind",
+      "description": "The type of relationship a constraint expresses.",
+      "type": "string",
+      "enum": ["equalSpacing", "align", "attach", "contain", "snapToGrid"]
+    },
+    "Axis": {
+      "title": "Axis",
+      "description": "The axis a constraint applies to.",
+      "type": "string",
+      "enum": ["x", "y", "both"]
+    },
+    "ProjectionAxis": {
+      "title": "ProjectionAxis",
+      "description": "The axes a projection element maps its children onto.",
+      "type": "string",
+      "enum": ["x", "y", "isometric"]
+    },
+    "BooleanOperation": {
+      "title": "BooleanOperation",
+      "description": "A boolean composition operation: union combines the children, subtract removes the later children from the first, and intersect keeps their common area.",
+      "type": "string",
+      "enum": ["union", "subtract", "intersect"]
+    },
+    "TextAlign": {
+      "title": "TextAlign",
+      "description": "Horizontal alignment of the lines of a text element about its anchor.",
+      "type": "string",
+      "enum": ["start", "center", "end"]
+    },
+    "RecipeName": {
+      "title": "RecipeName",
+      "description": "The recipe selected. Version one ships flat, line-art, geometric, and isometric.",
+      "type": "string",
+      "enum": ["flat", "line-art", "geometric", "isometric"]
+    },
+    "Shading": {
+      "title": "Shading",
+      "description": "Shading model the recipe applies.",
+      "type": "string",
+      "enum": ["none", "single-layer", "raster"]
+    },
+    "LightDirection": {
+      "title": "LightDirection",
+      "description": "Direction the scene's light comes from when shading is single-layer; the shading falls on the opposite side. Defaults to topLeft.",
+      "type": "string",
+      "enum": ["top", "topRight", "right", "bottomRight", "bottom", "bottomLeft", "left", "topLeft"]
+    },
+    "StrokeCap": {
+      "title": "StrokeCap",
+      "description": "Stroke line cap.",
+      "type": "string",
+      "enum": ["butt", "round", "square"]
+    },
+    "StrokeJoin": {
+      "title": "StrokeJoin",
+      "description": "Stroke line join.",
+      "type": "string",
+      "enum": ["miter", "round", "bevel"]
+    },
+    "GradientType": {
+      "title": "GradientType",
+      "description": "The gradient's geometry: a linear gradient transitions along a straight line and a radial gradient radiates from a center.",
+      "type": "string",
+      "enum": ["linear", "radial"]
+    },
+    "Spread": {
+      "title": "Spread",
+      "description": "How the gradient extends beyond its ends; defaults to pad.",
+      "type": "string",
+      "enum": ["pad", "reflect", "repeat"]
+    },
+    "AssetKind": {
+      "title": "AssetKind",
+      "description": "The type of asset.",
+      "type": "string",
+      "enum": ["font", "image", "raster"]
+    },
+    "ExportFormat": {
+      "title": "ExportFormat",
+      "description": "The export format.",
+      "type": "string",
+      "enum": ["svg", "png", "pdf"]
+    },
+    "ExportStatus": {
+      "title": "ExportStatus",
+      "description": "The outcome of the export.",
+      "type": "string",
+      "enum": ["written", "failed", "dependency-missing"]
+    }
+  }
+}
