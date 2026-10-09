@@ -7,11 +7,11 @@
 //! corpus is versioned because comparisons are only valid within one version
 //! (FEAT-023 edge case).
 //!
-//! Two optional prompt fields carry the coverage metadata FEAT-023 requires the
-//! harness to check: `complexity` marks a prompt on the complex end of the
-//! range, and `qualities` names the hard-end qualities it exercises (FEAT-032,
-//! NFR-031). The published `Prompt` entity does not carry them, so a corpus
-//! that omits them reports the coverage omission rather than guessing.
+//! The published `Prompt` entity carries the coverage metadata FEAT-023
+//! requires the harness to check: `complexity` places a prompt in the product's
+//! complexity range, and `qualities` names the hard-end qualities it exercises
+//! (FEAT-032, NFR-031). The harness defaults both when a prompt omits them, so
+//! the corpus is checked and any omission reported rather than guessed at.
 
 use std::collections::BTreeSet;
 use std::fs;
