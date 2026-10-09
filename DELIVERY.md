@@ -1,7 +1,7 @@
 # Delivery
 
 ## Source of truth
-docs/Vectr/ — git submodule, remote https://github.com/vanguard-op/vectr-docs.git; working tree at faf20f0 (reusable parts settled as one element shape with a single literal-or-reference form; part-scoped rendering resolves style from the project's default palette and a part identifier in one shared namespace), the recorded pointer advancing with the build. The docs are authoritative for what to build; this file tracks state only and never restates the spec.
+docs/Vectr/ — git submodule, remote https://github.com/vanguard-op/vectr-docs.git; working tree at 99b3118 (authoring-quality guidance specified as FEAT-032 with NFR-031, and the skill and project guide packaged for a model's context budget), the recorded pointer advancing with the build. The docs are authoritative for what to build; this file tracks state only and never restates the spec.
 
 ## Team & file ownership
 | Member | Owns |
@@ -115,6 +115,7 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | D-041 | The authoring guidance ships before its measurement; the evaluation harness and its corpus (FEAT-023) follow in Phase 5. | Guidance and measurement are separable, and the guidance is what raises quality now while the harness quantifies it later. | user |
 | D-042 | Authoring guidance is structured for a model's context budget: always-read entry points stay small and route to material loaded only on demand, and anything loaded in full and kept across iterations is minimal data — including a generated, always-loaded summary of a project's available style assets. | Context is a budget; loading material the model does not need yet degrades it, and a file kept across iterations is a permanent tax. | user |
 | D-043 | Supersedes D-042: the always-loaded file is the project's scaffolded agent guide (AGENTS.md), which stays minimal because the model reads it in full and keeps it across the authoring loop; the depth lives in the skill's references, loaded on demand. There is no separate generated asset summary. | The user corrected the artifact: AGENTS.md, not an assets summary; and a scaffold that writes the whole procedure into it makes every iteration pay for unneeded material. | user |
+| D-044 | The hard-end quality directives enter the spec as a new FEAT-032 (P1) with NFR-031 as their judged bar; the context-budget packaging amends FEAT-020 (a small always-read skill entry point, depth in on-demand references, and a minimal scaffolded AGENTS.md with schema-only orientation when no skill is present). | The user chose a new feature over amending the shipped features, so the guidance carries its own acceptance criteria and a bar the harness can score; and a bare project keeps working from orientation plus the schema. | user |
 
 ## Definition of Done
 - Every acceptance criterion in the task's FEAT file is met, including its edge cases and failure states.
