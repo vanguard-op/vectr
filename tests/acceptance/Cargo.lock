@@ -519,7 +519,7 @@ dependencies = [
 
 [[package]]
 name = "vectr-acceptance"
-version = "0.1.0"
+version = "0.1.0-pre.1"
 dependencies = [
  "serde_json",
  "tiny-skia",
@@ -528,7 +528,7 @@ dependencies = [
 
 [[package]]
 name = "vectr-core"
-version = "0.1.0"
+version = "0.1.0-pre.1"
 dependencies = [
  "harfrust",
  "i_overlay",
