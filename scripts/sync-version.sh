@@ -8,10 +8,10 @@
 #     crates/vectr-core/src/scene/version.rs (`CURRENT_FORMAT_VERSION`).
 #
 # The derived copies are the crate dependency pins, the acceptance crate and
-# both lockfiles, the README, the agent skill and its authoring guide, and the
-# crate's minimal agent guide (the scaffold's AGENTS.md template). Bumping a
-# release means editing the one source and running this script, never editing
-# the copies by hand.
+# both lockfiles, the README, the agent skill, its authoring guide and its
+# on-demand references, and the crate's minimal agent guide (the scaffold's
+# AGENTS.md template). Bumping a release means editing the one source and
+# running this script, never editing the copies by hand.
 #
 # Usage:
 #   scripts/sync-version.sh          # rewrite the derived copies to match
@@ -191,8 +191,17 @@ f_scene='s|(scene `formatVersion` `)[^`]*`|\1'"$format_version"'`|g'
 
 apply README.md -e "$f_json"
 apply skills/vectr/SKILL.md -e "$f_fv_quoted" -e "$f_scene"
-apply skills/vectr/references/authoring-guide.md \
-  -e "$f_json" -e "$f_fv_quoted" -e "$f_xattr" -e "$f_mustbe" -e "$f_isnot" -e "$f_scene"
+
+# Every on-demand reference in the skill is covered, not just the procedure:
+# the split moved the worked scenes and the format-version statements out of the
+# guide into separate references (FEAT-020, D-042), so a format-version literal
+# in any of them must be synced too. A reference that carries no literal is a
+# no-op, so the whole directory is swept rather than a hand-kept list a new
+# reference could fall outside of.
+for reference in skills/vectr/references/*.md; do
+  apply "$reference" \
+    -e "$f_json" -e "$f_fv_quoted" -e "$f_xattr" -e "$f_mustbe" -e "$f_isnot" -e "$f_scene"
+done
 # The minimal agent guide states the format version only in its target line
 # ("scene `formatVersion` `X`"), so only that pattern applies to it.
 apply crates/vectr-project/references/authoring-guide.md -e "$f_scene"
