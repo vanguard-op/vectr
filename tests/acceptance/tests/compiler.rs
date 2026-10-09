@@ -50,7 +50,7 @@ fn compiling_the_same_scene_twice_yields_an_identical_model() {
 fn an_invalid_scene_fails_naming_the_location_of_the_error() {
     let document = scene(vec![rect("card", 0, 0.0, 0.0, 10.0, 10.0)]);
     let mut scene = parse_scene(&document);
-    scene.elements[0].opacity = 1.5;
+    scene.elements[0].opacity = vectr_core::NumberValue::Literal(1.5);
 
     let diagnostics = vectr_core::compile(&scene).expect_err("refused");
     let error = diagnostics.errors().next().expect("an error");
