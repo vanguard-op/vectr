@@ -43,7 +43,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # cargo-deny: advisories (NFR-020) and license inventory (NFR-041).
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      # Install the pinned cargo-deny and run the same local script a developer
+      # runs, so the scan is reproducible outside CI and its output is not
+      # hidden inside an action (NFR-020 advisories, NFR-041 licences).
+      - name: Install pinned cargo-deny
+        uses: taiki-e/install-action@v2
         with:
-          manifest-path: ./Cargo.toml
+          tool: cargo-deny@0.20.2
+      - name: Dependency, advisory and license scan
+        run: scripts/deny.sh

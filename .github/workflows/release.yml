@@ -10,6 +10,13 @@ name: Release
 # revision has a successful CI run, and every job below needs it. The version
 # tag is the release owner's approval.
 #
+# Go-Live preflight: `preflight` re-runs the dependency/advisory/licence scan
+# and the font licence inventory against the tagged revision, so the checklist
+# items "the dependency scan and license scan are clean" and "the font
+# inventory confirms only open-licensed fonts ship" are enforced on the exact
+# revision being released rather than inferred from an earlier CI run. Nothing
+# is built or published until it passes.
+#
 # Release integrity (NFR-025): the release is signed and its checksums are
 # published. GitHub artifact attestations are only available for public
 # repositories or GitHub Enterprise Cloud organizations, and this repository is
@@ -54,9 +61,30 @@ jobs:
             exit 1
           fi
 
+  preflight:
+    name: go-live preflight (NFR-020, NFR-040, NFR-041)
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned toolchain
+        run: rustup toolchain install --no-self-update
+
+      - name: Install pinned cargo-deny
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@0.20.2
+
+      - name: Dependency, advisory and license scan
+        run: scripts/deny.sh
+
+      - name: Font license inventory
+        run: scripts/font-inventory.sh
+
   build:
     name: build (${{ matrix.target }})
-    needs: verify
+    needs: preflight
     strategy:
       fail-fast: false
       matrix:
@@ -94,7 +122,7 @@ jobs:
 
   skill:
     name: package the agent skill (FEAT-020)
-    needs: verify
+    needs: preflight
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -110,7 +138,7 @@ jobs:
 
   sbom:
     name: sbom (NFR-020)
-    needs: verify
+    needs: preflight
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -168,8 +196,11 @@ jobs:
         shell: bash
         run: |
           cd dist
+          # Every published release asset is checksummed, including the SBOM,
+          # so the signed checksum file covers all of them. Per-artifact
+          # `.sha256` files are excluded: SHA256SUMS is their combined form.
           sha256sum $(find . -maxdepth 1 -type f -name 'vectr-*' \
-            ! -name '*.sha256' ! -name '*.json' -printf '%f\n' | sort) > SHA256SUMS
+            ! -name '*.sha256' -printf '%f\n' | sort) > SHA256SUMS
           cat SHA256SUMS
 
       - name: Sign the release checksums (NFR-025)
