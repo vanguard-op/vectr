@@ -1,0 +1,14 @@
+# Line endings are normalized to LF in the repository and checked out with LF
+# on every platform. The shell scripts must have LF line endings to run under
+# bash (a CRLF `set -o pipefail` or shebang is rejected), and the release and
+# format versions are single-sourced by a text check (scripts/sync-version.sh),
+# so a Windows checkout must be byte-identical to a Linux or macOS one
+# (NFR-010; release.md, "Environments & Promotion": a release is built from the
+# exact revision that passed continuous integration).
+* text=auto eol=lf
+
+# Bundled fonts are binary data and are never normalized (NFR-040).
+assets/fonts/*.ttf binary
+assets/fonts/*.otf binary
+crates/vectr-project/assets/fonts/*.ttf binary
+crates/vectr-project/assets/fonts/*.otf binary
