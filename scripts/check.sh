@@ -38,6 +38,14 @@ cargo build --workspace --locked
 echo "==> cargo test --workspace --locked"
 cargo test --workspace --locked
 
+# The workspace tests compile the rasterizer in, so the no-rasterizer edge case
+# (FEAT-021) never executes there: a build without it must still validate,
+# compile and export SVG, and must report PNG's missing capability rather than
+# failing silently (nfr.md, "Availability & Reliability"). This reruns the core
+# crate's tests with the feature off, which is where those paths exist.
+echo "==> scripts/no-rasterizer.sh"
+scripts/no-rasterizer.sh
+
 # The phase-gate acceptance suite is its own crate outside the product
 # workspace (`members = ["crates/*"]`), so the workspace fmt, clippy and test
 # runs above do not reach it. It is part of the gate: its formatting, lints and
