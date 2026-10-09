@@ -224,18 +224,23 @@ pub fn definition(id: &str, parameters: Value, elements: Vec<Value>) -> Value {
 }
 
 /// A project that holds a reusable definition, a named element subtree, an
-/// empty definition, a palette, and a default scene that resolves it
-/// (D-032, D-036, FEAT-031).
+/// empty definition, a palette the project names as its default, and a default
+/// scene (D-032, D-036, FEAT-031).
 ///
 /// The default scene carries a named group `mark` (a 20x10 token-filled rect)
 /// beside an unrelated `other` rect, so a subtree preview can be told from the
 /// whole scene. The `badge` definition's single rect sits off the origin
 /// (10,20), so a definition preview must frame it to its own bounds, and its
-/// fill names the `brand` palette's `accent` token, so the preview proves the
-/// part carries the project's resolved style.
+/// fill names the `brand` palette's `accent` token. Because a definition has no
+/// placing scene, `badge` can only resolve that token from the project's
+/// `defaultPaletteId`, so the preview proves an isolated definition carries the
+/// project's default palette (FEAT-031, D-039).
 pub fn part_project(tag: &str) -> TempDir {
     let dir = TempDir::new(tag);
-    dir.write("vectr.project.json", r#"{"defaultSceneId":"main"}"#);
+    dir.write(
+        "vectr.project.json",
+        r#"{"defaultSceneId":"main","defaultPaletteId":"brand"}"#,
+    );
     dir.write(
         "palettes/brand.json",
         &palette("brand", &[("accent", "#ff0000")]),

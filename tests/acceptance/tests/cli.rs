@@ -655,6 +655,37 @@ fn a_part_identifier_that_resolves_to_nothing_is_missing_input() {
     );
 }
 
+/// A definition rendered in isolation against a project that names no default
+/// palette is a clear project-asset error naming the missing palette, and no
+/// preview is written (FEAT-031, FEAT-016).
+///
+/// A definition carries no palette of its own and has no placing scene, so the
+/// project's `defaultPaletteId` is the only source of its colours; a project
+/// that names none cannot resolve them (FEAT-031, D-039).
+#[test]
+fn a_definition_with_no_default_palette_names_the_missing_palette() {
+    let dir = part_project("cli-part-no-default-palette");
+    // Drop the default palette the fixture otherwise names, leaving the
+    // definition with no palette to resolve its token against.
+    dir.write("vectr.project.json", r#"{"defaultSceneId":"main"}"#);
+
+    let output = run_vectr(
+        dir.path(),
+        &["render", "badge", "--format", "svg", "--out", "badge.svg"],
+    );
+    assert_eq!(code(&output), 2, "{}", stderr(&output));
+    let err = stderr(&output);
+    assert!(err.contains("E_PROJECT_ASSET"), "{err}");
+    assert!(
+        err.contains("no default palette"),
+        "the missing default palette is named: {err}"
+    );
+    assert!(
+        !dir.path().join("badge.svg").exists(),
+        "no preview is written when the default palette is missing"
+    );
+}
+
 /// A part larger than the requested preview size is rendered at the requested
 /// size, and the command reports the frame it used (FEAT-031).
 #[test]
