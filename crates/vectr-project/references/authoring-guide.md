@@ -160,6 +160,11 @@ enforced by the engine and are easy to miss:
   must carry a `geometry` object and a complete `transform` with all five of
   `translateX`, `translateY`, `rotate`, `scaleX`, `scaleY` — even an identity
   transform. A `group` still needs `geometry`, but `{}` is accepted.
+- **An element `id` is unique across the whole project, not only within one
+  scene.** Element ids and definition ids share one namespace, so two scenes
+  cannot both name an element `sky`, and an element id cannot equal a definition
+  id. Give each a distinct id — one scene's background is `backdrop`, another's
+  `sky` — and prefix a part's ids when a name would repeat.
 - **Paints are tokens or gradients, never raw colours.** An element's fill or
   stroke paint is `{"kind": "token", "ref": "<tokenName>"}` or
   `{"kind": "gradient", "ref": "<gradientId>"}`. Every colour an element draws
@@ -220,11 +225,12 @@ identifier `example`), and edit it. The skeleton of every valid scene:
 }
 ```
 
-Keep `id`s short and stable: each element's `id` is unique within the scene, and
-a child's `parentId` names it. Every element repeats `sceneId` with the scene's
-`id`. Save the scene as `scenes/<id>.json` — the file is named for the scene's
-`id` — and address it by that identifier on the command line (the skeleton below
-becomes `scenes/habit-logo.json`, addressed as `habit-logo`).
+Keep `id`s short and stable: each element's `id` is unique across the project,
+sharing one namespace with the project's reusable definitions, and a child's
+`parentId` names it. Every element repeats `sceneId` with the scene's `id`. Save
+the scene as `scenes/<id>.json` — the file is named for the scene's `id` — and
+address it by that identifier on the command line (the skeleton below becomes
+`scenes/habit-logo.json`, addressed as `habit-logo`).
 
 Use a named palette rather than hard-coding colour per element, so the whole
 graphic restyles by editing one value. `palettes/brand.json`:
@@ -402,10 +408,10 @@ are about to use it.
     {"id": "halo-src", "sceneId": "alpine-lake", "order": 0, "kind": "ellipse", "geometry": {"x": 600, "y": 60, "width": 110, "height": 110}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "halo", "name": "Halo source"},
     {"id": "sun-disc", "sceneId": "alpine-lake", "order": 1, "kind": "ellipse", "geometry": {"x": 600, "y": 60, "width": 110, "height": 110}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "sun", "name": "Disc", "fill": {"kind": "token", "ref": "sun"}},
     {"id": "clouds", "sceneId": "alpine-lake", "order": 2, "kind": "repeat", "geometry": {"count": 2, "spacing": 250}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "name": "Clouds"},
-    {"id": "cloud", "sceneId": "alpine-lake", "order": 0, "kind": "group", "geometry": {}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "clouds", "name": "Cloud"},
-    {"id": "cloud-a", "sceneId": "alpine-lake", "order": 0, "kind": "ellipse", "geometry": {"x": 90, "y": 120, "width": 150, "height": 50}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "cloud", "fill": {"kind": "token", "ref": "paper"}},
-    {"id": "cloud-b", "sceneId": "alpine-lake", "order": 1, "kind": "ellipse", "geometry": {"x": 150, "y": 100, "width": 130, "height": 60}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "cloud", "fill": {"kind": "token", "ref": "paper"}},
-    {"id": "cloud-c", "sceneId": "alpine-lake", "order": 2, "kind": "ellipse", "geometry": {"x": 210, "y": 130, "width": 140, "height": 45}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "cloud", "fill": {"kind": "token", "ref": "paper"}},
+    {"id": "cloud-puff", "sceneId": "alpine-lake", "order": 0, "kind": "group", "geometry": {}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "clouds", "name": "Cloud"},
+    {"id": "cloud-a", "sceneId": "alpine-lake", "order": 0, "kind": "ellipse", "geometry": {"x": 90, "y": 120, "width": 150, "height": 50}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "cloud-puff", "fill": {"kind": "token", "ref": "paper"}},
+    {"id": "cloud-b", "sceneId": "alpine-lake", "order": 1, "kind": "ellipse", "geometry": {"x": 150, "y": 100, "width": 130, "height": 60}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "cloud-puff", "fill": {"kind": "token", "ref": "paper"}},
+    {"id": "cloud-c", "sceneId": "alpine-lake", "order": 2, "kind": "ellipse", "geometry": {"x": 210, "y": 130, "width": 140, "height": 45}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "parentId": "cloud-puff", "fill": {"kind": "token", "ref": "paper"}},
     {"id": "haze", "sceneId": "alpine-lake", "order": 3, "kind": "group", "geometry": {}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "name": "Haze"},
     {"id": "haze-band", "sceneId": "alpine-lake", "order": 0, "kind": "rect", "geometry": {"x": 0, "y": 300, "width": 800, "height": 72}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 0.4, "visible": true, "parentId": "haze", "fill": {"kind": "token", "ref": "mist"}},
     {"id": "peaks", "sceneId": "alpine-lake", "order": 4, "kind": "group", "geometry": {}, "transform": {"translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0}, "opacity": 1.0, "visible": true, "name": "Peaks"},
@@ -478,6 +484,8 @@ several. Author a part once and place it wherever it is needed instead of
 repeating its elements by hand.
 
 A definition declares its `parameters`, an `origin`, and its own `elements`.
+Its `id` and its elements' `id`s share one namespace with the project's scene
+elements, so none of them may collide with each other or with a scene element.
 Each element carries `definitionId` where a scene element carries `sceneId` —
 exactly one of the two, in the same element shape. A parameter-capable field
 holds `{"param": "<name>"}` in place of a literal; a `token` parameter replaces a
@@ -553,7 +561,7 @@ default `size`:
   "canvas": { "width": 320, "height": 200, "background": "transparent" },
   "elements": [
     {
-      "id": "sky",
+      "id": "backdrop",
       "sceneId": "skyline",
       "order": 0,
       "kind": "rect",
