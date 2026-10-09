@@ -7,10 +7,18 @@
 #
 # It covers every item the continuous-integration gate names (release.md,
 # "Environments & Promotion"): the tests, the determinism check, the security
-# scan and the license scan. See DELIVERY.md, "Key commands".
+# scan and the license scan, plus the version-sync check. See DELIVERY.md,
+# "Key commands".
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
+# The release version and the scene format version are declared once and derived
+# everywhere else; a copy bumped in one place but not another would publish a
+# crate whose manifest requires the previous release, or ship a guide that names
+# the wrong contract. This is a pure text check, so it runs before the build.
+echo "==> scripts/sync-version.sh --check"
+scripts/sync-version.sh --check
 
 echo "==> cargo fmt --all -- --check"
 cargo fmt --all -- --check
