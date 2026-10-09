@@ -8,7 +8,7 @@ mod common;
 
 use common::*;
 use serde_json::json;
-use vectr_core::export::svg::{export_svg_reporting, UNSUPPORTED};
+use vectr_core::export::svg::{export_svg_reporting, MISSING_METADATA, UNSUPPORTED};
 use vectr_core::render::{NodePaint, RenderCanvas, RenderMeta, RenderModel, ResolvedNode};
 use vectr_core::{Affine, Diagnostics, FontAsset, Rect, Shape, StyleContext};
 
@@ -137,6 +137,38 @@ fn text_is_emitted_as_outlined_paths_with_its_name_and_accessible_text() {
     );
     assert!(svg.contains("<title>Wordmark</title>"), "{svg}");
     assert!(svg.contains("<desc>Hi</desc>"), "{svg}");
+}
+
+#[test]
+fn a_scene_title_and_description_reach_the_exported_svg() {
+    let mut document = scene(vec![rect("box", 0, 0.0, 0.0, 10.0, 10.0)]);
+    document["title"] = json!("Brand mark");
+    document["description"] = json!("A simple box");
+    let model = compile_doc(&document);
+
+    let svg = vectr_core::export_svg(&model, &Default::default()).expect("exports");
+    assert!(svg.contains("<title>Brand mark</title>"), "{svg}");
+    assert!(svg.contains("<desc>A simple box</desc>"), "{svg}");
+}
+
+#[test]
+fn a_scene_without_metadata_warns_but_still_exports() {
+    let model = compile_doc(&scene(vec![rect("box", 0, 0.0, 0.0, 10.0, 10.0)]));
+
+    let export = export_svg_reporting(&model, &Default::default()).expect("exports");
+    assert!(
+        export
+            .diagnostics
+            .warnings()
+            .any(|warning| warning.code == MISSING_METADATA),
+        "the missing metadata is a warning, not an error: {:?}",
+        export.diagnostics
+    );
+    assert!(
+        export.svg.contains("<svg") && export.svg.contains("</svg>"),
+        "export still succeeds: {}",
+        export.svg
+    );
 }
 
 #[test]

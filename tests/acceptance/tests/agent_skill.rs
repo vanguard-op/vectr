@@ -911,6 +911,187 @@ fn the_guides_complex_example_is_compositional_and_validates() {
     );
 }
 
+/// The backticked tokens in `text` that begin with `prefix`.
+///
+/// The skill names its packaged files as inline code (`references/rules.md`,
+/// `assets/scene.template.json`), so a backtick-delimited scan collects exactly
+/// the pointers the entry point carries.
+fn backticked_paths(text: &str, prefix: &str) -> Vec<String> {
+    let mut paths = Vec::new();
+    let mut rest = text;
+    while let Some(start) = rest.find('`') {
+        let after = &rest[start + 1..];
+        let Some(end) = after.find('`') else {
+            break;
+        };
+        let token = &after[..end];
+        if token.starts_with(prefix) {
+            paths.push(token.to_string());
+        }
+        rest = &after[end + 1..];
+    }
+    paths
+}
+
+#[test]
+fn the_skill_entry_point_carries_the_always_read_surfaces_and_routes_to_every_reference() {
+    // FEAT-020's packaging amendment: the skill is a small always-read entry
+    // point carrying orientation, the workflow, the tool surface, the version
+    // check, and pointers to its references; the depth is loaded only when a
+    // step needs it (D-042, D-043).
+    let root = workspace_root();
+    let skill_dir = root.join("skills/vectr");
+    let skill = fs::read_to_string(skill_dir.join("SKILL.md")).expect("SKILL.md");
+
+    // Orientation, then the four named surfaces besides it.
+    for heading in [
+        "# Vectr",
+        "## Workflow",
+        "## Tool surface",
+        "## Version compatibility",
+        "## References",
+    ] {
+        assert!(
+            skill.contains(heading),
+            "the entry point carries `{heading}`: {skill}"
+        );
+    }
+
+    // The version check names both surfaces an agent compares.
+    assert!(
+        skill.contains("vectr --version") && skill.contains("serverInfo.version"),
+        "the entry point carries the version check"
+    );
+
+    // Pointers: every on-demand reference the package ships is named, and every
+    // path the entry point names resolves. A reference added without a pointer
+    // is depth the model never loads; a pointer with no file is a broken route.
+    let mut on_disk: Vec<String> = fs::read_dir(skill_dir.join("references"))
+        .expect("the references directory")
+        .map(|entry| {
+            let entry = entry.expect("a reference entry");
+            format!("references/{}", entry.file_name().to_string_lossy())
+        })
+        .collect();
+    on_disk.sort();
+    assert!(!on_disk.is_empty(), "the skill ships on-demand references");
+
+    let mut named = backticked_paths(&skill, "references/");
+    named.sort();
+    named.dedup();
+    for path in &on_disk {
+        assert!(
+            named.contains(path),
+            "the entry point points at `{path}`: {named:?}"
+        );
+    }
+    for path in &named {
+        assert!(
+            skill_dir.join(path).is_file(),
+            "the entry point's pointer `{path}` resolves"
+        );
+    }
+
+    // The asset the entry point names as the scene starting point resolves too.
+    for path in backticked_paths(&skill, "assets/") {
+        assert!(
+            skill_dir.join(&path).is_file(),
+            "the entry point's asset pointer `{path}` resolves"
+        );
+    }
+
+    // Each reference is routed on a condition, so the depth is loaded only when
+    // the step needs it rather than up front.
+    assert!(
+        skill.contains("Read it when"),
+        "the entry point routes each reference on when to read it"
+    );
+}
+
+#[test]
+fn the_skill_entry_point_routes_the_depth_to_its_on_demand_references() {
+    // The entry point is always-read; the procedure, the worked examples, the
+    // rules the schema does not state, the build-up method, the
+    // inspect-and-correct loop, and the defaults live in the references, read
+    // only when the step needs them (FEAT-020, D-042, D-043).
+    let root = workspace_root();
+    let skill_dir = root.join("skills/vectr");
+    let skill = fs::read_to_string(skill_dir.join("SKILL.md")).expect("SKILL.md");
+
+    // The entry point embeds no worked scene: every worked example lives in a
+    // reference, so it is not loaded before the step that needs it.
+    assert!(
+        fenced_json_blocks(&skill).is_empty(),
+        "the entry point embeds no worked example: {skill}"
+    );
+    for worked_id in ["\"id\": \"habit-logo\"", "\"id\": \"alpine-lake\""] {
+        assert!(
+            !skill.contains(worked_id),
+            "the worked scene `{worked_id}` is not in the entry point"
+        );
+    }
+
+    // The failure catalogue is a reference's depth, not the entry point's: the
+    // catalogue codes are absent from the always-read file. (`E_SCHEMA_VERSION`
+    // stays: it is the version-check result, not a catalogue entry.)
+    for code in [
+        "`E_SCHEMA`",
+        "`E_PARSE`",
+        "`E_FORMAT_VERSION`",
+        "`E_INVALID_COLOR`",
+    ] {
+        assert!(
+            !skill.contains(code),
+            "the failure catalogue code {code} is not in the entry point"
+        );
+    }
+
+    // Each reference the entry point routes to carries the depth it is named
+    // for, so the split is real and not an empty pointer.
+    let expected: &[(&str, &str)] = &[
+        (
+            "references/authoring-guide.md",
+            "the procedure for turning a described graphic",
+        ),
+        ("references/rules.md", "Rules the schema does not state"),
+        (
+            "references/reusable-parts.md",
+            "Reusable parts: definitions and instances",
+        ),
+        (
+            "references/depth-and-structure.md",
+            "Convey depth through structure",
+        ),
+        ("references/inspect-and-correct.md", "Inspect and correct"),
+        (
+            "references/defaults.md",
+            "Defaults for an ambiguous request",
+        ),
+        ("references/licensing.md", "Licensing and cost"),
+    ];
+    for (path, marker) in expected {
+        let text = fs::read_to_string(skill_dir.join(path))
+            .unwrap_or_else(|error| panic!("the reference `{path}` is readable: {error}"));
+        assert!(
+            text.contains(marker),
+            "the reference `{path}` carries its depth (`{marker}`)"
+        );
+    }
+
+    // The procedure's worked examples and failure catalogue are in the
+    // authoring guide, the reference the entry point names as the procedure.
+    let guide = fs::read_to_string(skill_dir.join("references/authoring-guide.md"))
+        .expect("the authoring guide");
+    assert!(
+        guide.contains("\"id\": \"habit-logo\"") && guide.contains("\"id\": \"alpine-lake\""),
+        "the authoring guide ships the worked examples"
+    );
+    assert!(
+        guide.contains("`E_SCHEMA`") && guide.contains("`E_PARSE`"),
+        "the authoring guide ships the failure catalogue"
+    );
+}
+
 /// The workspace's skill directory, exposed for tests that need more than the
 /// shared helpers.
 #[allow(dead_code)]

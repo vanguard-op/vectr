@@ -353,15 +353,32 @@ pub fn vectr_bin() -> PathBuf {
 
 /// Runs the `vectr` binary in `cwd` with `args`.
 pub fn run_vectr(cwd: &Path, args: &[&str]) -> Output {
+    run_vectr_env(cwd, args, &[], &[])
+}
+
+/// Runs the `vectr` binary in `cwd` with `args`, first removing every name in
+/// `remove` from the child's environment and then applying `env`.
+///
+/// The rollout flags (PDF export, icon-set mode) live in the process
+/// environment, so a test that measures the documented default removes the flag
+/// first and never inherits an ambient one; a test that measures the enabled
+/// capability sets it explicitly (FEAT-014, FEAT-025).
+pub fn run_vectr_env(cwd: &Path, args: &[&str], remove: &[&str], env: &[(&str, &str)]) -> Output {
     let binary = vectr_bin();
     assert!(
         binary.is_file(),
         "build the workspace before the acceptance suite: `{}` is missing",
         binary.display()
     );
-    Command::new(&binary)
-        .args(args)
-        .current_dir(cwd)
+    let mut command = Command::new(&binary);
+    command.args(args).current_dir(cwd);
+    for name in remove {
+        command.env_remove(name);
+    }
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    command
         .output()
         .unwrap_or_else(|error| panic!("could not run `{}`: {error}", binary.display()))
 }
@@ -494,24 +511,51 @@ pub struct McpRun {
     pub stderr: String,
 }
 
+/// The rollout flag that enables PDF export (FEAT-014). It is off by default,
+/// so a session that does not set it sees PDF as an unsupported capability.
+pub const PDF_EXPORT_ENV: &str = "VECTR_ENABLE_PDF_EXPORT";
+
 /// Runs `vectr-mcp` over stdio, sending each request as one NDJSON line.
 ///
 /// The requests are written while a reader thread drains standard output, so a
 /// session carrying a large response (the full schema, a render model) cannot
 /// deadlock on a full pipe.
 pub fn run_mcp_session(cwd: &Path, extra_args: &[&str], requests: &[Value]) -> McpRun {
+    run_mcp_session_with_env(cwd, extra_args, &[], requests)
+}
+
+/// Runs `vectr-mcp` over stdio with extra environment variables set on the
+/// child, sending each request as one NDJSON line.
+///
+/// `PDF_EXPORT_ENV` is removed from the child first, so every session tests the
+/// documented default (PDF off) regardless of the ambient environment; an
+/// override in `env` re-enables the gated capability (FEAT-014). The requests
+/// are written while a reader thread drains standard output, so a session
+/// carrying a large response cannot deadlock on a full pipe.
+pub fn run_mcp_session_with_env(
+    cwd: &Path,
+    extra_args: &[&str],
+    env: &[(&str, &str)],
+    requests: &[Value],
+) -> McpRun {
     let binary = vectr_mcp_bin();
     assert!(
         binary.is_file(),
         "build the workspace before the acceptance suite: `{}` is missing",
         binary.display()
     );
-    let mut child = Command::new(&binary)
+    let mut command = Command::new(&binary);
+    command
         .args(extra_args)
         .current_dir(cwd)
+        .env_remove(PDF_EXPORT_ENV)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    let mut child = command
         .spawn()
         .unwrap_or_else(|error| panic!("could not run `{}`: {error}", binary.display()));
 
