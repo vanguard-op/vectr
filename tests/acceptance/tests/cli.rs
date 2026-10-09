@@ -482,3 +482,218 @@ fn a_density_flag_on_svg_is_a_usage_error() {
     );
     assert_eq!(code(&output), 2);
 }
+
+// ---------------------------------------------------------------------------
+// Part-scoped rendering from the command line (FEAT-031, C-004)
+// ---------------------------------------------------------------------------
+
+/// A definition addressed by its identifier renders on its own from the command
+/// line: the preview is framed to the part's own bounds and carries its
+/// project-resolved style, and the command reports the frame it used
+/// (FEAT-031).
+#[test]
+fn a_definition_renders_on_its_own_from_the_cli() {
+    let dir = part_project("cli-part-definition");
+    let output = run_vectr(
+        dir.path(),
+        &["render", "badge", "--format", "svg", "--out", "badge.svg"],
+    );
+    assert_eq!(code(&output), 0, "{}", stderr(&output));
+    assert!(
+        stdout(&output).contains("frame 30x40"),
+        "the render reports the frame it used: {}",
+        stdout(&output)
+    );
+
+    let svg = std::fs::read_to_string(dir.path().join("badge.svg")).expect("the svg");
+    assert!(svg.contains("<svg") && svg.contains("</svg>"), "{svg}");
+    assert!(svg.contains("viewBox=\"0 0 30 40\""), "{svg}");
+    assert!(svg.contains("badge-body"), "{svg}");
+    assert!(
+        svg.contains("fill=\"#ff0000\""),
+        "the part carries the project's resolved style: {svg}"
+    );
+}
+
+/// A named element subtree addressed by its identifier renders on its own from
+/// the command line: its structure appears and the rest of the scene does not
+/// (FEAT-031).
+#[test]
+fn an_element_subtree_renders_on_its_own_from_the_cli() {
+    let dir = part_project("cli-part-subtree");
+    let output = run_vectr(
+        dir.path(),
+        &["render", "mark", "--format", "svg", "--out", "mark.svg"],
+    );
+    assert_eq!(code(&output), 0, "{}", stderr(&output));
+    assert!(
+        stdout(&output).contains("frame 20x10"),
+        "{}",
+        stdout(&output)
+    );
+
+    let svg = std::fs::read_to_string(dir.path().join("mark.svg")).expect("the svg");
+    assert!(svg.contains("mark-rect"), "{svg}");
+    assert!(
+        !svg.contains("other"),
+        "the rest of the scene is absent: {svg}"
+    );
+}
+
+/// A part that places another definition is included and resolved when rendered
+/// in isolation from the command line (FEAT-031).
+#[test]
+fn a_part_that_places_another_definition_resolves_it_from_the_cli() {
+    let dir = part_project("cli-part-nested");
+    dir.write(
+        "definitions/inner.json",
+        &definition(
+            "inner",
+            json!([]),
+            vec![def_rect("dot", "inner", 0, 0.0, 0.0, 5.0, 5.0)],
+        )
+        .to_string(),
+    );
+    dir.write(
+        "definitions/outer.json",
+        &definition(
+            "outer",
+            json!([]),
+            vec![def_instance("place", "outer", 0, "inner")],
+        )
+        .to_string(),
+    );
+
+    let output = run_vectr(
+        dir.path(),
+        &["render", "outer", "--format", "svg", "--out", "outer.svg"],
+    );
+    assert_eq!(code(&output), 0, "{}", stderr(&output));
+    assert!(
+        stdout(&output).contains("frame 5x5"),
+        "the referenced definition's geometry reaches the preview: {}",
+        stdout(&output)
+    );
+}
+
+/// A corrected part re-rendered in isolation reflects the correction from the
+/// command line (FEAT-031).
+#[test]
+fn a_corrected_part_re_renders_from_the_cli() {
+    let dir = part_project("cli-part-correction");
+    let before = run_vectr(
+        dir.path(),
+        &["render", "badge", "--format", "svg", "--out", "badge.svg"],
+    );
+    assert_eq!(code(&before), 0, "{}", stderr(&before));
+    assert!(
+        stdout(&before).contains("frame 30x40"),
+        "{}",
+        stdout(&before)
+    );
+
+    dir.write(
+        "definitions/badge.json",
+        &definition(
+            "badge",
+            json!([]),
+            vec![def_rect("badge-body", "badge", 0, 10.0, 20.0, 60.0, 80.0)],
+        )
+        .to_string(),
+    );
+    let after = run_vectr(
+        dir.path(),
+        &["render", "badge", "--format", "svg", "--out", "badge.svg"],
+    );
+    assert_eq!(code(&after), 0, "{}", stderr(&after));
+    assert!(
+        stdout(&after).contains("frame 60x80"),
+        "the re-render reflects the corrected part: {}",
+        stdout(&after)
+    );
+}
+
+/// A part with no resolved geometry is reported with a defined fallback frame
+/// rather than failing (FEAT-031).
+#[test]
+fn a_part_with_no_resolved_geometry_is_reported_with_a_fallback_frame_from_the_cli() {
+    let dir = part_project("cli-part-empty");
+    let output = run_vectr(
+        dir.path(),
+        &["render", "empty", "--format", "svg", "--out", "empty.svg"],
+    );
+    assert_eq!(code(&output), 0, "{}", stderr(&output));
+    assert!(
+        stdout(&output).contains("frame 100x100"),
+        "the defined fallback frame is reported: {}",
+        stdout(&output)
+    );
+    assert!(
+        stderr(&output).contains("W_EMPTY_PART_FRAME"),
+        "the empty part is reported: {}",
+        stderr(&output)
+    );
+    assert!(dir.path().join("empty.svg").is_file());
+}
+
+/// A part identifier that resolves to no definition or element is missing input
+/// (exit 2), naming the part, and no preview is written (FEAT-031).
+#[test]
+fn a_part_identifier_that_resolves_to_nothing_is_missing_input() {
+    let dir = part_project("cli-part-unknown");
+    let output = run_vectr(dir.path(), &["render", "absent", "--format", "svg"]);
+    assert_eq!(code(&output), 2, "{}", stderr(&output));
+    let err = stderr(&output);
+    assert!(err.contains("E_PART"), "{err}");
+    assert!(
+        err.contains("absent"),
+        "the unresolved part is named: {err}"
+    );
+    assert!(
+        !dir.path().join("dist/absent.svg").exists(),
+        "no preview is written for an unresolved part"
+    );
+}
+
+/// A part larger than the requested preview size is rendered at the requested
+/// size, and the command reports the frame it used (FEAT-031).
+#[test]
+fn a_part_too_large_for_the_requested_size_reports_the_frame_used_from_the_cli() {
+    let dir = part_project("cli-part-size");
+    let output = run_vectr(
+        dir.path(),
+        &["render", "badge", "--format", "svg", "--width", "15"],
+    );
+    assert_eq!(code(&output), 0, "{}", stderr(&output));
+    assert!(
+        stdout(&output).contains("frame 15x20"),
+        "a single dimension scales the other to the part's aspect ratio: {}",
+        stdout(&output)
+    );
+}
+
+/// A part preview with no `--out` writes to `dist/<part>.<format>` (FEAT-031).
+#[test]
+fn a_part_preview_defaults_its_output_to_dist_part() {
+    let dir = part_project("cli-part-default-out");
+    let output = run_vectr(dir.path(), &["render", "badge", "--format", "svg"]);
+    assert_eq!(code(&output), 0, "{}", stderr(&output));
+    assert!(
+        dir.path().join("dist/badge.svg").is_file(),
+        "{}",
+        stdout(&output)
+    );
+}
+
+/// A part preview renders to PNG from the command line (FEAT-031).
+#[test]
+fn a_part_renders_to_png_from_the_cli() {
+    let dir = part_project("cli-part-png");
+    let output = run_vectr(
+        dir.path(),
+        &["render", "badge", "--format", "png", "--out", "badge.png"],
+    );
+    assert_eq!(code(&output), 0, "{}", stderr(&output));
+    let bytes = std::fs::read(dir.path().join("badge.png")).expect("the png");
+    assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
+}

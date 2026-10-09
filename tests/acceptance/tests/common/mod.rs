@@ -168,6 +168,109 @@ pub fn write_scene_as(dir: &TempDir, id: &str, mut document: Value) -> String {
     id.to_string()
 }
 
+/// One element owned by a definition, addressed by `definitionId` instead of
+/// `sceneId`: the same `Element` shape a scene's is (C-001, FEAT-030).
+pub fn def_element(id: &str, definition: &str, order: i64, kind: &str, geometry: Value) -> Value {
+    json!({
+        "id": id,
+        "definitionId": definition,
+        "order": order,
+        "kind": kind,
+        "geometry": geometry,
+        "transform": {
+            "translateX": 0.0, "translateY": 0.0, "rotate": 0.0, "scaleX": 1.0, "scaleY": 1.0
+        },
+        "opacity": 1.0,
+        "visible": true
+    })
+}
+
+/// A rect owned by a definition, at `(x, y)` sized `width` by `height`.
+pub fn def_rect(
+    id: &str,
+    definition: &str,
+    order: i64,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+) -> Value {
+    def_element(
+        id,
+        definition,
+        order,
+        "rect",
+        json!({ "x": x, "y": y, "width": width, "height": height }),
+    )
+}
+
+/// An instance element owned by a definition, placing `reference`.
+pub fn def_instance(id: &str, definition: &str, order: i64, reference: &str) -> Value {
+    let mut value = def_element(id, definition, order, "instance", json!({}));
+    value["definitionRef"] = json!(reference);
+    value
+}
+
+/// A Definition document from its parameters and elements (C-001, FEAT-030).
+pub fn definition(id: &str, parameters: Value, elements: Vec<Value>) -> Value {
+    json!({
+        "id": id,
+        "projectId": "p",
+        "name": id,
+        "parameters": parameters,
+        "origin": { "x": 0.0, "y": 0.0 },
+        "elements": elements
+    })
+}
+
+/// A project that holds a reusable definition, a named element subtree, an
+/// empty definition, a palette, and a default scene that resolves it
+/// (D-032, D-036, FEAT-031).
+///
+/// The default scene carries a named group `mark` (a 20x10 token-filled rect)
+/// beside an unrelated `other` rect, so a subtree preview can be told from the
+/// whole scene. The `badge` definition's single rect sits off the origin
+/// (10,20), so a definition preview must frame it to its own bounds, and its
+/// fill names the `brand` palette's `accent` token, so the preview proves the
+/// part carries the project's resolved style.
+pub fn part_project(tag: &str) -> TempDir {
+    let dir = TempDir::new(tag);
+    dir.write("vectr.project.json", r#"{"defaultSceneId":"main"}"#);
+    dir.write(
+        "palettes/brand.json",
+        &palette("brand", &[("accent", "#ff0000")]),
+    );
+
+    let mut mark = group("mark", 0, Some("Mark"));
+    mark["transform"]["translateX"] = json!(50.0);
+    mark["transform"]["translateY"] = json!(50.0);
+    let mut mark_rect = rect("mark-rect", 0, 0.0, 0.0, 20.0, 10.0);
+    mark_rect["parentId"] = json!("mark");
+    mark_rect["fill"] = token_paint("accent");
+    let other = rect("other", 1, 100.0, 100.0, 50.0, 50.0);
+    let document = scene_with(vec![mark, mark_rect, other], None, Some("brand"));
+    write_scene_as(&dir, "main", document);
+
+    dir.write(
+        "definitions/badge.json",
+        &definition(
+            "badge",
+            json!([]),
+            vec![{
+                let mut body = def_rect("badge-body", "badge", 0, 10.0, 20.0, 30.0, 40.0);
+                body["fill"] = token_paint("accent");
+                body
+            }],
+        )
+        .to_string(),
+    );
+    dir.write(
+        "definitions/empty.json",
+        &definition("empty", json!([]), vec![]).to_string(),
+    );
+    dir
+}
+
 /// Parses a scene document, panicking with the diagnostics on failure.
 pub fn parse_scene(document: &Value) -> Scene {
     parse(&document.to_string()).unwrap_or_else(|diagnostics| {
