@@ -35,7 +35,7 @@ Rust (stable, pinned by rust-toolchain.toml), cargo workspace. serde + schemars 
 - scratch/ — per-task scratch (gitignored)
 
 ## Contracts
-CONTRACTS.md — C-001 scene document, C-002 library API, C-003 render model, C-004 CLI, C-005 MCP server.
+CONTRACTS.md — C-001 scene document, C-002 library API, C-003 render model, C-004 CLI, C-005 MCP server, C-006 evaluation harness.
 
 ## Token map
 Vectr has no product UI, so there are no product-level design tokens. Scene palettes (schema.md, "Palette") are project data authored by the user.
@@ -102,7 +102,8 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | T-122 | FEAT-029 | ai-engineer | Done | C-004 |
 | T-123 | FEAT-006, FEAT-014, FEAT-020, FEAT-021, FEAT-022, FEAT-023, FEAT-025, FEAT-026, FEAT-029, FEAT-032 | qa-engineer | Done | — |
 | T-124 | FEAT-023 | ai-engineer | Done | C-006 |
-| T-126 | FEAT-006, FEAT-014, FEAT-020, FEAT-021, FEAT-022, FEAT-023, FEAT-025, FEAT-026, FEAT-029, FEAT-032 | qa-engineer | In Progress | — |
+| T-126 | FEAT-006, FEAT-014, FEAT-020, FEAT-021, FEAT-022, FEAT-023, FEAT-025, FEAT-026, FEAT-029, FEAT-032 | qa-engineer | Done | — |
+| T-127 | FEAT-014, FEAT-021 | backend-engineer | In Progress | C-003 |
 | T-125 | FEAT-016, FEAT-023 | backend-engineer | Done | C-001, C-006 |
 | T-116 | FEAT-020 | infra-engineer | Done | C-004 |
 | T-117 | FEAT-016, FEAT-020 | infra-engineer | Done | C-004 |
