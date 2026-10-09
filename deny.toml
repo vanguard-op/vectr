@@ -34,6 +34,11 @@ allow = [
     "CC0-1.0",
     "0BSD",
     "OFL-1.1",
+    # The rustls root-cert bundle (webpki-root-certs) the evaluation harness
+    # pulls through its HTTPS provider path is CDLA-Permissive-2.0; a permissive
+    # data licence the maintainer approved for the maintainer-only harness
+    # (D-045, FEAT-023).
+    "CDLA-Permissive-2.0",
 ]
 exceptions = []
 

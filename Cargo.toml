@@ -72,8 +72,14 @@ anyhow = "1.0.104"
 thiserror = "2.0.21"
 
 # Evaluation harness providers (FEAT-023).
+#
+# reqwest 0.13 renamed its rustls TLS features (`rustls-tls` is gone); the
+# shared entry names `rustls` plus `blocking`, the synchronous client the batch
+# harness drives, and `json` for the vendor request and reply bodies. This is
+# the whole feature set the harness needs, so a member inherits the provider
+# client with `reqwest = { workspace = true }` (D-005, C-006).
 tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros"] }
-reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls", "blocking"] }
 
 [profile.release]
 lto = "thin"
