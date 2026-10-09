@@ -380,6 +380,41 @@ mod tests {
     }
 
     #[test]
+    fn the_project_config_declares_its_default_selections() {
+        // A project names the scene a request falls back to, the palette an
+        // element without a scene palette resolves against, and the recipe an
+        // isolated definition renders under (FEAT-016, C-001). The published
+        // contract must carry all three, or a project authored from it cannot
+        // state them.
+        let schema = parsed(&schema(SchemaForm::Full).unwrap());
+        let config = &schema["$defs"]["ProjectConfig"];
+        let properties = config["properties"].as_object().expect("properties");
+        for field in ["defaultSceneId", "defaultPaletteId", "defaultRecipeId"] {
+            assert!(properties.contains_key(field), "missing `{field}`");
+        }
+        let required: Vec<&str> = config["required"]
+            .as_array()
+            .expect("required fields")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        for optional in ["defaultSceneId", "defaultPaletteId", "defaultRecipeId"] {
+            assert!(!required.contains(&optional), "`{optional}` is optional");
+        }
+    }
+
+    #[test]
+    fn the_run_record_declares_the_median_token_field() {
+        // FEAT-023 requires a completed run to report the median per-prompt
+        // token count alongside compile success and fidelity, and C-006 fixes
+        // it as the record's `medianTokens`.
+        let schema = parsed(&schema(SchemaForm::Full).unwrap());
+        let median = &schema["$defs"]["EvaluationRun"]["properties"]["medianTokens"];
+        assert_eq!(median["type"], "integer");
+        assert_eq!(median["minimum"], 0);
+    }
+
+    #[test]
     fn a_type_name_matches_case_insensitively() {
         assert_eq!(parsed(&schema_for("element").unwrap())["title"], "Element");
         assert_eq!(parsed(&schema_for("PALETTE").unwrap())["title"], "Palette");

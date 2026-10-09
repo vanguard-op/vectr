@@ -501,13 +501,15 @@
     },
     "ProjectConfig": {
       "title": "ProjectConfig",
-      "description": "The per-project settings that govern how scenes in the project are compiled and exported.",
+      "description": "The per-project settings that govern how the project's scenes are compiled and exported. A project holds one or more scenes and may name one of them as its default.",
       "type": "object",
       "properties": {
         "id": { "type": "string", "description": "Stable identifier for the project." },
         "name": { "type": "string", "maxLength": 120, "description": "Human-readable project name." },
         "formatVersion": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+$", "description": "The scene format version this project targets; this build supports 0.2." },
-        "defaultRecipeId": { "type": "string", "description": "References the StyleRecipe applied when a scene does not name one." },
+        "defaultRecipeId": { "type": "string", "description": "References the StyleRecipe applied when a scene names none, and the recipe an isolated reusable definition renders under; when neither names one, the flat recipe applies." },
+        "defaultPaletteId": { "type": "string", "description": "References the Palette whose tokens an element resolves against when the scene that owns it names none, and the palette an isolated reusable definition resolves its tokens against." },
+        "defaultSceneId": { "type": "string", "description": "References the Scene used when a request does not name one." },
         "output": { "$ref": "#/$defs/ProjectOutput" }
       },
       "required": ["id", "name", "formatVersion", "output"],
@@ -598,6 +600,7 @@
         "authoringModelId": { "type": "string", "description": "References the AuthoringModel that authored the scenes." },
         "compileSuccessRate": { "type": "number", "minimum": 0, "maximum": 1, "description": "Share of authored scenes that compiled without error." },
         "fidelityScore": { "type": "number", "minimum": 0, "maximum": 1, "description": "Judged visual fidelity score for the run." },
+        "medianTokens": { "type": "integer", "minimum": 0, "description": "The median authoring-model token usage per prompt across the run, over the prompts whose provider reported usage; absent when no prompt reported usage." },
         "regression": { "type": "boolean", "description": "Whether the run regressed against the previous run of the same corpus and model." },
         "notes": { "type": "string", "description": "Anything notable about the run." }
       },
