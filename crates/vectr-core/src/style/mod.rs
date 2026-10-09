@@ -74,7 +74,7 @@ pub fn resolve_fill(
 ) -> Option<Paint> {
     resolve_paint(
         element,
-        element.fill.as_ref()?,
+        element.fill.as_ref()?.literal()?,
         palette,
         gradients,
         diagnostics,
@@ -128,7 +128,7 @@ pub fn resolve_stroke_paint(
     let stroke = element.stroke.as_ref()?;
     resolve_paint(
         element,
-        &stroke.paint,
+        stroke.paint.literal()?,
         palette,
         gradients,
         diagnostics,
@@ -360,7 +360,14 @@ mod tests {
     #[test]
     fn an_undefined_stroke_token_is_an_error_naming_the_token() {
         let mut scene = scene_with_paints("accent", Some("stroke-1"));
-        scene.elements[0].stroke.as_mut().unwrap().paint.reference = "missing".to_string();
+        scene.elements[0]
+            .stroke
+            .as_mut()
+            .unwrap()
+            .paint
+            .literal_mut()
+            .unwrap()
+            .reference = "missing".to_string();
         let mut diagnostics = Diagnostics::new();
         let paint =
             resolve_stroke_paint(&scene.elements[0], Some(&palette()), &[], &mut diagnostics);
@@ -380,10 +387,10 @@ mod tests {
     #[test]
     fn a_gradient_fill_resolves_to_concrete_stops() {
         let mut scene = scene_with_paints("accent", None);
-        scene.elements[0].fill = Some(crate::scene::Paint {
+        scene.elements[0].fill = Some(crate::scene::PaintValue::Paint(crate::scene::Paint {
             kind: PaintKind::Gradient,
             reference: "fade".to_string(),
-        });
+        }));
         let gradient = gradient::parse(
             r##"{"id":"fade","projectId":"p","name":"F","type":"linear","stops":[{"offset":0,"token":"accent"},{"offset":1,"token":"accent"}]}"##,
         )

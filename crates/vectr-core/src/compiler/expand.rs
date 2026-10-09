@@ -5,26 +5,25 @@
 //! emission path about a second element universe, this pass runs first: it walks
 //! the scene, and wherever an `instance` element places a definition it splices
 //! the definition's elements in, substituting the instance's parameter bindings,
-//! applying its per-use overrides, and wrapping the result in a `group` that
-//! carries the instance's identity and transform. The compiler then sees only
-//! primitives, compositions and groups, and the render model has no unresolved
-//! definition reference (C-003, FEAT-011, FEAT-030).
+//! and wrapping the result in a `group` that carries the instance's identity and
+//! transform. The compiler then sees only primitives, compositions and groups,
+//! and the render model has no unresolved definition reference (C-003, FEAT-011,
+//! FEAT-030).
 //!
 //! Resolution is deterministic (NFR-010): elements are walked in document order,
 //! identifiers are derived from the instance path, and no unordered collection
 //! feeds the output. A reference cycle among definitions, an unresolved
 //! definition, a binding or parameter reference that does not match the placed
-//! definition, an override that names no element, and an expansion past the
-//! supported size limit are each a located error naming the definition; nothing
-//! is silently dropped or truncated (NFR-011).
+//! definition, and an expansion past the supported size limit are each a located
+//! error naming the definition; nothing is silently dropped or truncated
+//! (NFR-011).
 
 use std::collections::{HashMap, HashSet};
 
 use crate::scene::{
     Binding, BindingValue, BoolValue, Definition, Diagnostic, DiagnosticCode, Diagnostics, Element,
-    ElementKind, Geometry, Location, NumberValue, Override, Paint, PaintKind, PaintValue,
-    ParameterType, ParameterValue, Scene, StringValue, TemplateElement, TemplateTransform,
-    Transform,
+    ElementKind, Geometry, Location, NumberValue, Paint, PaintKind, PaintValue, ParameterType,
+    ParameterValue, Scene, StringValue, Transform,
 };
 
 /// A definition reference that does not resolve to a definition in the context.
@@ -33,8 +32,8 @@ pub const UNRESOLVED_DEFINITION: DiagnosticCode = DiagnosticCode::new("E_DEFINIT
 /// Two definitions place each other, directly or through a chain.
 pub const DEFINITION_CYCLE: DiagnosticCode = DiagnosticCode::new("E_DEFINITION_CYCLE");
 
-/// An instance's binding, parameter reference, or override does not match the
-/// placed definition.
+/// An instance's binding or a parameter reference does not match the placed
+/// definition.
 pub const INVALID_BINDING: DiagnosticCode = DiagnosticCode::new("E_BINDING");
 
 /// A definition in the context is never instantiated by the scene.
@@ -105,8 +104,7 @@ pub fn expand(scene: &Scene, definitions: &[Definition]) -> Result<Expansion, Di
 /// without producing an expanded scene (C-002, FEAT-030).
 ///
 /// Used by the project loader so `validate` reports an unresolved definition, a
-/// binding mismatch, an override with no target, and a definition cycle before
-/// anything is compiled.
+/// binding mismatch, and a definition cycle before anything is compiled.
 pub fn validate_instances(scene: &Scene, definitions: &[Definition]) -> Diagnostics {
     match expand(scene, definitions) {
         Ok(expansion) => expansion.diagnostics,
@@ -182,10 +180,9 @@ impl Expander<'_> {
                     element.bindings.as_deref(),
                     None,
                     element.transform.clone(),
-                    element.opacity,
-                    element.visible,
+                    element.opacity(),
+                    element.visible(),
                     element.name.clone(),
-                    element.overrides.as_deref(),
                     element.parent_id.as_deref(),
                     None,
                 );
@@ -228,7 +225,6 @@ impl Expander<'_> {
         opacity: f64,
         visible: bool,
         name: Option<String>,
-        overrides: Option<&[Override]>,
         parent: Option<&str>,
         prefix: Option<&str>,
     ) {
@@ -274,27 +270,6 @@ impl Expander<'_> {
             }
         };
 
-        if let Some(overrides) = overrides {
-            for override_entry in overrides {
-                if !definition
-                    .elements
-                    .iter()
-                    .any(|element| element.id == override_entry.target)
-                {
-                    self.diagnostics.push(
-                        Diagnostic::error(
-                            INVALID_BINDING,
-                            format!(
-                                "override targets `{}`, which definition `{}` does not contain",
-                                override_entry.target, definition.id
-                            ),
-                        )
-                        .with_location(Location::element(instance_id)),
-                    );
-                }
-            }
-        }
-
         // The instance's identity travels as a group: it contributes no node of
         // its own, but its id and name join the ancestor chain of every node the
         // definition resolves to (C-003, FEAT-030).
@@ -312,29 +287,22 @@ impl Expander<'_> {
             fill: None,
             stroke: None,
             font_id: None,
-            opacity,
-            visible,
+            opacity: NumberValue::Literal(opacity),
+            visible: BoolValue::Literal(visible),
             definition_ref: None,
             bindings: None,
-            overrides: None,
         };
         self.out.push(group);
 
         self.stack.push(definition.id.clone());
-        self.instantiate_definition(definition, &values, overrides, &group_id);
+        self.instantiate_definition(definition, &values, &group_id);
         self.stack.pop();
     }
 
     /// Emits a definition's element tree with its parameters resolved.
-    fn instantiate_definition(
-        &mut self,
-        definition: &Definition,
-        values: &Bindings,
-        overrides: Option<&[Override]>,
-        prefix: &str,
-    ) {
+    fn instantiate_definition(&mut self, definition: &Definition, values: &Bindings, prefix: &str) {
         let children = template_children(&definition.elements);
-        let mut roots: Vec<&TemplateElement> = definition
+        let mut roots: Vec<&Element> = definition
             .elements
             .iter()
             .filter(|element| element.parent_id.is_none())
@@ -361,11 +329,10 @@ impl Expander<'_> {
         }
 
         for root in roots {
-            self.instantiate_template(
+            self.instantiate_element(
                 root,
                 Some(prefix),
                 values,
-                overrides,
                 prefix,
                 &definition.id,
                 &children,
@@ -374,15 +341,14 @@ impl Expander<'_> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn instantiate_template(
+    fn instantiate_element(
         &mut self,
-        template: &TemplateElement,
+        template: &Element,
         parent: Option<&str>,
         values: &Bindings,
-        overrides: Option<&[Override]>,
         prefix: &str,
         definition_id: &str,
-        children: &HashMap<&str, Vec<&TemplateElement>>,
+        children: &HashMap<&str, Vec<&Element>>,
     ) {
         if self.out.len() >= MAX_EXPANDED_ELEMENTS {
             self.diagnostics.push(Diagnostic::error(
@@ -426,16 +392,13 @@ impl Expander<'_> {
                 opacity,
                 visible,
                 template.name.clone(),
-                template.overrides.as_deref(),
                 parent,
                 Some(prefix),
             );
             return;
         }
 
-        let override_entry =
-            overrides.and_then(|entries| entries.iter().find(|entry| entry.target == template.id));
-        let mut element = match resolve_template(template, values, override_entry) {
+        let mut element = match resolve_element(template, &self.scene_id, values) {
             Ok(element) => element,
             Err(findings) => {
                 self.diagnostics.extend(findings);
@@ -451,11 +414,10 @@ impl Expander<'_> {
             let mut list = list.clone();
             sort_by_order(&mut list, |child| (child.order, child.id.as_str()));
             for child in list {
-                self.instantiate_template(
+                self.instantiate_element(
                     child,
                     Some(&new_id),
                     values,
-                    overrides,
                     prefix,
                     definition_id,
                     children,
@@ -614,18 +576,22 @@ fn default_value(expected: ParameterType, default: &ParameterValue) -> Value {
     }
 }
 
-/// Resolves one template element into a concrete element (FEAT-030).
-fn resolve_template(
-    template: &TemplateElement,
+/// Resolves one definition element into a concrete scene element (FEAT-030).
+///
+/// Every parameter reference is substituted for the value the instance binds,
+/// so the result carries literal values only and the compiler sees a concrete
+/// element.
+fn resolve_element(
+    template: &Element,
+    scene_id: &str,
     values: &Bindings,
-    override_entry: Option<&Override>,
 ) -> Result<Element, Diagnostics> {
     let mut diagnostics = Diagnostics::new();
     let geometry = &template.geometry;
 
-    let mut element = Element {
+    let element = Element {
         id: template.id.clone(),
-        scene_id: None,
+        scene_id: Some(scene_id.to_string()),
         definition_id: None,
         parent_id: template.parent_id.clone(),
         order: template.order,
@@ -672,7 +638,7 @@ fn resolve_template(
             ),
             count: geometry.count.as_ref().and_then(|value| {
                 number_or_report(value, values, "/geometry/count", &mut diagnostics)
-                    .map(|value| value as u32)
+                    .map(|value| NumberValue::Literal(value.max(0.0)))
             }),
             spacing: opt_number(
                 &geometry.spacing,
@@ -692,91 +658,39 @@ fn resolve_template(
         transform: resolve_transform(&template.transform, values).unwrap_or_else(|findings| {
             diagnostics.extend(findings);
             Transform {
-                translate_x: 0.0,
-                translate_y: 0.0,
-                rotate: 0.0,
-                scale_x: 1.0,
-                scale_y: 1.0,
+                translate_x: NumberValue::Literal(0.0),
+                translate_y: NumberValue::Literal(0.0),
+                rotate: NumberValue::Literal(0.0),
+                scale_x: NumberValue::Literal(1.0),
+                scale_y: NumberValue::Literal(1.0),
                 skew_x: None,
                 skew_y: None,
             }
         }),
-        fill: match &template.fill {
-            Some(PaintValue::Paint(paint)) => Some(paint.clone()),
-            Some(PaintValue::Param(reference)) => {
-                match lookup(&reference.param, values, ParameterType::Token, "/fill") {
-                    Ok(Value::Token(token)) => Some(Paint {
-                        kind: PaintKind::Token,
-                        reference: token,
-                    }),
-                    Ok(other) => {
-                        diagnostics.extend(type_error(
-                            &reference.param,
-                            other.type_name(),
-                            "token",
-                            "/fill",
-                        ));
-                        None
-                    }
-                    Err(findings) => {
-                        diagnostics.extend(findings);
-                        None
-                    }
-                }
-            }
-            None => None,
-        },
-        stroke: match &template.stroke {
-            Some(stroke) => {
-                let paint = match &stroke.paint {
-                    PaintValue::Paint(paint) => Some(paint.clone()),
-                    PaintValue::Param(reference) => {
-                        match lookup(
-                            &reference.param,
-                            values,
-                            ParameterType::Token,
-                            "/stroke/paint",
-                        ) {
-                            Ok(Value::Token(token)) => Some(Paint {
-                                kind: PaintKind::Token,
-                                reference: token,
-                            }),
-                            Ok(other) => {
-                                diagnostics.extend(type_error(
-                                    &reference.param,
-                                    other.type_name(),
-                                    "token",
-                                    "/stroke/paint",
-                                ));
-                                None
-                            }
-                            Err(findings) => {
-                                diagnostics.extend(findings);
-                                None
-                            }
-                        }
-                    }
-                };
-                paint.map(|paint| crate::scene::Stroke {
-                    profile_id: stroke.profile_id.clone(),
-                    paint,
-                })
-            }
-            None => None,
-        },
+        fill: resolve_paint_field(template.fill.as_ref(), values, "/fill", &mut diagnostics),
+        stroke: template.stroke.as_ref().and_then(|stroke| {
+            resolve_paint_field(
+                Some(&stroke.paint),
+                values,
+                "/stroke/paint",
+                &mut diagnostics,
+            )
+            .map(|paint| crate::scene::Stroke {
+                profile_id: stroke.profile_id.clone(),
+                paint,
+            })
+        }),
         font_id: template.font_id.clone(),
-        opacity: number_or_report(&template.opacity, values, "/opacity", &mut diagnostics)
-            .unwrap_or(1.0),
-        visible: bool_or_report(&template.visible, values, "/visible", &mut diagnostics)
-            .unwrap_or(true),
+        opacity: NumberValue::Literal(
+            number_or_report(&template.opacity, values, "/opacity", &mut diagnostics)
+                .unwrap_or(1.0),
+        ),
+        visible: BoolValue::Literal(
+            bool_or_report(&template.visible, values, "/visible", &mut diagnostics).unwrap_or(true),
+        ),
         definition_ref: template.definition_ref.clone(),
         bindings: template.bindings.clone(),
-        overrides: template.overrides.clone(),
     };
-
-    if let Some(override_entry) = override_entry {
-        apply_override(&mut element, override_entry);
-    }
 
     if diagnostics.has_errors() {
         Err(diagnostics)
@@ -785,15 +699,50 @@ fn resolve_template(
     }
 }
 
+/// Resolves a definition element's fill or stroke paint, substituting a token
+/// parameter reference for the token the instance binds (FEAT-030).
+fn resolve_paint_field(
+    value: Option<&PaintValue>,
+    values: &Bindings,
+    path: &str,
+    diagnostics: &mut Diagnostics,
+) -> Option<PaintValue> {
+    match value? {
+        PaintValue::Paint(paint) => Some(PaintValue::Paint(paint.clone())),
+        PaintValue::Param(reference) => {
+            match lookup(&reference.param, values, ParameterType::Token, path) {
+                Ok(Value::Token(token)) => Some(PaintValue::Paint(Paint {
+                    kind: PaintKind::Token,
+                    reference: token,
+                })),
+                Ok(other) => {
+                    diagnostics.extend(type_error(
+                        &reference.param,
+                        other.type_name(),
+                        "token",
+                        path,
+                    ));
+                    None
+                }
+                Err(findings) => {
+                    diagnostics.extend(findings);
+                    None
+                }
+            }
+        }
+    }
+}
+
 fn opt_number(
     value: &Option<NumberValue>,
     values: &Bindings,
     path: &str,
     diagnostics: &mut Diagnostics,
-) -> Option<f64> {
+) -> Option<NumberValue> {
     value
         .as_ref()
         .and_then(|value| number_or_report(value, values, path, diagnostics))
+        .map(NumberValue::Literal)
 }
 
 fn opt_string(
@@ -801,10 +750,11 @@ fn opt_string(
     values: &Bindings,
     path: &str,
     diagnostics: &mut Diagnostics,
-) -> Option<String> {
+) -> Option<StringValue> {
     value
         .as_ref()
         .and_then(|value| string_or_report(value, values, path, diagnostics))
+        .map(StringValue::Literal)
 }
 
 fn number_or_report(
@@ -954,54 +904,44 @@ fn type_error(name: &str, found: &str, expected: &str, path: &str) -> Diagnostic
     )
 }
 
-/// Applies an instance's override to a resolved element (FEAT-030).
-fn apply_override(element: &mut Element, override_entry: &Override) {
-    if let Some(fill) = &override_entry.fill {
-        element.fill = fill.clone();
-    }
-    if let Some(stroke) = &override_entry.stroke {
-        element.stroke = stroke.clone();
-    }
-    if let Some(opacity) = override_entry.opacity {
-        element.opacity = opacity;
-    }
-}
-
-/// Resolves a template's transform, substituting parameter references.
-fn resolve_transform(
-    transform: &TemplateTransform,
-    values: &Bindings,
-) -> Result<Transform, Diagnostics> {
+/// Resolves a definition element's transform, substituting parameter references.
+fn resolve_transform(transform: &Transform, values: &Bindings) -> Result<Transform, Diagnostics> {
     let mut diagnostics = Diagnostics::new();
     let number = |value: &NumberValue, path: &str| resolve_number(value, values, path);
     let resolved = Transform {
-        translate_x: number(&transform.translate_x, "/transform/translateX").unwrap_or_else(
-            |findings| {
+        translate_x: NumberValue::Literal(
+            number(&transform.translate_x, "/transform/translateX").unwrap_or_else(|findings| {
                 diagnostics.extend(findings);
                 0.0
-            },
+            }),
         ),
-        translate_y: number(&transform.translate_y, "/transform/translateY").unwrap_or_else(
-            |findings| {
+        translate_y: NumberValue::Literal(
+            number(&transform.translate_y, "/transform/translateY").unwrap_or_else(|findings| {
                 diagnostics.extend(findings);
                 0.0
-            },
+            }),
         ),
-        rotate: number(&transform.rotate, "/transform/rotate").unwrap_or_else(|findings| {
-            diagnostics.extend(findings);
-            0.0
-        }),
-        scale_x: number(&transform.scale_x, "/transform/scaleX").unwrap_or_else(|findings| {
-            diagnostics.extend(findings);
-            1.0
-        }),
-        scale_y: number(&transform.scale_y, "/transform/scaleY").unwrap_or_else(|findings| {
-            diagnostics.extend(findings);
-            1.0
-        }),
+        rotate: NumberValue::Literal(
+            number(&transform.rotate, "/transform/rotate").unwrap_or_else(|findings| {
+                diagnostics.extend(findings);
+                0.0
+            }),
+        ),
+        scale_x: NumberValue::Literal(
+            number(&transform.scale_x, "/transform/scaleX").unwrap_or_else(|findings| {
+                diagnostics.extend(findings);
+                1.0
+            }),
+        ),
+        scale_y: NumberValue::Literal(
+            number(&transform.scale_y, "/transform/scaleY").unwrap_or_else(|findings| {
+                diagnostics.extend(findings);
+                1.0
+            }),
+        ),
         skew_x: match &transform.skew_x {
             Some(value) => number(value, "/transform/skewX")
-                .map(Some)
+                .map(|value| Some(NumberValue::Literal(value)))
                 .unwrap_or_else(|findings| {
                     diagnostics.extend(findings);
                     None
@@ -1010,7 +950,7 @@ fn resolve_transform(
         },
         skew_y: match &transform.skew_y {
             Some(value) => number(value, "/transform/skewY")
-                .map(Some)
+                .map(|value| Some(NumberValue::Literal(value)))
                 .unwrap_or_else(|findings| {
                     diagnostics.extend(findings);
                     None
@@ -1027,12 +967,12 @@ fn resolve_transform(
 
 /// How many of a definition's elements a root reaches through `parentId`.
 fn reachable_templates(
-    elements: &[TemplateElement],
-    children: &HashMap<&str, Vec<&TemplateElement>>,
-    roots: &[&TemplateElement],
+    elements: &[Element],
+    children: &HashMap<&str, Vec<&Element>>,
+    roots: &[&Element],
 ) -> usize {
     let mut visited: HashSet<&str> = HashSet::new();
-    let mut stack: Vec<&TemplateElement> = roots.to_vec();
+    let mut stack: Vec<&Element> = roots.to_vec();
     while let Some(element) = stack.pop() {
         if !visited.insert(element.id.as_str()) {
             continue;
@@ -1044,8 +984,8 @@ fn reachable_templates(
     visited.len().min(elements.len())
 }
 
-fn template_children(elements: &[TemplateElement]) -> HashMap<&str, Vec<&TemplateElement>> {
-    let mut children: HashMap<&str, Vec<&TemplateElement>> = HashMap::new();
+fn template_children(elements: &[Element]) -> HashMap<&str, Vec<&Element>> {
+    let mut children: HashMap<&str, Vec<&Element>> = HashMap::new();
     for element in elements {
         if let Some(parent) = &element.parent_id {
             children.entry(parent.as_str()).or_default().push(element);
@@ -1176,29 +1116,6 @@ mod tests {
     }
 
     #[test]
-    fn an_override_replaces_the_targets_paint_and_opacity() {
-        let definitions = [chip()];
-        let scene = scene(&format!(
-            "[{}]",
-            instance(
-                "i1",
-                0,
-                "chip",
-                r#","overrides":[{"target":"body","fill":{"kind":"token","ref":"accent"},"opacity":0.25}]"#
-            )
-        ));
-        let model = compile(&scene, &definitions).expect("compiles");
-        let node = model.node("body~i1").expect("the node");
-        assert_eq!(node.opacity, 0.25);
-        assert_eq!(
-            node.paint.fill,
-            Some(crate::render::Paint::Color {
-                value: "accent".to_string()
-            })
-        );
-    }
-
-    #[test]
     fn a_nested_definition_resolves_to_concrete_geometry() {
         let inner = chip();
         let outer = definition(&format!(
@@ -1268,19 +1185,6 @@ mod tests {
         assert!(diagnostics
             .errors()
             .any(|error| error.code == INVALID_BINDING));
-    }
-
-    #[test]
-    fn an_override_target_that_names_no_element_is_refused() {
-        let definitions = [chip()];
-        let scene = scene(&format!(
-            "[{}]",
-            instance("i1", 0, "chip", r#","overrides":[{"target":"ghost"}]"#)
-        ));
-        let diagnostics = compile(&scene, &definitions).expect_err("refused");
-        assert!(diagnostics
-            .errors()
-            .any(|error| error.code == INVALID_BINDING && error.message.contains("ghost")));
     }
 
     #[test]

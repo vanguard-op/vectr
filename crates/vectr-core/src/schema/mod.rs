@@ -260,7 +260,6 @@ mod tests {
             "Scene",
             "Element",
             "Definition",
-            "TemplateElement",
             "Parameter",
             "Canvas",
             "Transform",

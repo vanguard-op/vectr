@@ -76,10 +76,10 @@ fn local_bounds(element: &Element) -> Option<Frame> {
     let geometry = &element.geometry;
     match element.kind {
         ElementKind::Rect | ElementKind::Ellipse => {
-            let x = geometry.x.unwrap_or(0.0);
-            let y = geometry.y.unwrap_or(0.0);
-            let width = geometry.width.unwrap_or(0.0);
-            let height = geometry.height.unwrap_or(0.0);
+            let x = geometry.x().unwrap_or(0.0);
+            let y = geometry.y().unwrap_or(0.0);
+            let width = geometry.width().unwrap_or(0.0);
+            let height = geometry.height().unwrap_or(0.0);
             Some(Frame::new(
                 [x.min(x + width), y.min(y + height)],
                 [x.max(x + width), y.max(y + height)],
@@ -90,7 +90,7 @@ fn local_bounds(element: &Element) -> Option<Frame> {
             bbox_of_points(points)
         }
         ElementKind::Path => {
-            let path = crate::primitives::parse(geometry.path_data.as_deref()?).ok()?;
+            let path = crate::primitives::parse(geometry.path_data()?).ok()?;
             bbox_of_contours(&crate::composition::flatten_shape(&Shape::Path(path)))
         }
         _ => None,
@@ -148,7 +148,7 @@ fn transform_frame(local: Frame, affine: Affine) -> Frame {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scene::{Geometry, Transform};
+    use crate::scene::{BoolValue, Geometry, NumberValue, Transform};
 
     fn element(kind: ElementKind, geometry: Geometry) -> Element {
         Element {
@@ -161,22 +161,21 @@ mod tests {
             kind,
             geometry,
             transform: Transform {
-                translate_x: 0.0,
-                translate_y: 0.0,
-                rotate: 0.0,
-                scale_x: 1.0,
-                scale_y: 1.0,
+                translate_x: NumberValue::Literal(0.0),
+                translate_y: NumberValue::Literal(0.0),
+                rotate: NumberValue::Literal(0.0),
+                scale_x: NumberValue::Literal(1.0),
+                scale_y: NumberValue::Literal(1.0),
                 skew_x: None,
                 skew_y: None,
             },
             fill: None,
             stroke: None,
             font_id: None,
-            opacity: 1.0,
-            visible: true,
+            opacity: NumberValue::Literal(1.0),
+            visible: BoolValue::Literal(true),
             definition_ref: None,
             bindings: None,
-            overrides: None,
         }
     }
 
@@ -186,10 +185,10 @@ mod tests {
             &element(
                 ElementKind::Rect,
                 Geometry {
-                    x: Some(2.0),
-                    y: Some(3.0),
-                    width: Some(10.0),
-                    height: Some(4.0),
+                    x: Some(NumberValue::Literal(2.0)),
+                    y: Some(NumberValue::Literal(3.0)),
+                    width: Some(NumberValue::Literal(10.0)),
+                    height: Some(NumberValue::Literal(4.0)),
                     ..Geometry::default()
                 },
             ),
@@ -221,13 +220,12 @@ mod tests {
         let mut element = element(
             ElementKind::Rect,
             Geometry {
-                width: Some(10.0),
-                height: Some(10.0),
+                width: Some(NumberValue::Literal(10.0)),
+                height: Some(NumberValue::Literal(10.0)),
                 ..Geometry::default()
             },
         );
-        element.transform.translate_x = 100.0;
-        element.transform.translate_y = 20.0;
+        element.transform.set_translation(100.0, 20.0);
         let frame = element_frame(&element, Affine::from_scene(&element.transform).unwrap());
         assert_eq!(frame.min, [100.0, 20.0]);
         assert_eq!(frame.max, [110.0, 30.0]);
@@ -236,8 +234,7 @@ mod tests {
     #[test]
     fn a_group_degrades_to_its_transformed_origin() {
         let mut element = element(ElementKind::Group, Geometry::default());
-        element.transform.translate_x = 7.0;
-        element.transform.translate_y = 9.0;
+        element.transform.set_translation(7.0, 9.0);
         let frame = element_frame(&element, Affine::from_scene(&element.transform).unwrap());
         assert_eq!(frame.min, frame.max);
         assert_eq!(frame.center(), [7.0, 9.0]);

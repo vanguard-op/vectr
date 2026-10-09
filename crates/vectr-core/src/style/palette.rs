@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use super::{parse_document, to_json, Gradient, REDEFINED_TOKEN, UNDEFINED_TOKEN, UNUSED_TOKEN};
 use crate::scene::{
     validate_color, Diagnostic, DiagnosticCode, Diagnostics, Element, Location, Paint, PaintKind,
-    Scene,
+    PaintValue, Scene,
 };
 
 /// A named set of color tokens that scenes reference by token name.
@@ -165,9 +165,12 @@ pub fn validate_usage(scene: &Scene, palette: &Palette, gradients: &[Gradient]) 
 
     for (index, element) in scene.elements.iter().enumerate() {
         for (paint, field) in [
-            (element.fill.as_ref(), "fill"),
+            (element.fill.as_ref().and_then(PaintValue::literal), "fill"),
             (
-                element.stroke.as_ref().map(|stroke| &stroke.paint),
+                element
+                    .stroke
+                    .as_ref()
+                    .and_then(|stroke| stroke.paint.literal()),
                 "stroke/paint",
             ),
         ] {
@@ -218,11 +221,15 @@ pub fn validate_usage(scene: &Scene, palette: &Palette, gradients: &[Gradient]) 
 /// The paints an element declares, its fill and its stroke's paint.
 fn element_paints(element: &Element) -> Vec<&Paint> {
     let mut paints = Vec::new();
-    if let Some(fill) = &element.fill {
+    if let Some(fill) = element.fill.as_ref().and_then(PaintValue::literal) {
         paints.push(fill);
     }
-    if let Some(stroke) = &element.stroke {
-        paints.push(&stroke.paint);
+    if let Some(paint) = element
+        .stroke
+        .as_ref()
+        .and_then(|stroke| stroke.paint.literal())
+    {
+        paints.push(paint);
     }
     paints
 }

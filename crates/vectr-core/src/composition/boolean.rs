@@ -108,7 +108,7 @@ fn reject(diagnostics: &mut Diagnostics, element: &Element, message: String) {
 mod tests {
     use super::*;
     use crate::primitives::{Ellipse, Polygon, Rect};
-    use crate::scene::{Geometry, Transform};
+    use crate::scene::{BoolValue, Geometry, NumberValue, Transform};
 
     fn element(kind: crate::scene::ElementKind) -> Element {
         Element {
@@ -121,22 +121,21 @@ mod tests {
             kind,
             geometry: Geometry::default(),
             transform: Transform {
-                translate_x: 0.0,
-                translate_y: 0.0,
-                rotate: 0.0,
-                scale_x: 1.0,
-                scale_y: 1.0,
+                translate_x: NumberValue::Literal(0.0),
+                translate_y: NumberValue::Literal(0.0),
+                rotate: NumberValue::Literal(0.0),
+                scale_x: NumberValue::Literal(1.0),
+                scale_y: NumberValue::Literal(1.0),
                 skew_x: None,
                 skew_y: None,
             },
             fill: None,
             stroke: None,
             font_id: None,
-            opacity: 1.0,
-            visible: true,
+            opacity: NumberValue::Literal(1.0),
+            visible: BoolValue::Literal(true),
             definition_ref: None,
             bindings: None,
-            overrides: None,
         }
     }
 

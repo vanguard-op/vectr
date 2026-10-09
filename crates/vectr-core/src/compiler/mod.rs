@@ -482,8 +482,8 @@ impl Compiler<'_, '_> {
             return;
         };
         let world = parent_world.then(local);
-        let opacity = parent_opacity * self.scene.elements[index].opacity;
-        let visible = parent_visible && self.scene.elements[index].visible;
+        let opacity = parent_opacity * self.scene.elements[index].opacity();
+        let visible = parent_visible && self.scene.elements[index].visible();
 
         // A group contributes no node; it only deepens the chain its descendants
         // carry. Every other kind passes the chain through unchanged.
@@ -540,7 +540,7 @@ impl Compiler<'_, '_> {
             }
             ElementKind::Repeat => {
                 let mut findings = Diagnostics::new();
-                let count = self.scene.elements[index].geometry.count.unwrap_or(0);
+                let count = self.scene.elements[index].geometry.count().unwrap_or(0);
                 if !self.guard_count(index, count) {
                     return;
                 }
@@ -569,7 +569,7 @@ impl Compiler<'_, '_> {
                 let Some(guide) = self.guide_path(index) else {
                     return;
                 };
-                let count = self.scene.elements[index].geometry.count.unwrap_or(0);
+                let count = self.scene.elements[index].geometry.count().unwrap_or(0);
                 if !self.guard_count(index, count) {
                     return;
                 }
@@ -627,7 +627,10 @@ impl Compiler<'_, '_> {
                 }
             }
             ElementKind::Offset => {
-                let distance = self.scene.elements[index].geometry.distance.unwrap_or(0.0);
+                let distance = self.scene.elements[index]
+                    .geometry
+                    .distance()
+                    .unwrap_or(0.0);
                 let children = self.children[index].clone();
                 for child in children {
                     if self.limit_hit {
@@ -703,7 +706,7 @@ impl Compiler<'_, '_> {
             }
             ElementKind::Repeat => {
                 let mut findings = Diagnostics::new();
-                let count = self.scene.elements[index].geometry.count.unwrap_or(0);
+                let count = self.scene.elements[index].geometry.count().unwrap_or(0);
                 if !self.guard_count(index, count) {
                     return None;
                 }
@@ -725,7 +728,7 @@ impl Compiler<'_, '_> {
             }
             ElementKind::AlongPath => {
                 let guide = self.guide_path(index)?;
-                let count = self.scene.elements[index].geometry.count.unwrap_or(0);
+                let count = self.scene.elements[index].geometry.count().unwrap_or(0);
                 if !self.guard_count(index, count) {
                     return None;
                 }
@@ -752,7 +755,10 @@ impl Compiler<'_, '_> {
                 self.bake(combined, local)
             }
             ElementKind::Offset => {
-                let distance = self.scene.elements[index].geometry.distance.unwrap_or(0.0);
+                let distance = self.scene.elements[index]
+                    .geometry
+                    .distance()
+                    .unwrap_or(0.0);
                 let children = self.children[index].clone();
                 let mut shapes = Vec::new();
                 for child in children {
@@ -917,7 +923,10 @@ impl Compiler<'_, '_> {
             (
                 element.id.clone(),
                 element.transform.clone(),
-                [element.transform.translate_x, element.transform.translate_y],
+                [
+                    element.transform.translate_x(),
+                    element.transform.translate_y(),
+                ],
             )
         };
         let translation = self
@@ -926,8 +935,7 @@ impl Compiler<'_, '_> {
             .copied()
             .or_else(|| self.resolution.translation(&id))
             .unwrap_or(declared);
-        transform.translate_x = translation[0];
-        transform.translate_y = translation[1];
+        transform.set_translation(translation[0], translation[1]);
         match Affine::from_scene(&transform) {
             Ok(affine) if affine.is_finite() => Some(affine),
             _ => None,
@@ -969,7 +977,10 @@ impl Compiler<'_, '_> {
             .iter()
             .enumerate()
             .map(|(index, element)| {
-                let declared = [element.transform.translate_x, element.transform.translate_y];
+                let declared = [
+                    element.transform.translate_x(),
+                    element.transform.translate_y(),
+                ];
                 let current = self.resolution.translation(&element.id).unwrap_or(declared);
                 let (translation, transform_moved) = recipe.snap_point(current);
                 let geometry_moved = self.geometry_off_grid(index, recipe);
@@ -1016,8 +1027,8 @@ impl Compiler<'_, '_> {
         let moved = |point: [f64; 2]| recipe.snap_point(point).1;
         match element.kind {
             ElementKind::Rect | ElementKind::Ellipse => moved([
-                element.geometry.x.unwrap_or(0.0),
-                element.geometry.y.unwrap_or(0.0),
+                element.geometry.x().unwrap_or(0.0),
+                element.geometry.y().unwrap_or(0.0),
             ]),
             ElementKind::Polygon | ElementKind::Line => element
                 .geometry
@@ -1144,7 +1155,11 @@ impl Compiler<'_, '_> {
 
     /// Parses an `alongPath` element's guide, or reports why it cannot.
     fn guide_path(&mut self, index: usize) -> Option<PathGeometry> {
-        let Some(data) = self.scene.elements[index].geometry.path_data.clone() else {
+        let Some(data) = self.scene.elements[index]
+            .geometry
+            .path_data()
+            .map(str::to_string)
+        else {
             self.reject_composition(index, "must declare a guide pathData");
             return None;
         };
@@ -1271,12 +1286,12 @@ impl Compiler<'_, '_> {
     fn text_run(&mut self, index: usize) -> Option<TextRun> {
         let element = &self.scene.elements[index];
         let geometry = &element.geometry;
-        let value = geometry.text.clone().unwrap_or_default();
-        let font_size = geometry.font_size.unwrap_or(0.0);
+        let value = geometry.text().unwrap_or_default().to_string();
+        let font_size = geometry.font_size().unwrap_or(0.0);
         let align = geometry.align.unwrap_or(TextAlign::Start);
-        let line_height = geometry.line_height.unwrap_or(font_size);
-        let letter_spacing = geometry.letter_spacing.unwrap_or(0.0);
-        let width = geometry.width;
+        let line_height = geometry.line_height().unwrap_or(font_size);
+        let letter_spacing = geometry.letter_spacing().unwrap_or(0.0);
+        let width = geometry.width();
         let declared = element.font_id.clone();
         let element_id = element.id.clone();
 
@@ -1373,7 +1388,7 @@ impl Compiler<'_, '_> {
     ) {
         let anchor = {
             let geometry = &self.scene.elements[index].geometry;
-            Affine::translate(geometry.x.unwrap_or(0.0), geometry.y.unwrap_or(0.0))
+            Affine::translate(geometry.x().unwrap_or(0.0), geometry.y().unwrap_or(0.0))
         };
         self.push_text_node(index, world.then(anchor), opacity, visible, copy, groups);
     }
@@ -1634,7 +1649,7 @@ impl Compiler<'_, '_> {
                     .min(cap)
             }
             ElementKind::Repeat | ElementKind::AlongPath => {
-                let count = u64::from(self.scene.elements[index].geometry.count.unwrap_or(0));
+                let count = u64::from(self.scene.elements[index].geometry.count().unwrap_or(0));
                 let children = self.children[index].clone();
                 let per_copy = children.into_iter().fold(0u64, |sum, child| {
                     sum.saturating_add(self.subtree_nodes(child))
@@ -1903,7 +1918,7 @@ mod tests {
     #[test]
     fn an_invalid_scene_fails_with_a_location() {
         let mut scene = scene_of(json!([rect("e1", 0, 10.0, 10.0)]), None);
-        scene.elements[0].opacity = 1.5;
+        scene.elements[0].opacity = crate::scene::NumberValue::Literal(1.5);
         let diagnostics = compile(&scene).expect_err("an invalid scene is refused");
         let error = diagnostics.errors().next().expect("an error");
         assert_eq!(error.code, DiagnosticCode::SCHEMA);

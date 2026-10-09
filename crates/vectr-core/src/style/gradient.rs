@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{parse_document, to_json, UNDEFINED_TOKEN};
 use crate::render::{GradientPaint, ResolvedStop};
-use crate::scene::{Diagnostic, DiagnosticCode, Diagnostics, PaintKind, Scene};
+use crate::scene::{Diagnostic, DiagnosticCode, Diagnostics, PaintKind, PaintValue, Scene};
 
 /// A gradient is malformed: fewer than two stops, or an out-of-range value.
 pub const GRADIENT: DiagnosticCode = DiagnosticCode::new("E_GRADIENT");
@@ -332,8 +332,11 @@ pub fn validate_usage(scene: &Scene, gradients: &[Gradient]) -> Diagnostics {
         .iter()
         .flat_map(|element| {
             [
-                element.fill.as_ref(),
-                element.stroke.as_ref().map(|s| &s.paint),
+                element.fill.as_ref().and_then(PaintValue::literal),
+                element
+                    .stroke
+                    .as_ref()
+                    .and_then(|stroke| stroke.paint.literal()),
             ]
         })
         .flatten()

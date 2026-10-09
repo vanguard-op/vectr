@@ -8,10 +8,6 @@
     "Scene",
     "Element",
     "Definition",
-    "TemplateElement",
-    "TemplateGeometry",
-    "TemplateTransform",
-    "TemplateStroke",
     "Parameter",
     "ParameterType",
     "ParameterValue",
@@ -23,7 +19,6 @@
     "ParamRef",
     "Binding",
     "BindingValue",
-    "Override",
     "Canvas",
     "Geometry",
     "Transform",
@@ -107,7 +102,7 @@
     },
     "Element": {
       "title": "Element",
-      "description": "One drawing entity in a scene: a primitive, a group, a composition operation, or a text run. Elements form a tree through parentId, and paint order follows order. A group or composition element acts on its child elements, the elements whose parentId references it, in paint order. Fill and stroke are independent: an element may carry either, both, or neither. A stroke is well-formed only when profileId and paint are both present.",
+      "description": "One drawing entity, in a scene or in a reusable definition: a primitive, a group, a composition operation, a text run, or an instance that places a definition. One shape serves both owners: an element belongs to exactly one of a Scene and a Definition, by sceneId or definitionId. A parameter-capable field holds either a literal of the field's type or a parameter reference, written as the object { \"param\": \"<name>\" }; a reference is valid only where the element is owned by a definition. Elements form a tree through parentId, and paint order follows order.",
       "type": "object",
       "properties": {
         "id": { "type": "string", "description": "Stable identifier for the element." },
@@ -119,16 +114,15 @@
         "kind": { "$ref": "#/$defs/ElementKind" },
         "geometry": { "$ref": "#/$defs/Geometry" },
         "transform": { "$ref": "#/$defs/Transform" },
-        "fill": { "anyOf": [{ "$ref": "#/$defs/Paint" }, { "type": "null" }], "description": "The element's fill paint, or null for no fill." },
+        "fill": { "anyOf": [{ "$ref": "#/$defs/PaintValue" }, { "type": "null" }], "description": "The element's fill paint, a token parameter reference, or null for no fill." },
         "stroke": { "anyOf": [{ "$ref": "#/$defs/Stroke" }, { "type": "null" }], "description": "The element's stroke, or null for no stroke." },
         "fontId": { "type": ["string", "null"], "description": "References the Asset of kind font used to render a text element, or null to use the default open-licensed font. Applies only to a text element." },
-        "opacity": { "type": "number", "minimum": 0, "maximum": 1, "description": "Element opacity." },
-        "visible": { "type": "boolean", "description": "Whether the element is rendered." },
+        "opacity": { "$ref": "#/$defs/NumberValue", "description": "Element opacity, from 0 to 1; a literal number or a number parameter reference." },
+        "visible": { "$ref": "#/$defs/BoolValue", "description": "Whether the element is rendered; a literal boolean or a boolean parameter reference." },
         "definitionRef": { "type": ["string", "null"], "description": "References the Definition this element places; required when kind is instance and null otherwise." },
-        "bindings": { "type": ["array", "null"], "description": "Values bound to the placed definition's parameters; applies only to an instance.", "items": { "$ref": "#/$defs/Binding" } },
-        "overrides": { "type": ["array", "null"], "description": "Appearance overrides applied to this instance only; applies only to an instance.", "items": { "$ref": "#/$defs/Override" } }
+        "bindings": { "type": ["array", "null"], "description": "Values bound to the placed definition's parameters; applies only to an instance.", "items": { "$ref": "#/$defs/Binding" } }
       },
-      "required": ["id", "sceneId", "order", "kind", "geometry", "transform", "opacity", "visible"],
+      "required": ["id", "order", "kind", "geometry", "transform", "opacity", "visible"],
       "additionalProperties": false,
       "allOf": [
         {
@@ -158,87 +152,9 @@
         "name": { "type": "string", "maxLength": 120, "description": "Human-readable definition name." },
         "parameters": { "type": "array", "description": "The named inputs the definition accepts; an instance binds each one, or the parameter's default applies.", "items": { "$ref": "#/$defs/Parameter" } },
         "origin": { "$ref": "#/$defs/Origin" },
-        "elements": { "type": "array", "description": "The definition's element tree; each element's definitionId references this definition.", "items": { "$ref": "#/$defs/TemplateElement" } }
+        "elements": { "type": "array", "description": "The definition's element tree; each element's definitionId references this definition. Each element is the single Element shape, whose parameter-capable fields may hold a parameter reference.", "items": { "$ref": "#/$defs/Element" } }
       },
       "required": ["id", "projectId", "name", "parameters", "origin"],
-      "additionalProperties": false
-    },
-    "TemplateElement": {
-      "title": "TemplateElement",
-      "description": "One element of a definition: a template whose parameter-capable fields hold either a literal or the object { \"param\": \"<name>\" }. Expansion resolves each reference against an instance's bindings into a concrete Element.",
-      "type": "object",
-      "properties": {
-        "id": { "type": "string", "description": "Stable identifier for the element, unique within its definition." },
-        "definitionId": { "type": "string", "description": "References the Definition this element belongs to." },
-        "parentId": { "type": ["string", "null"], "description": "References the parent element, or null for a root element." },
-        "order": { "type": "integer", "minimum": 0, "description": "Paint order among siblings; lower values paint first." },
-        "name": { "type": "string", "description": "Element name, preserved in exported output." },
-        "kind": { "$ref": "#/$defs/ElementKind" },
-        "geometry": { "$ref": "#/$defs/TemplateGeometry" },
-        "transform": { "$ref": "#/$defs/TemplateTransform" },
-        "fill": { "anyOf": [{ "$ref": "#/$defs/PaintValue" }, { "type": "null" }], "description": "The element's fill paint, or a token parameter reference, or null for no fill." },
-        "stroke": { "anyOf": [{ "$ref": "#/$defs/TemplateStroke" }, { "type": "null" }], "description": "The element's stroke, or null for no stroke." },
-        "fontId": { "type": ["string", "null"], "description": "References the Asset of kind font used to render a text element." },
-        "opacity": { "$ref": "#/$defs/NumberValue" },
-        "visible": { "$ref": "#/$defs/BoolValue" },
-        "definitionRef": { "type": ["string", "null"], "description": "References the Definition an instance element places." },
-        "bindings": { "type": ["array", "null"], "description": "Values an instance binds to the placed definition's parameters.", "items": { "$ref": "#/$defs/Binding" } },
-        "overrides": { "type": ["array", "null"], "description": "Appearance overrides an instance applies to the placed definition.", "items": { "$ref": "#/$defs/Override" } }
-      },
-      "required": ["id", "definitionId", "order", "kind", "geometry", "transform", "opacity", "visible"],
-      "additionalProperties": false
-    },
-    "TemplateGeometry": {
-      "title": "TemplateGeometry",
-      "description": "A definition element's geometry; numeric and string fields may hold a parameter reference.",
-      "type": "object",
-      "properties": {
-        "x": { "$ref": "#/$defs/NumberValue" },
-        "y": { "$ref": "#/$defs/NumberValue" },
-        "width": { "$ref": "#/$defs/NumberValue" },
-        "height": { "$ref": "#/$defs/NumberValue" },
-        "rx": { "$ref": "#/$defs/NumberValue" },
-        "ry": { "$ref": "#/$defs/NumberValue" },
-        "points": { "type": "array", "description": "Point list for polygon and line elements.", "items": { "type": "array", "prefixItems": [{ "type": "number" }, { "type": "number" }], "minItems": 2, "maxItems": 2 } },
-        "pathData": { "$ref": "#/$defs/StringValue" },
-        "text": { "$ref": "#/$defs/StringValue" },
-        "fontSize": { "$ref": "#/$defs/NumberValue" },
-        "align": { "$ref": "#/$defs/TextAlign" },
-        "lineHeight": { "$ref": "#/$defs/NumberValue" },
-        "letterSpacing": { "$ref": "#/$defs/NumberValue" },
-        "count": { "$ref": "#/$defs/NumberValue" },
-        "spacing": { "$ref": "#/$defs/NumberValue" },
-        "operation": { "$ref": "#/$defs/BooleanOperation" },
-        "distance": { "$ref": "#/$defs/NumberValue" },
-        "axis": { "$ref": "#/$defs/ProjectionAxis" }
-      },
-      "additionalProperties": false
-    },
-    "TemplateTransform": {
-      "title": "TemplateTransform",
-      "description": "A definition element's transform; its numeric fields may hold a parameter reference.",
-      "type": "object",
-      "properties": {
-        "translateX": { "$ref": "#/$defs/NumberValue" },
-        "translateY": { "$ref": "#/$defs/NumberValue" },
-        "rotate": { "$ref": "#/$defs/NumberValue" },
-        "scaleX": { "$ref": "#/$defs/NumberValue" },
-        "scaleY": { "$ref": "#/$defs/NumberValue" },
-        "skewX": { "$ref": "#/$defs/NumberValue" },
-        "skewY": { "$ref": "#/$defs/NumberValue" }
-      },
-      "required": ["translateX", "translateY", "rotate", "scaleX", "scaleY"],
-      "additionalProperties": false
-    },
-    "TemplateStroke": {
-      "title": "TemplateStroke",
-      "description": "A definition element's stroke: a profile and a paint that may be a token parameter reference.",
-      "type": "object",
-      "properties": {
-        "profileId": { "type": "string", "description": "References the StrokeProfile supplying the stroke's width, cap, and join." },
-        "paint": { "$ref": "#/$defs/PaintValue" }
-      },
-      "required": ["profileId", "paint"],
       "additionalProperties": false
     },
     "Parameter": {
@@ -319,30 +235,17 @@
       "description": "The value of a binding: a literal, or a parameter reference forwarding an enclosing definition's parameter.",
       "oneOf": [{ "type": "number" }, { "type": "string" }, { "type": "boolean" }, { "$ref": "#/$defs/ParamRef" }]
     },
-    "Override": {
-      "title": "Override",
-      "description": "One appearance override an instance applies to a placed definition element; a field left out is inherited, and an explicit null fill or stroke clears it.",
-      "type": "object",
-      "properties": {
-        "target": { "type": "string", "description": "Identifier of the placed definition's element whose appearance changes." },
-        "fill": { "anyOf": [{ "$ref": "#/$defs/Paint" }, { "type": "null" }] },
-        "stroke": { "anyOf": [{ "$ref": "#/$defs/Stroke" }, { "type": "null" }] },
-        "opacity": { "type": "number", "minimum": 0, "maximum": 1 }
-      },
-      "required": ["target"],
-      "additionalProperties": false
-    },
     "Geometry": {
       "title": "Geometry",
-      "description": "The element's geometry; which fields apply depends on kind. A rect and an ellipse are placed by the x and y origin of their bounding box and sized by width and height, with the ellipse inscribed in that box and rx and ry rounding a rect's corners. A text element is anchored by x and y at the baseline of its first line, sized by fontSize, and wrapped to width when width is set.",
+      "description": "The element's geometry; which fields apply depends on kind. A rect and an ellipse are both placed by the x and y origin of their bounding box and sized by width and height, with the ellipse inscribed in that box and rx and ry rounding a rect's corners. A text element is anchored by x and y at the baseline of its first line, sized by fontSize, and wrapped to width when width is set. Each numeric or string field holds a literal of its type or a parameter reference; points, align, operation, and axis hold their literal value only.",
       "type": "object",
       "properties": {
-        "x": { "type": "number", "description": "X origin of the bounding box in scene units; for a text element, the anchor of its first line." },
-        "y": { "type": "number", "description": "Y origin of the bounding box in scene units; for a text element, the baseline of its first line." },
-        "width": { "type": "number", "minimum": 0, "description": "Bounding-box width for rect-like and ellipse elements, and the wrap width for text elements." },
-        "height": { "type": "number", "minimum": 0, "description": "Bounding-box height for rect-like and ellipse elements." },
-        "rx": { "type": "number", "minimum": 0, "description": "Corner radius in X for rect elements." },
-        "ry": { "type": "number", "minimum": 0, "description": "Corner radius in Y for rect elements." },
+        "x": { "$ref": "#/$defs/NumberValue", "description": "X origin of the bounding box in scene units; for a text element, the anchor of its first line. A literal number or a number parameter reference." },
+        "y": { "$ref": "#/$defs/NumberValue", "description": "Y origin of the bounding box in scene units; for a text element, the baseline of its first line. A literal number or a number parameter reference." },
+        "width": { "$ref": "#/$defs/NumberValue", "description": "Bounding-box width for rect-like and ellipse elements, and the wrap width for text elements. A literal number or a number parameter reference." },
+        "height": { "$ref": "#/$defs/NumberValue", "description": "Bounding-box height for rect-like and ellipse elements. A literal number or a number parameter reference." },
+        "rx": { "$ref": "#/$defs/NumberValue", "description": "Corner radius in X for rect elements. A literal number or a number parameter reference." },
+        "ry": { "$ref": "#/$defs/NumberValue", "description": "Corner radius in Y for rect elements. A literal number or a number parameter reference." },
         "points": {
           "type": "array",
           "description": "Point list for polygon and line elements.",
@@ -353,32 +256,32 @@
             "maxItems": 2
           }
         },
-        "pathData": { "type": "string", "description": "Path data for path elements; for an alongPath element it is the guide path its children follow." },
-        "text": { "type": "string", "minLength": 1, "description": "The string a text element renders." },
-        "fontSize": { "type": "number", "minimum": 0, "description": "Em size in scene units for a text element." },
+        "pathData": { "$ref": "#/$defs/StringValue", "description": "Path data for path elements; for an alongPath element it is the guide path its children follow. A literal string or a string parameter reference." },
+        "text": { "$ref": "#/$defs/StringValue", "description": "The string a text element renders. A literal string or a string parameter reference." },
+        "fontSize": { "$ref": "#/$defs/NumberValue", "description": "Em size in scene units for a text element. A literal number or a number parameter reference." },
         "align": { "$ref": "#/$defs/TextAlign" },
-        "lineHeight": { "type": "number", "minimum": 0, "description": "Baseline-to-baseline distance in scene units for a text element." },
-        "letterSpacing": { "type": "number", "description": "Additional advance between the glyphs of a text element, in scene units." },
-        "count": { "type": "integer", "minimum": 0, "description": "Number of copies for repeat elements." },
-        "spacing": { "type": "number", "description": "Distance between successive copies for repeat elements, along the element's local x-axis." },
+        "lineHeight": { "$ref": "#/$defs/NumberValue", "description": "Baseline-to-baseline distance in scene units for a text element. A literal number or a number parameter reference." },
+        "letterSpacing": { "$ref": "#/$defs/NumberValue", "description": "Additional advance between the glyphs of a text element, in scene units. A literal number or a number parameter reference." },
+        "count": { "$ref": "#/$defs/NumberValue", "description": "Number of copies for repeat elements. A literal whole number or a number parameter reference." },
+        "spacing": { "$ref": "#/$defs/NumberValue", "description": "Distance between successive copies for repeat elements, along the element's local x-axis. A literal number or a number parameter reference." },
         "operation": { "$ref": "#/$defs/BooleanOperation" },
-        "distance": { "type": "number", "description": "Outline offset distance in scene units for offset elements; positive offsets outward and negative inward." },
+        "distance": { "$ref": "#/$defs/NumberValue", "description": "Outline offset distance in scene units for offset elements; positive offsets outward and negative inward. A literal number or a number parameter reference." },
         "axis": { "$ref": "#/$defs/ProjectionAxis" }
       },
       "additionalProperties": false
     },
     "Transform": {
       "title": "Transform",
-      "description": "Affine transform applied to the element and its children. The fields compose in a fixed order: a point in the element's local coordinates is first skewed by skewX and skewY, then scaled by scaleX and scaleY, then rotated by rotate degrees, and finally translated by translateX and translateY; rotation and scaling are about the element's origin.",
+      "description": "Affine transform applied to the element and its children. The fields compose in a fixed order: a point in the element's local coordinates is first skewed by skewX and skewY, then scaled by scaleX and scaleY, then rotated by rotate degrees, and finally translated by translateX and translateY; rotation and scaling are about the element's origin. Each field holds a literal number or a number parameter reference.",
       "type": "object",
       "properties": {
-        "translateX": { "type": "number", "description": "Horizontal translation in scene units." },
-        "translateY": { "type": "number", "description": "Vertical translation in scene units." },
-        "rotate": { "type": "number", "description": "Rotation in degrees." },
-        "scaleX": { "type": "number", "description": "Horizontal scale factor." },
-        "scaleY": { "type": "number", "description": "Vertical scale factor." },
-        "skewX": { "type": "number", "description": "Horizontal skew in degrees." },
-        "skewY": { "type": "number", "description": "Vertical skew in degrees." }
+        "translateX": { "$ref": "#/$defs/NumberValue", "description": "Horizontal translation in scene units. A literal number or a number parameter reference." },
+        "translateY": { "$ref": "#/$defs/NumberValue", "description": "Vertical translation in scene units. A literal number or a number parameter reference." },
+        "rotate": { "$ref": "#/$defs/NumberValue", "description": "Rotation in degrees. A literal number or a number parameter reference." },
+        "scaleX": { "$ref": "#/$defs/NumberValue", "description": "Horizontal scale factor. A literal number or a number parameter reference." },
+        "scaleY": { "$ref": "#/$defs/NumberValue", "description": "Vertical scale factor. A literal number or a number parameter reference." },
+        "skewX": { "$ref": "#/$defs/NumberValue", "description": "Horizontal skew in degrees. A literal number or a number parameter reference." },
+        "skewY": { "$ref": "#/$defs/NumberValue", "description": "Vertical skew in degrees. A literal number or a number parameter reference." }
       },
       "required": ["translateX", "translateY", "rotate", "scaleX", "scaleY"],
       "additionalProperties": false
@@ -396,11 +299,11 @@
     },
     "Stroke": {
       "title": "Stroke",
-      "description": "The element's stroke. A stroke pairs a StrokeProfile, supplying the width, cap, and join, with a paint.",
+      "description": "The element's stroke. A stroke pairs a StrokeProfile, supplying the width, cap, and join, with a paint that is a literal or a token parameter reference.",
       "type": "object",
       "properties": {
         "profileId": { "type": "string", "description": "References the StrokeProfile supplying the stroke's width, cap, and join." },
-        "paint": { "$ref": "#/$defs/Paint" }
+        "paint": { "$ref": "#/$defs/PaintValue", "description": "The stroke's paint, or a token parameter reference." }
       },
       "required": ["profileId", "paint"],
       "additionalProperties": false

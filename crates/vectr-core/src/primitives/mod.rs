@@ -67,7 +67,7 @@ pub fn resolve(element: &Element, diagnostics: &mut Diagnostics) -> Option<Shape
 
 fn resolve_rect(element: &Element, diagnostics: &mut Diagnostics) -> Option<Rect> {
     let geometry = &element.geometry;
-    let (Some(width), Some(height)) = (geometry.width, geometry.height) else {
+    let (Some(width), Some(height)) = (geometry.width(), geometry.height()) else {
         reject_positive_extent(diagnostics, element, "rect");
         return None;
     };
@@ -75,8 +75,8 @@ fn resolve_rect(element: &Element, diagnostics: &mut Diagnostics) -> Option<Rect
         reject_positive_extent(diagnostics, element, "rect");
         return None;
     }
-    let x = geometry.x.unwrap_or(0.0);
-    let y = geometry.y.unwrap_or(0.0);
+    let x = geometry.x().unwrap_or(0.0);
+    let y = geometry.y().unwrap_or(0.0);
     if !x.is_finite() || !y.is_finite() {
         reject_finite_origin(diagnostics, element, "rect");
         return None;
@@ -86,14 +86,14 @@ fn resolve_rect(element: &Element, diagnostics: &mut Diagnostics) -> Option<Rect
         y,
         width,
         height,
-        rx: non_negative(geometry.rx),
-        ry: non_negative(geometry.ry),
+        rx: non_negative(geometry.rx()),
+        ry: non_negative(geometry.ry()),
     })
 }
 
 fn resolve_ellipse(element: &Element, diagnostics: &mut Diagnostics) -> Option<Ellipse> {
     let geometry = &element.geometry;
-    let (Some(width), Some(height)) = (geometry.width, geometry.height) else {
+    let (Some(width), Some(height)) = (geometry.width(), geometry.height()) else {
         reject_positive_extent(diagnostics, element, "ellipse");
         return None;
     };
@@ -101,8 +101,8 @@ fn resolve_ellipse(element: &Element, diagnostics: &mut Diagnostics) -> Option<E
         reject_positive_extent(diagnostics, element, "ellipse");
         return None;
     }
-    let x = geometry.x.unwrap_or(0.0);
-    let y = geometry.y.unwrap_or(0.0);
+    let x = geometry.x().unwrap_or(0.0);
+    let y = geometry.y().unwrap_or(0.0);
     if !x.is_finite() || !y.is_finite() {
         reject_finite_origin(diagnostics, element, "ellipse");
         return None;
@@ -153,7 +153,7 @@ fn resolve_points(
 }
 
 fn resolve_path(element: &Element, diagnostics: &mut Diagnostics) -> Option<Path> {
-    let Some(data) = element.geometry.path_data.as_deref() else {
+    let Some(data) = element.geometry.path_data() else {
         warn_empty_path(diagnostics, element);
         return None;
     };
@@ -228,7 +228,15 @@ fn kind_name(kind: ElementKind) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scene::{Geometry, Transform};
+    use crate::scene::{BoolValue, Geometry, NumberValue, StringValue, Transform};
+
+    fn n(value: f64) -> NumberValue {
+        NumberValue::Literal(value)
+    }
+
+    fn s(value: &str) -> StringValue {
+        StringValue::Literal(value.to_string())
+    }
 
     fn element(kind: ElementKind, geometry: Geometry) -> Element {
         Element {
@@ -241,22 +249,21 @@ mod tests {
             kind,
             geometry,
             transform: Transform {
-                translate_x: 0.0,
-                translate_y: 0.0,
-                rotate: 0.0,
-                scale_x: 1.0,
-                scale_y: 1.0,
+                translate_x: NumberValue::Literal(0.0),
+                translate_y: NumberValue::Literal(0.0),
+                rotate: NumberValue::Literal(0.0),
+                scale_x: NumberValue::Literal(1.0),
+                scale_y: NumberValue::Literal(1.0),
                 skew_x: None,
                 skew_y: None,
             },
             fill: None,
             stroke: None,
             font_id: None,
-            opacity: 1.0,
-            visible: true,
+            opacity: NumberValue::Literal(1.0),
+            visible: BoolValue::Literal(true),
             definition_ref: None,
             bindings: None,
-            overrides: None,
         }
     }
 
@@ -268,10 +275,10 @@ mod tests {
 
     fn box_geometry(width: f64, height: f64) -> Geometry {
         Geometry {
-            x: Some(10.0),
-            y: Some(20.0),
-            width: Some(width),
-            height: Some(height),
+            x: Some(n(10.0)),
+            y: Some(n(20.0)),
+            width: Some(n(width)),
+            height: Some(n(height)),
             ..Geometry::default()
         }
     }
@@ -279,12 +286,12 @@ mod tests {
     #[test]
     fn a_rectangle_resolves_at_its_position_and_size() {
         let geometry = Geometry {
-            x: Some(4.0),
-            y: Some(8.0),
-            width: Some(120.0),
-            height: Some(60.0),
-            rx: Some(6.0),
-            ry: Some(6.0),
+            x: Some(n(4.0)),
+            y: Some(n(8.0)),
+            width: Some(n(120.0)),
+            height: Some(n(60.0)),
+            rx: Some(n(6.0)),
+            ry: Some(n(6.0)),
             ..Geometry::default()
         };
         let (shape, diagnostics) = resolve_one(ElementKind::Rect, geometry);
@@ -306,8 +313,8 @@ mod tests {
     #[test]
     fn a_rectangle_without_an_origin_sits_at_zero() {
         let geometry = Geometry {
-            width: Some(10.0),
-            height: Some(10.0),
+            width: Some(n(10.0)),
+            height: Some(n(10.0)),
             ..Geometry::default()
         };
         let (shape, _) = resolve_one(ElementKind::Rect, geometry);
@@ -431,7 +438,7 @@ mod tests {
     #[test]
     fn a_path_resolves_to_concrete_subpaths() {
         let geometry = Geometry {
-            path_data: Some("M0 0 L10 0 L10 10 Z".to_string()),
+            path_data: Some(s("M0 0 L10 0 L10 10 Z")),
             ..Geometry::default()
         };
         let (shape, diagnostics) = resolve_one(ElementKind::Path, geometry);
@@ -446,7 +453,7 @@ mod tests {
     #[test]
     fn an_open_path_is_open_so_a_stroke_caps_its_ends() {
         let geometry = Geometry {
-            path_data: Some("M0 0 L10 10".to_string()),
+            path_data: Some(s("M0 0 L10 10")),
             ..Geometry::default()
         };
         let (shape, _) = resolve_one(ElementKind::Path, geometry);
@@ -457,7 +464,7 @@ mod tests {
     fn an_empty_path_renders_nothing_and_warns() {
         for data in [None, Some(""), Some("   ")] {
             let geometry = Geometry {
-                path_data: data.map(str::to_string),
+                path_data: data.map(s),
                 ..Geometry::default()
             };
             let (shape, diagnostics) = resolve_one(ElementKind::Path, geometry);
@@ -471,7 +478,7 @@ mod tests {
     #[test]
     fn a_move_only_path_renders_nothing_and_warns() {
         let geometry = Geometry {
-            path_data: Some("M 10 10".to_string()),
+            path_data: Some(s("M 10 10")),
             ..Geometry::default()
         };
         let (shape, diagnostics) = resolve_one(ElementKind::Path, geometry);
@@ -485,7 +492,7 @@ mod tests {
     #[test]
     fn malformed_path_data_is_rejected_naming_the_primitive() {
         let geometry = Geometry {
-            path_data: Some("M0 0 Q".to_string()),
+            path_data: Some(s("M0 0 Q")),
             ..Geometry::default()
         };
         let (shape, diagnostics) = resolve_one(ElementKind::Path, geometry);

@@ -42,8 +42,8 @@ use vectr_core::{
     expand, parse_definition, parse_gradient, parse_palette, parse_stroke_profile,
     parse_style_recipe, validate_definition, validate_gradient, validate_palette,
     validate_stroke_profile, validate_style_recipe, Definition, Diagnostic, DiagnosticCode,
-    Diagnostics, Element, ElementKind, FontAsset, Gradient, Location, PaintKind, Palette, Scene,
-    StrokeProfile, StyleContext, StyleRecipe, TemplateElement, DEFAULT_FONT_ID, FALLBACK_FONT_ID,
+    Diagnostics, Element, ElementKind, FontAsset, Gradient, Location, PaintKind, PaintValue,
+    Palette, Scene, StrokeProfile, StyleContext, StyleRecipe, DEFAULT_FONT_ID, FALLBACK_FONT_ID,
 };
 
 /// The project configuration that marks a directory as a project root.
@@ -311,9 +311,12 @@ impl ProjectAssets {
                 }
             }
             for (paint, field) in [
-                (element.fill.as_ref(), "fill"),
+                (element.fill.as_ref().and_then(PaintValue::literal), "fill"),
                 (
-                    element.stroke.as_ref().map(|stroke| &stroke.paint),
+                    element
+                        .stroke
+                        .as_ref()
+                        .and_then(|stroke| stroke.paint.literal()),
                     "stroke/paint",
                 ),
             ] {
@@ -398,11 +401,11 @@ fn has_text(scene: &Scene, definitions: &[Definition]) -> bool {
         .any(|element| element.kind == ElementKind::Text)
         || definitions
             .iter()
-            .any(|definition| definition.elements.iter().any(is_text_template))
+            .any(|definition| definition.elements.iter().any(is_text_element))
 }
 
 /// Whether a definition element is a text run.
-fn is_text_template(element: &TemplateElement) -> bool {
+fn is_text_element(element: &Element) -> bool {
     element.kind == ElementKind::Text
 }
 
