@@ -22,3 +22,9 @@ that leaves the sections open still gets the default decomposition above rather
 than a stall. Keep the sketch valid and renderable, then refine each section
 toward the request; a detailed request is authored in full, never simplified to
 a simple mark.
+
+When one section cannot be verified until another exists, the dependency is
+refined and verified first: author a section that depends on another after the
+part it sits on, and record that order. The whole is never advanced past an
+unverified section — a section that fails verification is corrected and
+re-verified before it is integrated.

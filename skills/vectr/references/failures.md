@@ -74,6 +74,14 @@ report `E_SCENE` and exit `2`, naming the scene or the missing default.
   error — the element names something the project does not provide; add it or
   fix the reference.
 
+## When the whole fails
+
+When every section verifies on its own but the whole fails, the failure names
+the integration step, not the sections: the diagnostic points at the constraint
+that cannot hold or the reference the composition introduced. A composition
+failure names the composition step, not the parts — correct the integration (the
+placement or the constraint), not the verified sections.
+
 ## Retry once, then report
 
 Correct the scene from the diagnostics and re-validate. **Retry once.** If the
