@@ -85,7 +85,7 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | T-098 | FEAT-020 | qa-engineer | Done | C-004 |
 | T-099 | FEAT-016, FEAT-020 | infra-engineer | Done | C-004 |
 | T-100 | FEAT-023 | infra-engineer | Done | C-006 |
-| T-101 | FEAT-023 | backend-engineer | In Progress | C-006 |
+| T-101 | FEAT-023 | backend-engineer | Done | C-006 |
 | T-102 | FEAT-023 | qa-engineer | Done | — |
 | T-103 | FEAT-023 | ai-engineer | Done | C-006 |
 | T-104 | FEAT-023 | qa-engineer | Done | — |
@@ -94,6 +94,7 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | T-107 | FEAT-021 | infra-engineer | Done | C-002 |
 | T-108 | FEAT-020 | ai-engineer | Done | C-004 |
 | T-109 | FEAT-020 | qa-engineer | Done | C-004 |
+| T-112 | FEAT-006, FEAT-014, FEAT-021, FEAT-022, FEAT-023, FEAT-025, FEAT-026, FEAT-032 | qa-engineer | In Progress | — |
 | T-110 | FEAT-022, FEAT-014 | qa-engineer | Done | C-005 |
 | T-111 | FEAT-016, FEAT-020 | infra-engineer | Done | C-004 |
 
