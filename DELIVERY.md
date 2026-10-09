@@ -1,7 +1,7 @@
 # Delivery
 
 ## Source of truth
-docs/Vectr/ — git submodule, remote https://github.com/vanguard-op/vectr-docs.git; working tree at 99b3118 (authoring-quality guidance specified as FEAT-032 with NFR-031, and the skill and project guide packaged for a model's context budget), the recorded pointer advancing with the build. The docs are authoritative for what to build; this file tracks state only and never restates the spec.
+docs/Vectr/ — git submodule, remote https://github.com/vanguard-op/vectr-docs.git; working tree at 21176c0 (authoring-quality guidance specified as FEAT-032 with NFR-031; the skill and project guide packaged for a model's context budget; the scene seed, the procedural element kind, the icon-set document, and element accessible names settled), the recorded pointer advancing with the build. The docs are authoritative for what to build; this file tracks state only and never restates the spec.
 
 ## Team & file ownership
 | Member | Owns |
@@ -77,11 +77,11 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | T-090 | FEAT-023 | qa-engineer | In Progress | — |
 | T-091 | FEAT-022 | backend-engineer | In Progress | C-004 |
 | T-092 | FEAT-022, FEAT-014 | ai-engineer | Ready | C-005 |
-| T-093 | FEAT-006 | backend-engineer | Blocked | C-001 |
+| T-093 | FEAT-006 | backend-engineer | Ready | C-001 |
 | T-094 | FEAT-014 | backend-engineer | Ready | C-002, C-004 |
 | T-095 | FEAT-021 | backend-engineer | Ready | C-002 |
-| T-096 | FEAT-026 | backend-engineer | Blocked | C-003 |
-| T-097 | FEAT-025 | backend-engineer | Blocked | C-004 |
+| T-096 | FEAT-026 | backend-engineer | Ready | C-003 |
+| T-097 | FEAT-025 | backend-engineer | Ready | C-004 |
 
 ## Decisions log
 | # | Decision | Rationale | By |
