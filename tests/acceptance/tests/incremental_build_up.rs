@@ -1,24 +1,28 @@
 //! Acceptance tests for the incremental composition build-up method (FEAT-029).
 //!
-//! FEAT-029 delivers a method, not a new engine surface: a complex graphic is
-//! decomposed into named parts; each part is authored once as a reusable
-//! definition ([FEAT-030]); the part is verified in isolation before it is
-//! composed; verified parts are composed one at a time, with each increment
-//! verified; and the whole is exported only once it passes. The method is
-//! carried by the agent skill and authoring guide ([FEAT-020]), and it depends
-//! on reusable definitions ([FEAT-030]) and part-scoped rendering ([FEAT-031]).
+//! FEAT-029 delivers one method for every graphic, not a new engine surface:
+//! the whole is sketched at low fidelity first; then the work is divided into
+//! sections — a group, an instance, or a scene — and each section is focused and
+//! refined in turn, verified in isolation and integrated before the next; and the
+//! scene is exported only when the whole passes. A reusable definition
+//! ([FEAT-030]) is one kind of section, not the required unit, and a section is
+//! verified by structural validation and by rendering it on its own
+//! ([FEAT-031]). The method is carried by the agent skill and its on-demand
+//! references ([FEAT-020]).
 //!
-//! These checks pin the deterministic half: the shipped skill and guide direct
-//! the method rather than a single author-and-refine pass, and the shipped
-//! `vectr` binary runs each step end to end — a definition is verified on its
-//! own, composed, reused without being re-authored, and the whole compiles
-//! completely and deterministically with no part dropped. The judged half — a
-//! model following the method across providers — is measured by the evaluation
-//! harness against the model-quality bar (NFR-030).
+//! These checks pin the deterministic half: the shipped skill and references
+//! direct the one universal method rather than a single author-and-refine pass
+//! and rather than a simple-versus-complex fork, and the shipped `vectr` binary
+//! runs each step end to end — a section is verified on its own, composed, reused
+//! without being re-authored, and the whole compiles completely and
+//! deterministically with no part dropped. The judged half — a model following
+//! the method across providers — is measured by the evaluation harness against
+//! the model-quality bar (NFR-030).
 
 mod common;
 
 use std::fs;
+use std::path::PathBuf;
 
 use common::*;
 use serde_json::{json, Value};
@@ -29,15 +33,34 @@ fn flatten(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// The shipped agent skill.
-fn skill_text() -> String {
-    fs::read_to_string(workspace_root().join("skills/vectr/SKILL.md")).expect("SKILL.md")
+/// The shipped skill directory.
+fn skill_dir() -> PathBuf {
+    workspace_root().join("skills/vectr")
 }
 
-/// The shipped authoring guide — the skill's on-demand reference (FEAT-020).
-fn guide_text() -> String {
-    fs::read_to_string(workspace_root().join("skills/vectr/references/authoring-guide.md"))
-        .expect("the authoring guide")
+/// The shipped agent skill's always-read entry point.
+fn skill_text() -> String {
+    fs::read_to_string(skill_dir().join("SKILL.md")).expect("SKILL.md")
+}
+
+/// Every on-demand reference, concatenated in file-name order (FEAT-020).
+fn references_text() -> String {
+    let mut paths: Vec<PathBuf> = fs::read_dir(skill_dir().join("references"))
+        .expect("the references directory")
+        .map(|entry| entry.expect("a reference entry").path())
+        .collect();
+    paths.sort();
+    paths
+        .iter()
+        .map(|path| fs::read_to_string(path).expect("a reference is readable"))
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// One on-demand reference by file name.
+fn reference(name: &str) -> String {
+    fs::read_to_string(skill_dir().join("references").join(name))
+        .unwrap_or_else(|error| panic!("the reference `{name}` is readable: {error}"))
 }
 
 /// A minimal style-recipe document, as the project layout carries it (D-009).
@@ -125,98 +148,156 @@ fn node_ids(model: &Value) -> Vec<String> {
         .collect()
 }
 
+/// Two named sections, each a group holding a rect, optionally integrated with
+/// two constraints that cannot both hold (FEAT-029 edge case).
+fn section_scene(with_conflict: bool) -> Value {
+    let mut document = scene_with(
+        vec![
+            group("left", 0, Some("Left")),
+            {
+                let mut body = rect("left-body", 0, 0.0, 0.0, 10.0, 10.0);
+                body["parentId"] = json!("left");
+                body
+            },
+            group("right", 1, Some("Right")),
+            {
+                let mut body = rect("right-body", 0, 0.0, 0.0, 10.0, 10.0);
+                body["parentId"] = json!("right");
+                body
+            },
+        ],
+        None,
+        None,
+    );
+    if with_conflict {
+        document["constraints"] = json!([
+            { "id": "c1", "sceneId": "forest", "kind": "align", "elementIds": ["left", "right"], "axis": "x", "value": 0.0 },
+            { "id": "c2", "sceneId": "forest", "kind": "align", "elementIds": ["left", "right"], "axis": "x", "value": 50.0 }
+        ]);
+    }
+    document
+}
+
 // ---------------------------------------------------------------------------
-// The method is directed, not a single author-and-refine pass
+// The one universal method is directed, not a single pass or a complexity fork
 // ---------------------------------------------------------------------------
 
-/// The skill directs a complex request to the build-up method rather than a
-/// single pass: decompose into named parts, author each as a definition, verify
-/// it alone, then compose the verified parts one at a time (FEAT-029, FEAT-020).
+/// The skill directs every request through the same sketch-then-section method:
+/// the whole is sketched at low fidelity, then its sections — a group, an
+/// instance, or a scene — are refined one at a time, verified in isolation and
+/// integrated before the next; complexity changes the number of turns, not the
+/// method (FEAT-029, FEAT-020).
 #[test]
-fn the_skill_directs_a_complex_request_to_the_build_up_method() {
+fn the_skill_directs_every_request_to_the_one_universal_method() {
     let skill = flatten(&skill_text());
 
     assert!(
-        skill.contains("built up in verified parts"),
-        "the skill directs the build-up method: {skill}"
+        skill.contains("Every request runs the same method, whatever its complexity"),
+        "the method is universal: {skill}"
     );
     assert!(
-        skill.contains("build-up method"),
-        "the skill names the method: {skill}"
+        skill.contains("sketch the whole at low fidelity"),
+        "the skill directs sketching the whole at low fidelity: {skill}"
     );
     assert!(
-        skill.contains("decompose the request into named parts"),
-        "the skill directs decomposition into named parts: {skill}"
+        skill.contains("refine its sections one at a time"),
+        "the skill directs refining sections one at a time: {skill}"
     );
     assert!(
-        skill.contains("author each part as a reusable definition"),
-        "the skill directs each part to be authored as a definition: {skill}"
+        skill.contains("integrating and verifying each before the next"),
+        "the skill directs integrating and verifying each section before the next: {skill}"
     );
     assert!(
-        skill.contains("verify it alone"),
-        "the skill directs the part to be verified on its own: {skill}"
+        skill.contains("a group, an instance, or a scene"),
+        "the skill names the three kinds of section: {skill}"
     );
     assert!(
-        skill.contains("compose the verified parts"),
-        "the skill directs composition of verified parts: {skill}"
+        skill.contains("A reusable definition is one kind of section, not the required unit"),
+        "a reusable definition is one section kind, not the required unit: {skill}"
     );
-    // The method is the path for a complex request, while a simple mark stays a
-    // single pass — the skill does not make one pass the only procedure.
     assert!(
-        skill.contains("A simple mark is authored in one pass"),
-        "the skill scopes the method to a complex request: {skill}"
+        skill.contains("Complexity changes the number of turns, never the method"),
+        "complexity changes the number of turns, not the method: {skill}"
     );
-}
+    assert!(
+        skill.contains(
+            "deduced from the prompt, which describes the picture and prescribes no structure"
+        ),
+        "the sections, recipe, palette, and depth are deduced from the prompt: {skill}"
+    );
 
-/// The guide carries the build-up method step by step, and names the part-scoped
-/// verification the method depends on (FEAT-029, FEAT-031).
-#[test]
-fn the_guide_carries_the_build_up_method_step_by_step() {
-    let guide = flatten(&guide_text());
-
-    for step in [
-        "Build a complex graphic up in verified parts",
-        "Decompose.",
-        "Author one part as a definition.",
-        "Verify the part in isolation.",
-        "Compose the verified part.",
-        "Repeat for each part.",
-        "Verify the whole and export.",
+    // The method does not fork a simple request from a complex one: there is no
+    // simple-versus-complex branch and no parts-only build-up path.
+    for fork in [
+        "A simple mark is authored in one pass",
+        "built up in verified parts",
+        "build-up method",
     ] {
         assert!(
-            guide.contains(step),
-            "the guide carries the step `{step}`: {guide}"
+            !skill.contains(fork),
+            "the method must not fork on complexity: `{fork}`"
         );
     }
+}
+
+/// The skill's workflow carries the method step by step, and the references
+/// name the part-scoped verification the method depends on and forbid composing
+/// an unverified part (FEAT-029, FEAT-031).
+#[test]
+fn the_skill_and_references_carry_the_method_step_by_step() {
+    let skill = flatten(&skill_text());
+    let references = flatten(&references_text());
+
+    for step in [
+        "Sketch the whole at low fidelity",
+        "Take up one section, refine it, and validate it",
+        "Render the section on its own and correct it until it matches",
+        "Integrate the verified section, render the whole so far, and verify it before the next section",
+        "export the final SVG and PNG",
+    ] {
+        assert!(
+            skill.contains(step),
+            "the workflow carries the step `{step}`: {skill}"
+        );
+    }
+    assert!(
+        skill.contains("Repeat 5–7 for each section"),
+        "the loop repeats per section, recording the order: {skill}"
+    );
 
     // The verification the method names is part-scoped rendering, on both the
     // CLI and the MCP surface.
     assert!(
-        guide.contains("vectr render <part>"),
-        "the guide names CLI part rendering: {guide}"
+        skill.contains("vectr render <part>"),
+        "the skill names CLI part rendering: {skill}"
     );
     assert!(
-        guide.contains("render-part"),
-        "the guide names the MCP part tool: {guide}"
+        skill.contains("render-part"),
+        "the skill names the MCP part tool: {skill}"
     );
     // The method never composes an unverified part.
     assert!(
-        guide.contains("never compose a part that has not been verified"),
-        "the guide forbids composing an unverified part: {guide}"
+        references.contains("an unverified part is never composed"),
+        "the references forbid composing an unverified part: {references}"
+    );
+    // A reusable part is verified on its own before it is placed.
+    assert!(
+        references.contains("Verify a definition on its own before it is placed"),
+        "a reusable part is verified before it is placed: {references}"
     );
 }
 
-/// The guide documents a default decomposition, the dependency ordering, and
-/// where a composition failure is located, so a request that does not decompose
-/// cleanly still proceeds and a composition failure is not blamed on the parts
-/// (FEAT-029 edge cases).
+/// The references document a default decomposition, the dependency ordering,
+/// and where a composition failure is located, so a request that does not
+/// decompose cleanly still proceeds (FEAT-029 edge cases).
 #[test]
-fn the_guide_documents_the_default_decomposition_and_ordering_rules() {
-    let guide = flatten(&guide_text());
+fn the_references_document_the_default_decomposition_and_dependency_order() {
+    let skill = flatten(&skill_text());
+    let defaults = flatten(&reference("defaults.md"));
 
     assert!(
-        guide.contains("documented default decomposition"),
-        "the guide documents a default decomposition: {guide}"
+        defaults.contains("documented default decomposition"),
+        "the reference documents a default decomposition: {defaults}"
     );
     for layer in [
         "background and sky",
@@ -225,33 +306,25 @@ fn the_guide_documents_the_default_decomposition_and_ordering_rules() {
         "foreground detail",
     ] {
         assert!(
-            guide.contains(layer),
-            "the default decomposition names `{layer}`: {guide}"
+            defaults.contains(layer),
+            "the default decomposition names `{layer}`: {defaults}"
         );
     }
     assert!(
-        guide.contains("A request that does not decompose cleanly still gets this decomposition"),
-        "a request that does not decompose cleanly does not stall: {guide}"
+        defaults.contains("rather than a stall"),
+        "a request that does not decompose cleanly does not stall: {defaults}"
     );
-    // A dependent part is authored and verified after the part it sits on, and
-    // the order is recorded.
+
+    // A dependent section is refined and verified after the part it sits on, and
+    // the whole is verified after each integration before the next section.
     assert!(
-        guide.contains("after the part it sits on"),
-        "the guide orders a dependent part: {guide}"
+        skill.contains("render the whole so far, and verify it before the next section"),
+        "the whole is verified after each integration: {skill}"
     );
+    // The whole is complete only when every section is integrated and verified.
     assert!(
-        guide.contains("record that order"),
-        "the guide records the order: {guide}"
-    );
-    // A composition failure names the composition step, not the parts.
-    assert!(
-        guide.contains("composition failure names the composition step, not the parts"),
-        "a composition failure is located at the composition step: {guide}"
-    );
-    // The whole is complete only when no part is dropped.
-    assert!(
-        guide.contains("no part dropped"),
-        "the whole is complete with no part dropped: {guide}"
+        skill.contains("nothing is dropped"),
+        "the whole is complete with no section dropped: {skill}"
     );
 }
 
@@ -388,6 +461,49 @@ fn a_part_that_fails_verification_is_corrected_before_it_is_composed() {
     );
     let validate = run_vectr(dir.path(), &["validate", "forest"]);
     assert_eq!(code(&validate), 0, "{}", stderr(&validate));
+}
+
+/// The sections pass but the whole fails: the failure names the integration
+/// step — the constraint that cannot hold — not a section (FEAT-029 edge case).
+#[test]
+fn a_composition_failure_names_the_integration_step_not_the_parts() {
+    let dir = method_project("build-up-integration", "forest");
+
+    // The sections verify in isolation: each named subtree renders on its own.
+    write_scene_as(&dir, "forest", section_scene(false));
+    for part in ["left", "right"] {
+        let out = format!("dist/{part}.svg");
+        let render = run_vectr(
+            dir.path(),
+            &["render", part, "--format", "svg", "--out", &out],
+        );
+        assert_eq!(
+            code(&render),
+            0,
+            "the section `{part}` verifies on its own: {}",
+            stderr(&render)
+        );
+    }
+
+    // Integrating them with two constraints that cannot both hold fails the
+    // whole, naming the conflicting constraints rather than a section.
+    write_scene_as(&dir, "forest", section_scene(true));
+    let compile = run_vectr(dir.path(), &["compile", "forest", "--check"]);
+    assert_eq!(
+        code(&compile),
+        3,
+        "a whole-scene conflict is a compilation failure: {}",
+        stderr(&compile)
+    );
+    let message = stderr(&compile);
+    assert!(
+        message.contains("c1") && message.contains("c2"),
+        "the failure names the integration step (the conflicting constraints): {message}"
+    );
+    assert!(
+        !message.contains("left-body") && !message.contains("right-body"),
+        "the failure is not blamed on a section: {message}"
+    );
 }
 
 /// A verified part is placed again in the same scene and in another scene
