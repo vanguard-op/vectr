@@ -1,7 +1,7 @@
 # Delivery
 
 ## Source of truth
-docs/Vectr/ — git submodule, remote https://github.com/vanguard-op/vectr-docs.git; working tree at b9868b3 (multi-scene projects, agent-surface scene addressing, full-complexity scope, validated alpha colour model, single-layer shading scheduled as Phase 6), the recorded pointer advancing with the build. The docs are authoritative for what to build; this file tracks state only and never restates the spec.
+docs/Vectr/ — git submodule, remote https://github.com/vanguard-op/vectr-docs.git; working tree at cc1cd19 (reusable parts, incremental authoring, and part-scoped rendering specified for Phase 4), the recorded pointer advancing with the build. The docs are authoritative for what to build; this file tracks state only and never restates the spec.
 
 ## Team & file ownership
 | Member | Owns |
@@ -68,6 +68,14 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | Phase 2 — Style Core | 2026-10-08 | FEAT-027, FEAT-007, FEAT-008, FEAT-009, FEAT-010 shipped; the element paint model unified with linear/radial gradients; recipe selection wired through the CLI; C-001–C-003 re-implemented at revision 5. |
 | Phase 3 — Any Model Can Author | 2026-10-08 | FEAT-017, FEAT-018, FEAT-019, FEAT-020 shipped; validated alpha colour model (FEAT-005) and the shading-request warning (FEAT-007); scope extended to very complex illustrations (FEAT-003, FEAT-011) with complex-scene coverage; multi-scene projects with identifier addressing and a default scene, matched by the MCP surface (FEAT-016, FEAT-019); CLI and MCP share one project loader and one authoring guide; crates self-contained for packaging, both binaries and the skill distributed; released as 0.1.0-pre.1 on crates.io and GitHub Releases (checksummed and signed); the gate covers the acceptance crate's fmt/lints and a determinism check; C-001–C-005 implemented. |
 
+### Active phase: Phase 4 — Reuse & Incremental Authoring
+| Task | Feature | Owner | Status | Contract |
+|---|---|---|---|---|
+| T-072 | FEAT-030 | backend-engineer | Ready | C-001, C-002, C-003 |
+| T-073 | FEAT-031 | backend-engineer | Backlog | C-002, C-004 |
+| T-074 | FEAT-031 | ai-engineer | Backlog | C-005 |
+| T-075 | FEAT-029 | ai-engineer | Backlog | C-002, C-004, C-005 |
+
 ## Decisions log
 | # | Decision | Rationale | By |
 |---|---|---|---|
@@ -104,6 +112,9 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | D-031 | The MCP server serves over stdio by default, with an opt-in loopback HTTP listener behind an explicit bind flag, rather than binding a port by default. | MCP's canonical local transport is a subprocess over stdio, which is strictly more local than a listening socket and matches NFR-024's local-only intent. Clarifies C-005. | lead |
 | D-032 | A project's scene directory holds one document per scene named for the scene's identifier (`scenes/<id>.json`); a project names its default scene by that identifier, and the project root holds no scene document. | FEAT-016 addresses a scene by its identifier; the docs name the scene directory but not its file naming, so the identifier is the file name. Extends D-009. | lead |
 | D-033 | The first release, `0.1.0-pre.1`, is published to crates.io and GitHub Releases; release artifacts are checksummed and signed with a project GPG key over the checksums. | GitHub's native build attestations are unavailable on a private repository on a Free plan, so a detached GPG signature over the published checksums provides the release integrity NFR-025 requires on any plan. | lead |
+| D-034 | A reusable part is a separate, project-scoped Definition entity, and a scene is not instanceable (no scene-in-scene). | A scene is a deliverable (canvas, palette, recipe) while a part must take the placing scene's look; separating them keeps "restyle by one token" true for reused parts and avoids a scene-cycle surface. Confirms the split the user chose. | user |
+| D-035 | A parameter is referenced inside a definition by the object `{param: "<name>"}` in a field whose type matches the parameter; an instance override names one element of the placed definition by identifier. | The docs left both unsettled; the tagged-object form is unambiguous across field types and matches the model's existing tagged-object idiom, and targeting an element keeps multi-colour parts overridable. | lead |
+| D-036 | A project's reusable definitions live in a `definitions/` directory, one document per definition named for its identifier (`definitions/<id>.json`), scaffolded by `vectr init`. | Definitions are project documents referenced by identifier, parallel to scenes and palettes; the docs name the directory but not its file naming. Extends D-009. | lead |
 
 ## Definition of Done
 - Every acceptance criterion in the task's FEAT file is met, including its edge cases and failure states.
