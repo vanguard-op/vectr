@@ -7,8 +7,9 @@ description: >
   whenever the user asks for a vector graphic, logo, or icon set and Vectr is
   the target toolchain, including when they only describe the picture and never
   say "Vectr": read the scene schema, author the scene, validate it, render a
-  preview, and refine the result — authoring, validating, rendering and
-  exporting, editing, restyling through palette tokens, and debugging. Also use
+  preview, and refine the result — building a complex illustration up in
+  verified parts — authoring, validating, rendering and exporting, editing,
+  restyling through palette tokens, and debugging. Also use
   it to wire the Vectr tools into an agent. Do not use it for photographic or
   bitmap image generation, for hand-writing raw SVG or HTML/CSS, or for graphics
   in another tool's format.
@@ -32,7 +33,10 @@ ambiguous requests, and the inspect-and-correct loop. This file only orients
 you: the workflow, the tool surface, and the version check.
 
 A request's complexity sets the scene's scope: a detailed illustration is
-composed in full from its elements, never simplified to a simple mark.
+composed in full from its elements, never simplified to a simple mark. A simple
+mark is authored in one pass; a complex graphic is built up in verified parts —
+each part authored as a reusable definition, verified on its own, then composed
+one at a time. The guide carries the method.
 
 ## Workflow
 
@@ -45,6 +49,13 @@ Progress:
 - [ ] 6. Compile with `--check` to confirm references resolve.
 - [ ] 7. Render a PNG preview and look at it against the request.
 - [ ] 8. Correct the scene and re-render if it does not match, then export the final SVG and PNG.
+
+For a complex graphic, steps 4 to 8 become the build-up method: decompose the
+request into named parts, author each part as a reusable definition
+(`definitions/<id>.json`), verify it alone with `render-part` / `vectr render`,
+then compose the verified parts into the scene one at a time, rendering the
+composition after each addition. Follow the guide's **Build a complex graphic up
+in verified parts**.
 
 Never render before validation passes, and never export from a scene that failed
 to compile. A failed step stops the pipeline; there is no partial output.
@@ -60,7 +71,12 @@ produce identical results.
 | Validate | `validate` `{scene?, draft?, project?}` | `vectr validate <scene> [--json]` |
 | Compile | `compile` `{scene?, draft?, project?}` | `vectr compile <scene> [--check] [--out <file>]` |
 | Render | `render` `{scene?, draft?, project?, format, out?, width?, height?, density?, background?}` | `vectr export <scene> --format svg\|png [--out <file>] [--width <n>] [--height <n>] [--density <n>] [--background <color\|transparent>]` |
+| Render a part | `render-part` `{part, project?, format, out?, width?, height?, density?, background?}` | `vectr render <part> --format svg\|png [--out <file>] [--width <n>] [--height <n>] [--density <n>] [--background <color\|transparent>]` |
 | Scaffold | — | `vectr init [dir]` |
+
+`render-part` and `vectr render` preview one part on its own — a reusable
+definition or a named element subtree, addressed by its identifier — framed to
+the part's own bounds or to a requested size; the CLI prints the frame it used.
 
 An MCP tool failure is a result with `isError: true` and a body
 `{code, message, location, diagnostics}`; read the whole `diagnostics` list, not
@@ -82,7 +98,9 @@ reports that no scene was selected rather than choosing among its scenes.
 Deliver one Vectr scene document that conforms to the published schema, with
 `formatVersion` `"0.2"`. Validate it before compiling and render only on
 success. Exports default to `dist/<scene-id>.<ext>`; `--out`/`out` chooses
-another path.
+another path. For a complex graphic, deliver the scene together with the
+reusable definitions it places (`definitions/<id>.json`); the scene plus its
+definitions is the deliverable.
 
 ## When authoring fails
 
@@ -108,5 +126,5 @@ installed tool disagree; report that the same way.
 
 | File | Read it when |
 |---|---|
-| `references/authoring-guide.md` | Before authoring your first scene; the end-to-end walkthrough, worked example, default set, and inspect-and-correct loop. The single source of the procedure. |
+| `references/authoring-guide.md` | Before authoring your first scene; the end-to-end walkthrough, worked examples (including the build-up method for a complex graphic), the default set, and the inspect-and-correct loop. The single source of the procedure. |
 | `assets/scene.template.json` | As the starting point for a new scene. |

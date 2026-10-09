@@ -5,9 +5,10 @@ The skill's value is that a model can follow the authoring guide against the
 published schema and the installed tool. These checks pin that contract: the
 frontmatter and JSON are well-formed, the guide stands alone as the single
 source of the authoring procedure (the scaffold embeds it verbatim, so it must
-not depend on the skill's other files), and every worked scene the guide ships, from the simple mark to the
-compositionally complex illustration, plus the scene template, validate, compile,
-and export through the real toolchain.
+not depend on the skill's other files), and every worked scene the guide ships,
+from the simple mark to the compositionally complex illustration, plus every
+reusable definition and the scene template, validate, compile, and export through
+the real toolchain.
 
 Nothing here grades authored scenes; measuring cross-model authoring quality is
 the evaluation harness's job. This only proves the shipped examples still work.
@@ -97,9 +98,17 @@ def check_static(skill_dir: Path) -> list[str]:
     # scaffold embeds into a project, so it must carry the whole workflow, name
     # the versions it targets, and stand alone — a scaffolded project has none
     # of the skill's other files.
-    for command in ("vectr schema", "vectr validate", "vectr compile", "vectr export"):
+    for command in ("vectr schema", "vectr validate", "vectr compile", "vectr export", "vectr render"):
         if command not in guide:
             raise CheckError(f"the guide does not teach `{command}`")
+
+    # A complex request is built up in verified parts rather than authored in one
+    # pass: the guide must teach reusable definitions and the part-scoped render
+    # that verifies each one (FEAT-029, FEAT-030, FEAT-031).
+    if "definitions/" not in guide:
+        raise CheckError("the guide does not teach reusable definitions")
+    if "Build a complex graphic up in verified parts" not in guide:
+        raise CheckError("the guide does not direct the incremental build-up method")
 
     # A scene is addressed by its identifier, not by a file path: the document
     # is `scenes/<id>.json` and a command names the id, falling back to the
@@ -143,15 +152,36 @@ def check_static(skill_dir: Path) -> list[str]:
     blocks = fenced_json_blocks(guide)
     palette = next((b for b in blocks if "tokens" in b), None)
     stroke = next((b for b in blocks if {"cap", "join", "width"} <= set(b)), None)
+    # A scene is a document with a canvas and elements; a reusable definition is
+    # a document with parameters, an origin, and elements but no canvas. Telling
+    # them apart lets the toolchain check address each the way the guide does
+    # (FEAT-029, FEAT-030).
     scenes = [
         b
         for b in blocks
-        if isinstance(b, dict) and isinstance(b.get("elements"), list) and b["elements"]
+        if isinstance(b, dict)
+        and isinstance(b.get("elements"), list)
+        and b["elements"]
+        and "canvas" in b
+    ]
+    definitions = [
+        b
+        for b in blocks
+        if isinstance(b, dict)
+        and isinstance(b.get("elements"), list)
+        and b["elements"]
+        and "parameters" in b
+        and "origin" in b
     ]
     if palette is None or stroke is None or not scenes:
         raise CheckError("the authoring guide is missing a palette, stroke, or scene example")
-    notes.append(f"guide carries {len(blocks)} json examples and {len(scenes)} worked scenes")
-    return notes, palette, stroke, scenes
+    if not definitions:
+        raise CheckError("the authoring guide is missing a reusable definition example")
+    notes.append(
+        f"guide carries {len(blocks)} json examples, {len(scenes)} worked scenes, "
+        f"and {len(definitions)} definitions"
+    )
+    return notes, palette, stroke, scenes, definitions
 
 
 def run(command: list[str], cwd: Path) -> subprocess.CompletedProcess:
@@ -163,18 +193,31 @@ def run(command: list[str], cwd: Path) -> subprocess.CompletedProcess:
 
 
 def check_toolchain(
-    vectr: str, template: dict, palette: dict, stroke: dict, scenes: list[dict]
+    vectr: str,
+    template: dict,
+    palette: dict,
+    stroke: dict,
+    scenes: list[dict],
+    definitions: list[dict],
 ) -> list[str]:
     notes = []
     with tempfile.TemporaryDirectory(prefix="vectr-skill-verify-") as raw:
         project = Path(raw)
         (project / "palettes").mkdir()
         (project / "strokes").mkdir()
+        (project / "definitions").mkdir()
         (project / "scenes").mkdir()
         (project / "dist").mkdir()
-        (project / "vectr.project.json").write_text("{}")
+        # A definition preview resolves the project's palette through the default
+        # scene, so the config names the first worked scene as the default
+        # (FEAT-030, FEAT-031).
+        (project / "vectr.project.json").write_text(
+            json.dumps({"defaultSceneId": scenes[0]["id"]})
+        )
         (project / "palettes/brand.json").write_text(json.dumps(palette))
         (project / "strokes/hairline.json").write_text(json.dumps(stroke))
+        for definition in definitions:
+            (project / f"definitions/{definition['id']}.json").write_text(json.dumps(definition))
 
         # Every worked scene the guide ships runs the whole loop, so a simple
         # mark and a compositionally complex illustration are both pinned to the
@@ -201,6 +244,22 @@ def check_toolchain(
                 raise CheckError(f"the exported PNG for {scene_id} is not a PNG")
         notes.append(f"{len(scenes)} worked scenes validate, compile, and export SVG and PNG")
 
+        # Every definition the guide ships renders on its own, the verification
+        # step the build-up method turns on: the command parses and validates the
+        # definition structurally and writes the part's isolated preview
+        # (FEAT-029, FEAT-031).
+        for definition in definitions:
+            definition_id = definition["id"]
+            run(
+                [vectr, "render", definition_id, "--format", "svg",
+                 "--out", f"dist/{definition_id}.svg"],
+                project,
+            )
+            svg = (project / f"dist/{definition_id}.svg").read_text()
+            if not svg.lstrip().startswith("<?xml"):
+                raise CheckError(f"the part preview for {definition_id} is empty")
+        notes.append(f"{len(definitions)} definitions render on their own")
+
         template_id = template["id"]
         template_path = project / f"scenes/{template_id}.json"
         template_path.write_text(json.dumps(template))
@@ -217,7 +276,7 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        notes, palette, stroke, scenes = check_static(args.skill_dir)
+        notes, palette, stroke, scenes, definitions = check_static(args.skill_dir)
         template = json.loads((args.skill_dir / "assets/scene.template.json").read_text())
         if not args.skip_toolchain:
             vectr = Path(args.vectr)
@@ -225,7 +284,7 @@ def main() -> int:
                 vectr = vectr.resolve()
             elif shutil.which(args.vectr) is None:
                 raise CheckError(f"the vectr binary `{args.vectr}` was not found")
-            notes += check_toolchain(str(vectr), template, palette, stroke, scenes)
+            notes += check_toolchain(str(vectr), template, palette, stroke, scenes, definitions)
     except CheckError as error:
         print(f"FAIL: {error}", file=sys.stderr)
         return 1
