@@ -232,7 +232,7 @@ fn emit_nodes(
         let chain: Vec<&NodeGroup> = node
             .groups
             .iter()
-            .filter(|group| group.name.is_some())
+            .filter(|group| group.name.is_some() || group.accessible_name.is_some())
             .collect();
         let common = open
             .iter()
@@ -245,14 +245,22 @@ fn emit_nodes(
         }
         for group in &chain[common..] {
             let id = ids.allocate(&group.id);
-            let name = group.name.as_deref().unwrap_or_default();
-            let _ = writeln!(
-                out,
-                "{}<g id=\"{}\" data-name=\"{}\">",
-                indent(open.len() + 1),
-                id,
-                escape_attr(name),
-            );
+            let mut open_tag = format!("<g id=\"{id}\"");
+            if let Some(name) = &group.name {
+                let _ = write!(open_tag, " data-name=\"{}\"", escape_attr(name));
+            }
+            open_tag.push('>');
+            let _ = writeln!(out, "{}{}", indent(open.len() + 1), open_tag);
+            // A group's accessible name is its title; the maintenance name
+            // stays in `data-name` (FEAT-026).
+            if let Some(accessible) = &group.accessible_name {
+                let _ = writeln!(
+                    out,
+                    "{}  <title>{}</title>",
+                    indent(open.len() + 1),
+                    escape_text(accessible),
+                );
+            }
             open.push(group.id.clone());
         }
 
@@ -321,8 +329,11 @@ fn emit_node(
     group.push('>');
 
     let _ = writeln!(out, "{indent}{group}");
-    if let Some(name) = &node.name {
-        let _ = writeln!(out, "{indent}  <title>{}</title>", escape_text(name));
+    // The element's accessible name, when set, is the title assistive
+    // technology reads; otherwise the maintenance name serves that role. The
+    // maintenance name stays in `data-name` either way (FEAT-026).
+    if let Some(title) = node.accessible_name.as_deref().or(node.name.as_deref()) {
+        let _ = writeln!(out, "{indent}  <title>{}</title>", escape_text(title));
     }
     // A text node's string is otherwise lost once its glyphs become outlines, so
     // carry it as the element's accessible description (FEAT-012).

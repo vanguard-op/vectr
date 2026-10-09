@@ -255,6 +255,7 @@ mod tests {
         let shape = ResolvedNode {
             id: "e1".to_string(),
             name: None,
+            accessible_name: None,
             order: 0,
             kind: "rect".to_string(),
             groups: Vec::new(),

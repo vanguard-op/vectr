@@ -40,6 +40,9 @@ pub const UNSUPPORTED: DiagnosticCode = DiagnosticCode::new("W_UNSUPPORTED_SVG")
 /// The requested output size is not a usable dimension.
 pub const OPTIONS: DiagnosticCode = DiagnosticCode::new("E_SVG_OPTIONS");
 
+/// The scene declares no accessible metadata (FEAT-026).
+pub const MISSING_METADATA: DiagnosticCode = DiagnosticCode::new("W_MISSING_METADATA");
+
 /// Options controlling SVG output.
 ///
 /// The defaults reproduce the canvas exactly: no size override and the canvas's
@@ -100,8 +103,24 @@ pub fn export_svg_reporting(
     if diagnostics.has_errors() {
         return Err(diagnostics);
     }
+    warn_missing_metadata(model, &mut diagnostics);
 
     Ok(SvgExport { svg, diagnostics })
+}
+
+/// Notes a document that carries no accessible metadata (FEAT-026).
+///
+/// A scene without a title and without a description exports successfully, but
+/// the document then has nothing for assistive technology to announce; the gap
+/// is reported rather than left silent. The warning follows any content the
+/// target omitted, so the exporter's own findings stay first.
+fn warn_missing_metadata(model: &RenderModel, diagnostics: &mut Diagnostics) {
+    if model.meta.title.is_none() && model.meta.description.is_none() {
+        diagnostics.push(Diagnostic::warning(
+            MISSING_METADATA,
+            "the scene declares no title or description, so the exported SVG carries no accessible metadata",
+        ));
+    }
 }
 
 /// Validates the one background the document is about to draw.
@@ -188,6 +207,7 @@ mod tests {
         ResolvedNode {
             id: id.to_string(),
             name: name.map(str::to_string),
+            accessible_name: None,
             order: 0,
             kind: geometry.kind().to_string(),
             groups: Vec::new(),
@@ -223,6 +243,7 @@ mod tests {
         ResolvedNode {
             id: id.to_string(),
             name: name.map(str::to_string),
+            accessible_name: None,
             order: 0,
             kind: "text".to_string(),
             groups: Vec::new(),
@@ -352,6 +373,132 @@ mod tests {
         assert!(svg.contains("stroke-linejoin=\"bevel\""), "{svg}");
         assert!(svg.contains("<g id=\"e1\" data-name=\"Box\">"), "{svg}");
         assert!(svg.contains("<title>Box</title>"), "{svg}");
+    }
+
+    #[test]
+    fn a_compiled_elements_accessible_name_reaches_the_document() {
+        const SCENE: &str = r##"{
+          "id": "s", "projectId": "p", "name": "S", "formatVersion": "0.2",
+          "canvas": { "width": 100, "height": 100, "background": "#ffffff" },
+          "elements": [
+            {
+              "id": "e1", "sceneId": "s", "order": 0, "kind": "rect",
+              "name": "Box", "accessibleName": "Red box",
+              "geometry": { "x": 0, "y": 0, "width": 10, "height": 10 },
+              "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
+              "opacity": 1, "visible": true
+            }
+          ]
+        }"##;
+        let svg = export(&compile_scene(SCENE));
+        assert!(svg.contains("<g id=\"e1\" data-name=\"Box\">"), "{svg}");
+        assert!(svg.contains("<title>Red box</title>"), "{svg}");
+    }
+
+    #[test]
+    fn an_elements_accessible_name_becomes_its_title_while_its_maintenance_name_stays_in_data_name()
+    {
+        let mut shape = node("e1", Some("Box"), rect(0.0, 0.0, 1.0, 1.0));
+        shape.accessible_name = Some("Red box".to_string());
+        let svg = export(&model(vec![shape]));
+        assert!(svg.contains("<g id=\"e1\" data-name=\"Box\">"), "{svg}");
+        assert!(svg.contains("<title>Red box</title>"), "{svg}");
+        assert!(!svg.contains("<title>Box</title>"), "{svg}");
+    }
+
+    #[test]
+    fn an_elements_accessible_name_alone_still_titles_the_group() {
+        let mut shape = node("e1", None, rect(0.0, 0.0, 1.0, 1.0));
+        shape.accessible_name = Some("Red box".to_string());
+        let svg = export(&model(vec![shape]));
+        assert!(!svg.contains("data-name="), "{svg}");
+        assert!(svg.contains("<title>Red box</title>"), "{svg}");
+    }
+
+    #[test]
+    fn a_groups_accessible_name_is_carried_as_its_title() {
+        const SCENE: &str = r##"{
+          "id": "s", "projectId": "p", "name": "S", "formatVersion": "0.2",
+          "canvas": { "width": 100, "height": 100, "background": "#ffffff" },
+          "elements": [
+            {
+              "id": "outer", "sceneId": "s", "order": 0, "kind": "group",
+              "name": "Outer", "accessibleName": "Frame",
+              "geometry": {},
+              "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
+              "opacity": 1, "visible": true
+            },
+            {
+              "id": "c1", "sceneId": "s", "order": 0, "kind": "rect", "parentId": "outer",
+              "geometry": { "x": 0, "y": 0, "width": 10, "height": 10 },
+              "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
+              "opacity": 1, "visible": true
+            }
+          ]
+        }"##;
+        let svg = export(&compile_scene(SCENE));
+        assert!(
+            svg.contains("<g id=\"outer\" data-name=\"Outer\">"),
+            "{svg}"
+        );
+        assert!(svg.contains("<title>Frame</title>"), "{svg}");
+    }
+
+    #[test]
+    fn a_group_with_only_an_accessible_name_is_kept_and_titled() {
+        const SCENE: &str = r##"{
+          "id": "s", "projectId": "p", "name": "S", "formatVersion": "0.2",
+          "canvas": { "width": 100, "height": 100, "background": "#ffffff" },
+          "elements": [
+            {
+              "id": "outer", "sceneId": "s", "order": 0, "kind": "group",
+              "accessibleName": "Frame",
+              "geometry": {},
+              "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
+              "opacity": 1, "visible": true
+            },
+            {
+              "id": "c1", "sceneId": "s", "order": 0, "kind": "rect", "parentId": "outer",
+              "geometry": { "x": 0, "y": 0, "width": 10, "height": 10 },
+              "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
+              "opacity": 1, "visible": true
+            }
+          ]
+        }"##;
+        let svg = export(&compile_scene(SCENE));
+        assert!(svg.contains("<g id=\"outer\">"), "{svg}");
+        assert!(!svg.contains("data-name=\"\""), "{svg}");
+        assert!(svg.contains("<title>Frame</title>"), "{svg}");
+    }
+
+    #[test]
+    fn a_scene_without_metadata_warns_but_still_exports() {
+        let export =
+            export_svg_reporting(&model(Vec::new()), &SvgOptions::default()).expect("exports");
+        assert!(export.svg.contains("</svg>"), "{}", export.svg);
+        assert_eq!(
+            export
+                .diagnostics
+                .warnings()
+                .next()
+                .map(|warning| warning.code.clone()),
+            Some(MISSING_METADATA)
+        );
+    }
+
+    #[test]
+    fn a_scene_with_metadata_does_not_warn_about_missing_metadata() {
+        let mut document = model(Vec::new());
+        document.meta.title = Some("Logo".to_string());
+        let export = export_svg_reporting(&document, &SvgOptions::default()).expect("exports");
+        assert!(
+            !export
+                .diagnostics
+                .warnings()
+                .any(|warning| warning.code == MISSING_METADATA),
+            "{:?}",
+            export.diagnostics
+        );
     }
 
     #[test]
@@ -840,6 +987,7 @@ mod tests {
             &json!({
                 "id": "s", "projectId": "p", "name": "S", "formatVersion": "0.2",
                 "canvas": { "width": 200.0, "height": 100.0, "background": "#ffffff" },
+                "title": "Wordmark", "description": "A greeting",
                 "elements": [{
                     "id": "t1", "sceneId": "s", "order": 0, "kind": "text", "name": "Wordmark",
                     "geometry": { "x": 10.0, "y": 60.0, "text": "Hi", "fontSize": 48.0 },

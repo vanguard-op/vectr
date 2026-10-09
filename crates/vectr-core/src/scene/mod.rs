@@ -721,6 +721,7 @@ fn validate_non_negative_number(
 
 fn validate_elements(diagnostics: &mut Diagnostics, elements: &[Element]) {
     let mut seen: HashSet<&str> = HashSet::with_capacity(elements.len());
+    let mut seen_accessible: HashSet<&str> = HashSet::with_capacity(elements.len());
     let mut index_of: std::collections::HashMap<&str, usize> =
         std::collections::HashMap::with_capacity(elements.len());
     for (index, element) in elements.iter().enumerate() {
@@ -741,6 +742,30 @@ fn validate_elements(diagnostics: &mut Diagnostics, elements: &[Element]) {
                     format!("{base}/id"),
                 )),
             );
+        }
+
+        // An accessible name identifies an element for assistive technology; a
+        // repeat within one tree is ambiguous, so it is a located error rather
+        // than something a reader has to disambiguate. The maintenance name may
+        // repeat, because many sibling parts of one kind commonly share it
+        // (FEAT-026).
+        if let Some(name) = element
+            .accessible_name
+            .as_deref()
+            .filter(|name| !name.is_empty())
+        {
+            if !seen_accessible.insert(name) {
+                diagnostics.push(
+                    Diagnostic::error(
+                        DiagnosticCode::DUPLICATE_NAME,
+                        format!("duplicate element accessible name `{name}`"),
+                    )
+                    .with_location(Location::element_at(
+                        element.id.clone(),
+                        format!("{base}/accessibleName"),
+                    )),
+                );
+            }
         }
 
         if element.order < 0 {
@@ -1275,6 +1300,57 @@ mod tests {
         );
         assert!(!text.contains("\"fill\""));
         assert!(!text.contains("\"stroke\""));
+    }
+
+    /// A scene with two rects, each carrying a maintenance name and an
+    /// accessible name, so the naming rules can be exercised (FEAT-026).
+    fn two_named_elements(first: (&str, &str), second: (&str, &str)) -> String {
+        format!(
+            r#"{{"id":"s","projectId":"p","name":"Scene","formatVersion":"{SHIPPED_VERSION}","canvas":{{"width":10,"height":10,"background":"transparent"}},"elements":[{{"id":"e1","sceneId":"s","order":0,"kind":"rect","name":"{}","accessibleName":"{}","geometry":{{"x":0,"y":0,"width":1,"height":1}},"transform":{{"translateX":0,"translateY":0,"rotate":0,"scaleX":1,"scaleY":1}},"opacity":1,"visible":true}},{{"id":"e2","sceneId":"s","order":1,"kind":"rect","name":"{}","accessibleName":"{}","geometry":{{"x":2,"y":0,"width":1,"height":1}},"transform":{{"translateX":0,"translateY":0,"rotate":0,"scaleX":1,"scaleY":1}},"opacity":1,"visible":true}}]}}"#,
+            first.0, first.1, second.0, second.1
+        )
+    }
+
+    #[test]
+    fn an_element_carries_an_accessible_name_distinct_from_its_maintenance_name() {
+        let scene =
+            parse(&two_named_elements(("Box", "Red box"), ("Dot", "Red dot"))).expect("valid");
+        let element = scene.element("e1").expect("element present");
+        assert_eq!(element.name.as_deref(), Some("Box"));
+        assert_eq!(element.accessible_name.as_deref(), Some("Red box"));
+
+        let text = scene.to_json_string().expect("serializable");
+        assert!(
+            text.contains(r#""name":"Box","accessibleName":"Red box""#),
+            "{text}"
+        );
+        assert_eq!(parse(&text).expect("round-trips"), scene);
+    }
+
+    #[test]
+    fn repeated_maintenance_names_are_allowed_but_accessible_names_must_be_unique() {
+        // Many sibling parts of one kind commonly share a maintenance name.
+        parse(&two_named_elements(
+            ("Pine", "Near pine"),
+            ("Pine", "Far pine"),
+        ))
+        .expect("a repeated maintenance name is valid");
+
+        let diagnostics = parse_error(&two_named_elements(("Box", "Icon"), ("Dot", "Icon")));
+        let error = diagnostics
+            .errors()
+            .find(|finding| finding.code == DiagnosticCode::DUPLICATE_NAME)
+            .expect("a duplicate accessible name is an error");
+        assert!(
+            error
+                .location
+                .as_ref()
+                .and_then(|location| location.json_path.as_deref())
+                .unwrap_or_default()
+                .ends_with("/accessibleName"),
+            "{}",
+            error.message
+        );
     }
 
     #[test]

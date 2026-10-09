@@ -246,6 +246,7 @@ mod tests {
             parent_id: None,
             order: 0,
             name: None,
+            accessible_name: None,
             kind,
             geometry,
             transform: Transform {

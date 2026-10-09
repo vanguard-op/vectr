@@ -39,6 +39,7 @@ fn plain_node(id: &str, kind: &str, geometry: Shape) -> ResolvedNode {
     ResolvedNode {
         id: id.to_string(),
         name: None,
+        accessible_name: None,
         order: 0,
         kind: kind.to_string(),
         groups: Vec::new(),

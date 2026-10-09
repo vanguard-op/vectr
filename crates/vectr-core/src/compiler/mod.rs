@@ -392,6 +392,7 @@ fn definition_scene(definition: &Definition) -> Scene {
         parent_id: None,
         order: 0,
         name: Some(definition.name.clone()),
+        accessible_name: None,
         kind: ElementKind::Instance,
         geometry: Geometry::default(),
         transform: identity_transform(),
@@ -566,6 +567,10 @@ fn frame_part(model: &mut RenderModel, part: &str) {
         height: size[1],
         background: "transparent".to_string(),
     };
+    // A part is not a scene, so it declares no scene metadata; its own name
+    // becomes the preview's accessible title, which keeps a part preview from
+    // being reported as a scene missing metadata (FEAT-026, FEAT-031).
+    model.meta.title = Some(part.to_string());
 }
 
 /// The axis-aligned bounds every visible node of a model spans.
@@ -842,6 +847,7 @@ impl Compiler<'_, '_> {
             descendant_groups.push(NodeGroup {
                 id: element.id.clone(),
                 name: element.name.clone(),
+                accessible_name: element.accessible_name.clone(),
             });
         }
 
@@ -1772,11 +1778,12 @@ impl Compiler<'_, '_> {
             return;
         }
 
-        let (base_id, name, kind) = {
+        let (base_id, name, accessible_name, kind) = {
             let element = &self.scene.elements[index];
             (
                 element.id.clone(),
                 element.name.clone(),
+                element.accessible_name.clone(),
                 kind_name(element.kind).to_string(),
             )
         };
@@ -1789,6 +1796,7 @@ impl Compiler<'_, '_> {
         self.nodes.push(ResolvedNode {
             id,
             name,
+            accessible_name,
             order,
             kind,
             groups: groups.to_vec(),
@@ -1830,9 +1838,13 @@ impl Compiler<'_, '_> {
         let Some(run) = self.text_run(index) else {
             return;
         };
-        let (base_id, name) = {
+        let (base_id, name, accessible_name) = {
             let element = &self.scene.elements[index];
-            (element.id.clone(), element.name.clone())
+            (
+                element.id.clone(),
+                element.name.clone(),
+                element.accessible_name.clone(),
+            )
         };
         let id = self.unique_id(&base_id, copy);
         let paint = self.paint_for(index);
@@ -1841,6 +1853,7 @@ impl Compiler<'_, '_> {
         self.nodes.push(ResolvedNode {
             id,
             name,
+            accessible_name,
             order,
             kind: "text".to_string(),
             groups: groups.to_vec(),
@@ -2818,6 +2831,7 @@ mod tests {
             vec![NodeGroup {
                 id: "g1".to_string(),
                 name: Some("Outer".to_string()),
+                accessible_name: None,
             }]
         );
     }
@@ -2855,6 +2869,7 @@ mod tests {
             vec![NodeGroup {
                 id: "g1".to_string(),
                 name: None,
+                accessible_name: None,
             }]
         );
     }
@@ -2872,6 +2887,7 @@ mod tests {
         let expected = vec![NodeGroup {
             id: "g1".to_string(),
             name: Some("Outer".to_string()),
+            accessible_name: None,
         }];
         for node in &model.nodes {
             assert_eq!(node.groups, expected);
@@ -3738,6 +3754,7 @@ mod tests {
             vec![NodeGroup {
                 id: "g1".to_string(),
                 name: Some("Caption".to_string()),
+                accessible_name: None,
             }]
         );
     }
@@ -4255,6 +4272,7 @@ mod tests {
                 vec![crate::render::NodeGroup {
                     id: "g".to_string(),
                     name: Some("Object".to_string()),
+                    accessible_name: None,
                 }],
                 "the group identity travels on every child"
             );

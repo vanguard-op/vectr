@@ -1174,6 +1174,7 @@ mod tests {
         ResolvedNode {
             id: id.to_string(),
             name: None,
+            accessible_name: None,
             order: 0,
             kind: geometry.kind().to_string(),
             groups: Vec::new(),

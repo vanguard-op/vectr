@@ -108,9 +108,16 @@ pub struct Element {
     pub parent_id: Option<String>,
     /// Paint order among siblings; lower values paint first.
     pub order: i64,
-    /// Element name, preserved in exported output.
+    /// Element name, the maintenance name preserved in exported output.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Accessible name for assistive technology, carried into exported output
+    /// and distinct from the maintenance name in `name` (FEAT-026).
+    ///
+    /// When absent the element emits no accessible name; a text element's
+    /// string is carried as accessible text whether or not one is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accessible_name: Option<String>,
     /// The element's role.
     pub kind: ElementKind,
     /// The element's geometry; which fields apply depends on `kind`.

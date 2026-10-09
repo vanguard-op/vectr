@@ -128,6 +128,7 @@ mod tests {
             parent_id: None,
             order: 0,
             name: None,
+            accessible_name: None,
             kind: ElementKind::AlongPath,
             geometry: Geometry::default(),
             transform: Transform {

@@ -241,6 +241,7 @@ mod tests {
         ResolvedNode {
             id: id.to_string(),
             name: None,
+            accessible_name: None,
             order: 0,
             kind: geometry.kind().to_string(),
             groups: Vec::new(),
@@ -411,6 +412,7 @@ mod tests {
         let text = ResolvedNode {
             id: "t1".to_string(),
             name: None,
+            accessible_name: None,
             order: 0,
             kind: "text".to_string(),
             groups: Vec::new(),

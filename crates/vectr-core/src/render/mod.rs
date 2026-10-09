@@ -151,6 +151,9 @@ pub struct NodeGroup {
     /// The group's name, when it declares one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// The group's accessible name, when it declares one (FEAT-026).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accessible_name: Option<String>,
 }
 
 /// One concrete drawing node.
@@ -162,6 +165,10 @@ pub struct ResolvedNode {
     /// Element name, preserved for the exporter.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Accessible name for assistive technology, distinct from the maintenance
+    /// name in `name` and carried into exported output (FEAT-026).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accessible_name: Option<String>,
     /// Position in the model's paint order; lower values paint first.
     pub order: usize,
     /// The scene-language kind that produced the node.
@@ -506,8 +513,22 @@ mod tests {
             vec![NodeGroup {
                 id: "g1".to_string(),
                 name: Some("Outer".to_string()),
+                accessible_name: None,
             }]
         );
+    }
+
+    #[test]
+    fn a_node_serializes_its_accessible_name_distinct_from_its_maintenance_name() {
+        let mut model = model();
+        model.nodes[0].name = Some("Box".to_string());
+        model.nodes[0].accessible_name = Some("Red box".to_string());
+        let text = model.to_json_string().expect("serializable");
+        assert!(
+            text.contains(r#""name":"Box","accessibleName":"Red box""#),
+            "{text}"
+        );
+        assert_eq!(parse(&text).expect("deserializable"), model);
     }
 
     #[test]
@@ -584,6 +605,7 @@ mod tests {
             nodes: vec![ResolvedNode {
                 id: "t1".to_string(),
                 name: None,
+                accessible_name: None,
                 order: 0,
                 kind: "text".to_string(),
                 groups: Vec::new(),
