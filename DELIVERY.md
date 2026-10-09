@@ -1,7 +1,7 @@
 # Delivery
 
 ## Source of truth
-docs/Vectr/ — git submodule, remote https://github.com/vanguard-op/vectr-docs.git; working tree at 21176c0 (authoring-quality guidance specified as FEAT-032 with NFR-031; the skill and project guide packaged for a model's context budget; the scene seed, the procedural element kind, the icon-set document, and element accessible names settled), the recorded pointer advancing with the build. The docs are authoritative for what to build; this file tracks state only and never restates the spec.
+docs/Vectr/ — git submodule, remote https://github.com/vanguard-op/vectr-docs.git; working tree at 1d2f8a9 (authoring-quality guidance specified as FEAT-032 with NFR-031; the skill and project guide packaged for a model's context budget; the scene seed, the procedural element kind, the icon-set document, and element accessible names settled; the corpus coverage fields and the always-read size budget settled), the recorded pointer advancing with the build. The docs are authoritative for what to build; this file tracks state only and never restates the spec.
 
 ## Team & file ownership
 | Member | Owns |
@@ -85,6 +85,8 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | T-098 | FEAT-020 | qa-engineer | In Progress | C-004 |
 | T-099 | FEAT-016, FEAT-020 | infra-engineer | Done | C-004 |
 | T-100 | FEAT-023 | infra-engineer | In Progress | C-006 |
+| T-101 | FEAT-023 | backend-engineer | Ready | C-006 |
+| T-102 | FEAT-023 | qa-engineer | Ready | — |
 
 ## Decisions log
 | # | Decision | Rationale | By |
