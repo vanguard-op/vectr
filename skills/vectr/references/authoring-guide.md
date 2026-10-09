@@ -6,18 +6,18 @@ in order. It is written to be read alongside the published schema, which is the
 source of truth for every type and every allowed value; this guide adds the
 workflow and the rules the schema does not spell out.
 
-This guide targets `vectr` 0.1.0-pre.1 and scene `formatVersion` `0.2`.
+This guide targets `vectr` 0.1.0-pre.2 and scene `formatVersion` `0.2`.
 
 ## 0. Check the tool and the contract
 
 Confirm the installed tool before authoring:
 
 ```sh
-vectr --version        # prints: vectr 0.1.0-pre.1
+vectr --version        # prints: vectr 0.1.0-pre.2
 ```
 
 If it prints a different version, stop and report the mismatch, naming both
-versions: this guide was written for 0.1.0-pre.1, and a scene written against a
+versions: this guide was written for 0.1.0-pre.2, and a scene written against a
 different contract may not compile. The same applies if `vectr schema` fails
 with `E_SCHEMA_VERSION` — the installed tool and the published contract
 disagree; report it rather than working around it. Over MCP, read

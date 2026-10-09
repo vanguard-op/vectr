@@ -13,10 +13,10 @@ members = ["crates/*"]
 
 [workspace.package]
 # The pre-release channel version (release.md, "Rollout Phases & Feature
-# Flags"): the first pre-release of the 0.1 line, published to opt-in early
+# Flags"): the second pre-release of the 0.1 line, published to opt-in early
 # adopters before the stable channel. crates.io accepts a pre-release version
 # and the release workflow marks a tag containing `-` as a GitHub pre-release.
-version = "0.1.0-pre.1"
+version = "0.1.0-pre.2"
 edition = "2021"
 rust-version = "1.99"
 # Product licence for every workspace crate (D-010): dual permissive, with the

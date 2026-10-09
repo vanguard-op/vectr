@@ -24,12 +24,12 @@ workspace = true
 # The explicit version keeps the path dependency from registering as a `*`
 # wildcard in the dependency graph (NFR-020); it must track vectr-core's
 # package version in the workspace manifest.
-vectr-core = { version = "0.1.0-pre.1", path = "../vectr-core" }
+vectr-core = { version = "0.1.0-pre.2", path = "../vectr-core" }
 
 # Loading a scene's project assets and writing the scaffold's authoring guide,
 # shared with the MCP server so both front ends resolve a project identically
 # (FEAT-016, FEAT-019, FEAT-020).
-vectr-project = { version = "0.1.0-pre.1", path = "../vectr-project" }
+vectr-project = { version = "0.1.0-pre.2", path = "../vectr-project" }
 
 # Structured output for `validate --json` (C-004).
 serde_json = { workspace = true }
