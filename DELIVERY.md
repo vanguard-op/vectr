@@ -73,7 +73,7 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | Task | Feature | Owner | Status | Contract |
 |---|---|---|---|---|
 | T-088 | FEAT-032, FEAT-020 | ai-engineer | Done | C-004 |
-| T-089 | FEAT-023 | ai-engineer | In Progress | C-006 |
+| T-089 | FEAT-023 | ai-engineer | Done | C-006 |
 | T-090 | FEAT-023 | qa-engineer | Done | — |
 | T-091 | FEAT-022 | backend-engineer | Done | C-004 |
 | T-092 | FEAT-022, FEAT-014 | ai-engineer | Ready | C-005 |
@@ -84,6 +84,7 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | T-097 | FEAT-025 | backend-engineer | Ready | C-004 |
 | T-098 | FEAT-020 | qa-engineer | In Progress | C-004 |
 | T-099 | FEAT-016, FEAT-020 | infra-engineer | In Progress | C-004 |
+| T-100 | FEAT-023 | infra-engineer | Blocked | C-006 |
 
 ## Decisions log
 | # | Decision | Rationale | By |
