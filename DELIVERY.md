@@ -104,7 +104,7 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | T-117 | FEAT-016, FEAT-020 | infra-engineer | Done | C-004 |
 | T-118 | FEAT-016, FEAT-023 | infra-engineer | Done | C-006 |
 | T-120 | FEAT-025 | backend-engineer | Done | C-004 |
-| T-121 | FEAT-025 | backend-engineer | In Progress | C-004 |
+| T-121 | FEAT-025 | backend-engineer | Done | C-004 |
 | T-110 | FEAT-022, FEAT-014 | qa-engineer | Done | C-005 |
 | T-111 | FEAT-016, FEAT-020 | infra-engineer | Done | C-004 |
 
