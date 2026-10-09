@@ -127,3 +127,33 @@ fn the_library_reports_the_same_structured_error_as_the_command_line() {
         "the library returns the same structured, located error as the CLI (FEAT-021)"
     );
 }
+
+#[test]
+fn the_library_is_safe_for_concurrent_use() {
+    // FEAT-021's edge case: concurrent use from multiple threads is safe, with
+    // no shared-state corruption. The library's entry points take a `&Scene`
+    // and hold no shared mutable state, so many threads compiling and
+    // exporting the same scene must agree byte for byte.
+    let dir = library_project("embedded-concurrent");
+    let scene = project_scene(&dir, "logo");
+    let assets = ProjectAssets::load(dir.path(), &scene).expect("the project assets load");
+    let style = assets.style_context();
+    let expected = {
+        let model = compile_with_style(&scene, &style).expect("the scene compiles");
+        export_svg(&model, &SvgOptions::default()).expect("the model exports")
+    };
+
+    std::thread::scope(|scope| {
+        for _ in 0..8 {
+            scope.spawn(|| {
+                for _ in 0..4 {
+                    let model = compile_with_style(&scene, &style)
+                        .expect("the scene compiles concurrently");
+                    let svg = export_svg(&model, &SvgOptions::default())
+                        .expect("the model exports concurrently");
+                    assert_eq!(svg, expected, "a concurrent export diverged");
+                }
+            });
+        }
+    });
+}
