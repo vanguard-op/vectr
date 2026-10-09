@@ -90,6 +90,33 @@ fn scene_block(blocks: &[Value]) -> &Value {
         .expect("a scene example")
 }
 
+/// Every worked scene the guide ships: a block with elements and a canvas.
+///
+/// A reusable definition also carries an `elements` list but has no canvas, so
+/// the canvas tells the guide's worked scenes from its definitions (FEAT-030).
+fn worked_scenes(blocks: &[Value]) -> Vec<&Value> {
+    blocks
+        .iter()
+        .filter(|block| {
+            block.get("elements").and_then(Value::as_array).is_some()
+                && block.get("canvas").is_some()
+        })
+        .collect()
+}
+
+/// Every reusable definition the guide ships: a block with elements, parameters,
+/// and an origin, and no canvas (FEAT-030).
+fn definition_blocks(blocks: &[Value]) -> Vec<&Value> {
+    blocks
+        .iter()
+        .filter(|block| {
+            block.get("elements").and_then(Value::as_array).is_some()
+                && block.get("parameters").is_some()
+                && block.get("origin").is_some()
+        })
+        .collect()
+}
+
 /// The skill's frontmatter fields, as `key: value` pairs.
 ///
 /// A folded or literal block scalar (`>` / `|`) joins its indented continuation
@@ -136,14 +163,25 @@ fn field<'a>(fields: &'a [(String, String)], name: &str) -> Option<&'a str> {
         .map(|(_, value)| value.as_str())
 }
 
-/// Writes a project with a scene, palette, and stroke, then runs the full
-/// author-validate-compile-render loop the guide teaches.
-fn run_the_worked_example(tag: &str, palette: &Value, stroke: Option<&Value>, scene: &Value) {
+/// Writes a project with a scene, palette, stroke, and any reusable definitions
+/// the scene places, then runs the full author-validate-compile-render loop the
+/// guide teaches.
+fn run_the_worked_example(
+    tag: &str,
+    palette: &Value,
+    stroke: Option<&Value>,
+    definitions: &[&Value],
+    scene: &Value,
+) {
     let dir = TempDir::new(tag);
     dir.write("vectr.project.json", "{}");
     dir.write("palettes/brand.json", &palette.to_string());
     if let Some(stroke) = stroke {
         dir.write("strokes/hairline.json", &stroke.to_string());
+    }
+    for definition in definitions {
+        let id = definition["id"].as_str().expect("a definition identifier");
+        dir.write(&format!("definitions/{id}.json"), &definition.to_string());
     }
     let scene_id = write_scene(&dir, scene);
 
@@ -213,9 +251,9 @@ fn export_png_arg(path: &Path) -> &str {
 /// `-prerelease` and/or `+build` suffix.
 ///
 /// The skill tracks the release it was written for, and the release channel is
-/// a pre-release (`0.1.0-pre.1`) until the first stable 0.1 ships (release.md,
-/// "Rollout Phases & Feature Flags"), so a pre-release is a valid skill version
-/// and a naive dot-count must not reject it (FEAT-020).
+/// a pre-release (the shipped `0.1.0-pre.N`) until the first stable 0.1 ships
+/// (release.md, "Rollout Phases & Feature Flags"), so a pre-release is a valid
+/// skill version and a naive dot-count must not reject it (FEAT-020).
 fn is_semver(version: &str) -> bool {
     let (without_build, build) = match version.split_once('+') {
         Some((head, build)) => (head, Some(build)),
@@ -300,10 +338,14 @@ fn a_skill_version_mismatch_is_reported_against_the_installed_tool() {
 
     // A pre-release channel version is a valid skill version, so the package is
     // accepted on the pre-release channel (release.md, "Rollout Phases &
-    // Feature Flags"); a version that is not semver is not.
+    // Feature Flags"); a version that is not semver is not. The shipped skill's
+    // own version is the illustration, so the example tracks the channel the
+    // skill ships on rather than a stale release.
+    let fields = frontmatter(&skill);
+    let version = field(&fields, "version").expect("a version");
     assert!(
-        is_semver("0.1.0-pre.1"),
-        "a pre-release version is accepted"
+        is_semver(version),
+        "the shipped pre-release skill version `{version}` is accepted"
     );
     assert!(
         is_semver("1.2.3-alpha.1+build.5"),
@@ -311,13 +353,6 @@ fn a_skill_version_mismatch_is_reported_against_the_installed_tool() {
     );
     assert!(!is_semver("0.1"), "major.minor alone is not semver");
     assert!(!is_semver("0.1.0.1"), "four numeric parts is not semver");
-
-    let fields = frontmatter(&skill);
-    let version = field(&fields, "version").expect("a version");
-    assert!(
-        is_semver(version),
-        "the shipped skill version `{version}` is accepted"
-    );
 
     // The comparison the agent is told to run: the installed tool reports the
     // version the skill was written for, so a difference is the mismatch to
@@ -376,19 +411,96 @@ fn the_shipped_scene_template_validates_and_compiles() {
 }
 
 #[test]
-fn the_guides_worked_example_validates_compiles_and_exports() {
+fn the_guides_worked_examples_validate_compile_and_export() {
+    // FEAT-020 requires the guide's worked examples to span the complexity
+    // range — a simple mark and a compositionally complex illustration — plus
+    // the reusable-parts example the build-up method turns on. Every worked
+    // scene the guide ships must validate, compile, and export through the real
+    // toolchain, not only the largest one.
     let guide =
         fs::read_to_string(workspace_root().join("skills/vectr/references/authoring-guide.md"))
             .expect("the authoring guide");
     let blocks = fenced_json_blocks(&guide);
     assert!(blocks.len() >= 3, "the guide carries several examples");
 
-    run_the_worked_example(
-        "skill-example",
-        palette_block(&blocks),
-        Some(stroke_block(&blocks)),
-        scene_block(&blocks),
+    let scenes = worked_scenes(&blocks);
+    assert!(
+        scenes.len() >= 2,
+        "the guide ships more than one worked scene: {}",
+        scenes.len()
     );
+    let definitions = definition_blocks(&blocks);
+
+    for scene in scenes {
+        let id = scene["id"].as_str().expect("a scene identifier");
+        run_the_worked_example(
+            &format!("skill-example-{id}"),
+            palette_block(&blocks),
+            Some(stroke_block(&blocks)),
+            &definitions,
+            scene,
+        );
+    }
+}
+
+#[test]
+fn the_guides_reusable_definitions_render_on_their_own() {
+    // The build-up method verifies a reusable part in isolation before it is
+    // composed (FEAT-029, FEAT-031), and the guide ships a worked definition to
+    // show it. Each definition the guide ships must render on its own through
+    // the part-scoped command, resolving the project's default palette.
+    let guide =
+        fs::read_to_string(workspace_root().join("skills/vectr/references/authoring-guide.md"))
+            .expect("the authoring guide");
+    let blocks = fenced_json_blocks(&guide);
+    let definitions = definition_blocks(&blocks);
+    assert!(
+        !definitions.is_empty(),
+        "the guide ships a reusable definition"
+    );
+
+    let scenes = worked_scenes(&blocks);
+    let default = scenes.first().expect("a worked scene to name the default");
+
+    for definition in definitions {
+        let id = definition["id"].as_str().expect("a definition identifier");
+        let dir = TempDir::new("skill-definition");
+        dir.write(
+            "vectr.project.json",
+            &format!(
+                r#"{{"defaultSceneId":"{}","defaultPaletteId":"brand"}}"#,
+                default["id"].as_str().expect("a default scene identifier")
+            ),
+        );
+        dir.write("palettes/brand.json", &palette_block(&blocks).to_string());
+        dir.write("strokes/hairline.json", &stroke_block(&blocks).to_string());
+        write_scene(&dir, default);
+        dir.write(&format!("definitions/{id}.json"), &definition.to_string());
+
+        let out = dir.path().join(format!("dist/{id}.svg"));
+        let render = run_vectr(
+            dir.path(),
+            &[
+                "render",
+                id,
+                "--format",
+                "svg",
+                "--out",
+                export_svg_arg(&out),
+            ],
+        );
+        assert_eq!(
+            code(&render),
+            0,
+            "the definition `{id}` renders on its own:\n{}",
+            stderr(&render)
+        );
+        let svg = fs::read_to_string(&out).expect("the part preview was written");
+        assert!(
+            svg.contains("<svg") && svg.contains("</svg>"),
+            "the part preview is an SVG: {svg}"
+        );
+    }
 }
 
 #[test]
@@ -434,6 +546,7 @@ fn the_scaffolded_authoring_guide_teaches_the_workflow_and_its_example_works() {
         "scaffold-example",
         palette_block(&blocks),
         None,
+        &definition_blocks(&blocks),
         scene_block(&blocks),
     );
 }

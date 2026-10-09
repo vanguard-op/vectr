@@ -181,6 +181,32 @@ def check_static(skill_dir: Path) -> list[str]:
         f"guide carries {len(blocks)} json examples, {len(scenes)} worked scenes, "
         f"and {len(definitions)} definitions"
     )
+
+    # The shipped examples are one consistent project: element ids and definition
+    # ids share one namespace across the whole project (FEAT-001, FEAT-030), so a
+    # reader can drop the guide's scenes and definitions into one project with no
+    # collision. Each example validates alone, so a collision is only visible
+    # across them; check it here and fail rather than ship examples that cannot
+    # coexist.
+    seen: dict[str, str] = {}
+    for kind, documents in (("scene", scenes), ("definition", definitions)):
+        for document in documents:
+            owner = f"{kind} `{document['id']}`"
+            # A definition's own id shares the namespace; a scene's id does not.
+            identifiers = [document["id"]] if kind == "definition" else []
+            identifiers += [
+                element["id"]
+                for element in document["elements"]
+                if isinstance(element, dict) and "id" in element
+            ]
+            for identifier in identifiers:
+                if identifier in seen:
+                    raise CheckError(
+                        f"identifier `{identifier}` is used by {seen[identifier]} and "
+                        f"{owner}; the shipped examples are not one consistent project"
+                    )
+                seen[identifier] = owner
+    notes.append(f"the shipped examples share one namespace ({len(seen)} unique identifiers)")
     return notes, palette, stroke, scenes, definitions
 
 
@@ -208,13 +234,18 @@ def check_toolchain(
         (project / "definitions").mkdir()
         (project / "scenes").mkdir()
         (project / "dist").mkdir()
-        # A definition preview resolves the project's palette through the default
-        # scene, so the config names the first worked scene as the default
-        # (FEAT-030, FEAT-031).
+        # The examples are one project: it names the guide's palette as its
+        # default so a definition rendered in isolation resolves its tokens
+        # (FEAT-030, FEAT-031), and the first worked scene as the default scene.
         (project / "vectr.project.json").write_text(
-            json.dumps({"defaultSceneId": scenes[0]["id"]})
+            json.dumps(
+                {
+                    "defaultSceneId": scenes[0]["id"],
+                    "defaultPaletteId": palette["id"],
+                }
+            )
         )
-        (project / "palettes/brand.json").write_text(json.dumps(palette))
+        (project / f"palettes/{palette['id']}.json").write_text(json.dumps(palette))
         (project / "strokes/hairline.json").write_text(json.dumps(stroke))
         for definition in definitions:
             (project / f"definitions/{definition['id']}.json").write_text(json.dumps(definition))
