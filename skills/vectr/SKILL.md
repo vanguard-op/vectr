@@ -12,7 +12,7 @@ description: >
   it to wire the Vectr tools into an agent. Do not use it for photographic or
   bitmap image generation, for hand-writing raw SVG or HTML/CSS, or for graphics
   in another tool's format.
-version: 0.1.0
+version: 0.1.0-pre.1
 license: MIT OR Apache-2.0
 compatibility: Requires the Vectr toolchain — the `vectr` CLI or the `vectr-mcp` server — available to the agent.
 ---
@@ -96,9 +96,9 @@ output. The guide lists the common findings and their fixes.
 
 ## Version compatibility
 
-This skill targets Vectr `0.1.0` and scene `formatVersion` `0.2`. Before
+This skill targets Vectr `0.1.0-pre.1` and scene `formatVersion` `0.2`. Before
 authoring, compare the installed tool's version with the skill's: run
-`vectr --version` (which prints `vectr 0.1.0`), or read `serverInfo.version` from
+`vectr --version` (which prints `vectr 0.1.0-pre.1`), or read `serverInfo.version` from
 the MCP `initialize` response. If they differ, report the mismatch and name both
 versions instead of authoring against a tool the skill was not written for. If
 `vectr schema` reports `E_SCHEMA_VERSION`, the published contract and the

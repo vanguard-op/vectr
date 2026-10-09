@@ -3,7 +3,7 @@
 # digest.
 #
 # Usage: scripts/package-skill.sh [out-dir] [version]
-#   scripts/package-skill.sh dist 0.1.0
+#   scripts/package-skill.sh dist 0.1.0-pre.1
 #
 # The skill (SKILL.md plus its references, assets and evals) is how a coding
 # agent learns to author scenes (FEAT-020, architecture.md, "Agent Skill &
