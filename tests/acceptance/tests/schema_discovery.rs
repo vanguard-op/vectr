@@ -155,7 +155,6 @@ fn a_minimal_scene_authored_from_the_contract_alone_validates() {
     }
     for field in [
         "id",
-        "sceneId",
         "order",
         "kind",
         "geometry",

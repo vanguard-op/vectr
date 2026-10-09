@@ -14,8 +14,10 @@ mod version;
 pub use color::{is_color, validate_color, INVALID_COLOR};
 pub use diagnostic::{Diagnostic, DiagnosticCode, Diagnostics, Location, Severity};
 pub use model::{
-    Axis, BooleanOperation, Canvas, Constraint, ConstraintKind, Element, ElementKind, Geometry,
-    Paint, PaintKind, ProjectionAxis, Scene, Stroke, TextAlign, Transform,
+    Axis, Binding, BindingValue, BoolValue, BooleanOperation, Canvas, Constraint, ConstraintKind,
+    Definition, Element, ElementKind, Geometry, NumberValue, Origin, Paint, PaintKind, PaintValue,
+    ParamRef, Parameter, ParameterType, ParameterValue, ProjectionAxis, Scene, StringValue, Stroke,
+    TextAlign, Transform,
 };
 pub use version::{
     is_supported, is_supported_version, parse_version, supported_range, CURRENT_FORMAT_VERSION,
@@ -60,6 +62,408 @@ pub fn parse(source: &str) -> Result<Scene, Diagnostics> {
     Ok(scene)
 }
 
+/// Reads a reusable definition from a JSON document (C-002, FEAT-030).
+///
+/// On success the returned [`Definition`] is structurally valid and passes
+/// [`validate_definition`]; parsing refuses rather than returning one carrying a
+/// duplicate identifier or an unsupported shape (NFR-011).
+pub fn parse_definition(source: &str) -> Result<Definition, Diagnostics> {
+    ensure_within_size(source.len())?;
+
+    let value: serde_json::Value = serde_json::from_str(source)
+        .map_err(|error| diagnostics_from_serde(DiagnosticCode::PARSE, &error))?;
+    if !value.is_object() {
+        return Err(Diagnostics::from(Diagnostic::error(
+            DiagnosticCode::PARSE,
+            "not a definition document: the top level must be a JSON object",
+        )));
+    }
+
+    let definition: Definition = serde_json::from_str(source)
+        .map_err(|error| diagnostics_from_serde(DiagnosticCode::SCHEMA, &error))?;
+
+    let findings = validate_definition(&definition);
+    if findings.has_errors() {
+        return Err(findings);
+    }
+    Ok(definition)
+}
+
+/// Checks a parsed definition against the language contract (C-002, FEAT-030).
+///
+/// Returns every finding, errors and warnings alike, in a deterministic order.
+/// The definition's element tree is validated with the same structural rules a
+/// scene's is; a parameter reference is checked against the declared parameters
+/// and the field it occupies (FEAT-018).
+pub fn validate_definition(definition: &Definition) -> Diagnostics {
+    let mut diagnostics = Diagnostics::new();
+
+    validate_name(
+        &mut diagnostics,
+        &definition.name,
+        "/name",
+        "definition name",
+    );
+    if definition.id.is_empty() {
+        diagnostics.push(
+            Diagnostic::error(DiagnosticCode::SCHEMA, "`id` must not be empty").at_path("/id"),
+        );
+    }
+
+    let mut seen: HashSet<&str> = HashSet::with_capacity(definition.parameters.len());
+    for (index, parameter) in definition.parameters.iter().enumerate() {
+        let base = format!("/parameters/{index}");
+        if parameter.name.is_empty() {
+            diagnostics.push(
+                Diagnostic::error(DiagnosticCode::SCHEMA, "a parameter name must not be empty")
+                    .at_path(format!("{base}/name")),
+            );
+        }
+        if !seen.insert(parameter.name.as_str()) {
+            diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::DUPLICATE_ID,
+                    format!("duplicate parameter name `{}`", parameter.name),
+                )
+                .at_path(format!("{base}/name")),
+            );
+        }
+        if let Some(default) = &parameter.default {
+            if !parameter_type_matches(parameter.value_type, default) {
+                diagnostics.push(
+                    Diagnostic::error(
+                        DiagnosticCode::SCHEMA,
+                        format!(
+                            "parameter `{}` has a default that is not a {}",
+                            parameter.name,
+                            parameter.value_type.as_str()
+                        ),
+                    )
+                    .at_path(format!("{base}/default")),
+                );
+            }
+        }
+    }
+
+    if !definition.origin.x.is_finite() || !definition.origin.y.is_finite() {
+        diagnostics.push(
+            Diagnostic::error(DiagnosticCode::SCHEMA, "`origin` must be finite").at_path("/origin"),
+        );
+    }
+
+    // Each element must name this definition, and each parameter reference must
+    // resolve to a declared parameter of the matching type.
+    for (index, element) in definition.elements.iter().enumerate() {
+        let base = format!("/elements/{index}");
+        if element.definition_id.as_deref() != Some(definition.id.as_str()) {
+            diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::SCHEMA,
+                    format!(
+                        "element `{}` belongs to definition `{}`, not `{}`",
+                        element.id,
+                        element.definition_id.as_deref().unwrap_or("<none>"),
+                        definition.id
+                    ),
+                )
+                .with_location(Location::element_at(
+                    element.id.clone(),
+                    format!("{base}/definitionId"),
+                )),
+            );
+        }
+        validate_element_params(&mut diagnostics, definition, element, &base);
+    }
+
+    // The definition's element tree is checked with the same structural rules a
+    // scene's is; a parameter reference is a well-formed value whose binding is
+    // checked by expansion (FEAT-018, FEAT-030).
+    validate_elements(&mut diagnostics, &definition.elements);
+    validate_element_identity(&mut diagnostics, &definition.elements);
+
+    diagnostics
+}
+
+/// Whether a literal default matches its parameter's declared type.
+fn parameter_type_matches(value_type: ParameterType, value: &ParameterValue) -> bool {
+    matches!(
+        (value_type, value),
+        (ParameterType::Number, ParameterValue::Number(_))
+            | (ParameterType::String, ParameterValue::Text(_))
+            | (ParameterType::Token, ParameterValue::Text(_))
+            | (ParameterType::Boolean, ParameterValue::Boolean(_))
+    )
+}
+
+/// Checks every parameter reference a definition element carries (FEAT-030).
+///
+/// A reference names a parameter the definition must declare, and its type must
+/// match the field it occupies; a mismatch is reported at the reference's
+/// location (FEAT-018, FEAT-030).
+fn validate_element_params(
+    diagnostics: &mut Diagnostics,
+    definition: &Definition,
+    element: &Element,
+    base: &str,
+) {
+    let geometry = &element.geometry;
+    let numeric_geometry = [
+        ("x", geometry.x.as_ref()),
+        ("y", geometry.y.as_ref()),
+        ("width", geometry.width.as_ref()),
+        ("height", geometry.height.as_ref()),
+        ("rx", geometry.rx.as_ref()),
+        ("ry", geometry.ry.as_ref()),
+        ("fontSize", geometry.font_size.as_ref()),
+        ("lineHeight", geometry.line_height.as_ref()),
+        ("letterSpacing", geometry.letter_spacing.as_ref()),
+        ("count", geometry.count.as_ref()),
+        ("spacing", geometry.spacing.as_ref()),
+        ("distance", geometry.distance.as_ref()),
+    ];
+    for (field, value) in numeric_geometry {
+        if let Some(value) = value {
+            check_param(
+                diagnostics,
+                definition,
+                element,
+                value.param(),
+                ParameterType::Number,
+                &format!("{base}/geometry/{field}"),
+            );
+        }
+    }
+    for (field, value) in [
+        ("pathData", geometry.path_data.as_ref()),
+        ("text", geometry.text.as_ref()),
+    ] {
+        if let Some(value) = value {
+            check_param(
+                diagnostics,
+                definition,
+                element,
+                value.param(),
+                ParameterType::String,
+                &format!("{base}/geometry/{field}"),
+            );
+        }
+    }
+
+    let transform = &element.transform;
+    let numeric_transform = [
+        ("translateX", &transform.translate_x),
+        ("translateY", &transform.translate_y),
+        ("rotate", &transform.rotate),
+        ("scaleX", &transform.scale_x),
+        ("scaleY", &transform.scale_y),
+    ];
+    for (field, value) in numeric_transform {
+        check_param(
+            diagnostics,
+            definition,
+            element,
+            value.param(),
+            ParameterType::Number,
+            &format!("{base}/transform/{field}"),
+        );
+    }
+    for (field, value) in [
+        ("skewX", transform.skew_x.as_ref()),
+        ("skewY", transform.skew_y.as_ref()),
+    ] {
+        if let Some(value) = value {
+            check_param(
+                diagnostics,
+                definition,
+                element,
+                value.param(),
+                ParameterType::Number,
+                &format!("{base}/transform/{field}"),
+            );
+        }
+    }
+
+    check_param(
+        diagnostics,
+        definition,
+        element,
+        element.opacity.param(),
+        ParameterType::Number,
+        &format!("{base}/opacity"),
+    );
+    check_param(
+        diagnostics,
+        definition,
+        element,
+        element.visible.param(),
+        ParameterType::Boolean,
+        &format!("{base}/visible"),
+    );
+
+    if let Some(fill) = &element.fill {
+        check_param(
+            diagnostics,
+            definition,
+            element,
+            fill.param(),
+            ParameterType::Token,
+            &format!("{base}/fill"),
+        );
+    }
+    if let Some(stroke) = &element.stroke {
+        check_param(
+            diagnostics,
+            definition,
+            element,
+            stroke.paint.param(),
+            ParameterType::Token,
+            &format!("{base}/stroke/paint"),
+        );
+    }
+
+    // A binding that forwards a parameter must name one this definition
+    // declares; the forwarded type is checked against the nested definition's
+    // parameter when the placement resolves.
+    if let Some(bindings) = &element.bindings {
+        for (index, binding) in bindings.iter().enumerate() {
+            let BindingValue::Param(reference) = &binding.value else {
+                continue;
+            };
+            if definition.parameter(&reference.param).is_none() {
+                diagnostics.push(
+                    Diagnostic::error(
+                        DiagnosticCode::SCHEMA,
+                        format!(
+                            "element `{}` forwards parameter `{}`, which definition `{}` does not declare",
+                            element.id, reference.param, definition.id
+                        ),
+                    )
+                    .with_location(Location::element_at(
+                        element.id.clone(),
+                        format!("{base}/bindings/{index}/value"),
+                    )),
+                );
+            }
+        }
+    }
+}
+
+/// Reports a parameter reference that is absent from the definition or whose
+/// declared type does not match the field (FEAT-030).
+fn check_param(
+    diagnostics: &mut Diagnostics,
+    definition: &Definition,
+    element: &Element,
+    reference: Option<&str>,
+    expected: ParameterType,
+    path: &str,
+) {
+    let Some(name) = reference else {
+        return;
+    };
+    match definition.parameter(name) {
+        None => diagnostics.push(
+            Diagnostic::error(
+                DiagnosticCode::SCHEMA,
+                format!(
+                    "element `{}` references parameter `{name}`, which definition `{}` does not declare",
+                    element.id, definition.id
+                ),
+            )
+            .with_location(Location::element_at(element.id.clone(), path)),
+        ),
+        Some(parameter) if parameter.value_type != expected => diagnostics.push(
+            Diagnostic::error(
+                DiagnosticCode::SCHEMA,
+                format!(
+                    "element `{}` references `{name}` (a {}) in a field that needs a {}",
+                    element.id,
+                    parameter.value_type.as_str(),
+                    expected.as_str()
+                ),
+            )
+            .with_location(Location::element_at(element.id.clone(), path)),
+        ),
+        Some(_) => {}
+    }
+}
+
+/// Checks that an element names exactly one owner, and that the instance-only
+/// fields appear only on an instance (C-001, FEAT-030).
+pub(crate) fn validate_element_identity(diagnostics: &mut Diagnostics, elements: &[Element]) {
+    for (index, element) in elements.iter().enumerate() {
+        let base = format!("/elements/{index}");
+        match (&element.scene_id, &element.definition_id) {
+            (Some(_), Some(_)) => diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::SCHEMA,
+                    format!(
+                        "element `{}` sets both sceneId and definitionId; exactly one is required",
+                        element.id
+                    ),
+                )
+                .with_location(Location::element_at(element.id.clone(), base.clone())),
+            ),
+            (None, None) => diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::SCHEMA,
+                    format!(
+                        "element `{}` sets neither sceneId nor definitionId; exactly one is required",
+                        element.id
+                    ),
+                )
+                .with_location(Location::element_at(element.id.clone(), base.clone())),
+            ),
+            _ => {}
+        }
+
+        if element.kind == ElementKind::Instance {
+            if element.definition_ref.as_deref().is_none_or(str::is_empty) {
+                diagnostics.push(
+                    Diagnostic::error(
+                        DiagnosticCode::SCHEMA,
+                        format!("instance `{}` requires a definitionRef", element.id),
+                    )
+                    .with_location(Location::element_at(
+                        element.id.clone(),
+                        format!("{base}/definitionRef"),
+                    )),
+                );
+            }
+        } else if element.definition_ref.is_some() {
+            diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::SCHEMA,
+                    format!(
+                        "element `{}` declares definitionRef but is not an instance",
+                        element.id
+                    ),
+                )
+                .with_location(Location::element_at(
+                    element.id.clone(),
+                    format!("{base}/definitionRef"),
+                )),
+            );
+        }
+
+        if element.kind != ElementKind::Instance && element.bindings.is_some() {
+            diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::SCHEMA,
+                    format!(
+                        "element `{}` declares bindings but is not an instance",
+                        element.id
+                    ),
+                )
+                .with_location(Location::element_at(
+                    element.id.clone(),
+                    format!("{base}/bindings"),
+                )),
+            );
+        }
+    }
+}
+
 /// Refuses a document longer than [`MAX_SCENE_BYTES`].
 fn ensure_within_size(byte_len: usize) -> Result<(), Diagnostics> {
     if byte_len > MAX_SCENE_BYTES {
@@ -100,10 +504,112 @@ pub fn validate(scene: &Scene) -> Diagnostics {
         "/canvas/background",
     );
 
-    validate_elements(&mut diagnostics, scene);
+    validate_elements(&mut diagnostics, &scene.elements);
+    validate_element_identity(&mut diagnostics, &scene.elements);
+    validate_scene_param_refs(&mut diagnostics, scene);
+    validate_scene_ownership(&mut diagnostics, scene);
     validate_constraints(&mut diagnostics, scene);
 
     diagnostics
+}
+
+/// A scene declares no parameters, so a parameter reference in a scene element
+/// is a located error (C-001, FEAT-018).
+fn validate_scene_param_refs(diagnostics: &mut Diagnostics, scene: &Scene) {
+    for (index, element) in scene.elements.iter().enumerate() {
+        let base = format!("/elements/{index}");
+        let geometry = &element.geometry;
+        let numeric = [
+            ("x", geometry.x.as_ref()),
+            ("y", geometry.y.as_ref()),
+            ("width", geometry.width.as_ref()),
+            ("height", geometry.height.as_ref()),
+            ("rx", geometry.rx.as_ref()),
+            ("ry", geometry.ry.as_ref()),
+            ("fontSize", geometry.font_size.as_ref()),
+            ("lineHeight", geometry.line_height.as_ref()),
+            ("letterSpacing", geometry.letter_spacing.as_ref()),
+            ("count", geometry.count.as_ref()),
+            ("spacing", geometry.spacing.as_ref()),
+            ("distance", geometry.distance.as_ref()),
+        ];
+        for (field, value) in numeric {
+            if value.and_then(NumberValue::param).is_some() {
+                reject_scene_param(diagnostics, element, &format!("{base}/geometry/{field}"));
+            }
+        }
+        for (field, value) in [
+            ("pathData", geometry.path_data.as_ref()),
+            ("text", geometry.text.as_ref()),
+        ] {
+            if value.and_then(StringValue::param).is_some() {
+                reject_scene_param(diagnostics, element, &format!("{base}/geometry/{field}"));
+            }
+        }
+        let transform = &element.transform;
+        for (field, value) in [
+            ("translateX", Some(&transform.translate_x)),
+            ("translateY", Some(&transform.translate_y)),
+            ("rotate", Some(&transform.rotate)),
+            ("scaleX", Some(&transform.scale_x)),
+            ("scaleY", Some(&transform.scale_y)),
+            ("skewX", transform.skew_x.as_ref()),
+            ("skewY", transform.skew_y.as_ref()),
+        ] {
+            if value.and_then(NumberValue::param).is_some() {
+                reject_scene_param(diagnostics, element, &format!("{base}/transform/{field}"));
+            }
+        }
+        if element.opacity.param().is_some() {
+            reject_scene_param(diagnostics, element, &format!("{base}/opacity"));
+        }
+        if element.visible.param().is_some() {
+            reject_scene_param(diagnostics, element, &format!("{base}/visible"));
+        }
+        if element.fill.as_ref().and_then(PaintValue::param).is_some() {
+            reject_scene_param(diagnostics, element, &format!("{base}/fill"));
+        }
+        if let Some(stroke) = &element.stroke {
+            if stroke.paint.param().is_some() {
+                reject_scene_param(diagnostics, element, &format!("{base}/stroke/paint"));
+            }
+        }
+    }
+}
+
+/// Reports a parameter reference in a scene element at its location.
+fn reject_scene_param(diagnostics: &mut Diagnostics, element: &Element, path: &str) {
+    diagnostics.push(
+        Diagnostic::error(
+            DiagnosticCode::SCHEMA,
+            format!(
+                "element `{}` holds a parameter reference in a scene; a scene declares no parameters",
+                element.id
+            ),
+        )
+        .with_location(Location::element_at(element.id.clone(), path.to_string())),
+    );
+}
+
+/// A scene element must belong to the scene, not to a definition (C-001).
+fn validate_scene_ownership(diagnostics: &mut Diagnostics, scene: &Scene) {
+    for (index, element) in scene.elements.iter().enumerate() {
+        if element.definition_id.is_some() {
+            diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::SCHEMA,
+                    format!(
+                        "element `{}` belongs to a definition and cannot appear in a scene",
+                        element.id
+                    ),
+                )
+                .with_location(Location::element_at(
+                    element.id.clone(),
+                    format!("/elements/{index}/definitionId"),
+                )),
+            );
+        }
+    }
 }
 
 fn validate_format_version(diagnostics: &mut Diagnostics, scene: &Scene) {
@@ -211,15 +717,15 @@ fn validate_non_negative_number(
     }
 }
 
-fn validate_elements(diagnostics: &mut Diagnostics, scene: &Scene) {
-    let mut seen: HashSet<&str> = HashSet::with_capacity(scene.elements.len());
+fn validate_elements(diagnostics: &mut Diagnostics, elements: &[Element]) {
+    let mut seen: HashSet<&str> = HashSet::with_capacity(elements.len());
     let mut index_of: std::collections::HashMap<&str, usize> =
-        std::collections::HashMap::with_capacity(scene.elements.len());
-    for (index, element) in scene.elements.iter().enumerate() {
+        std::collections::HashMap::with_capacity(elements.len());
+    for (index, element) in elements.iter().enumerate() {
         index_of.insert(element.id.as_str(), index);
     }
 
-    for (index, element) in scene.elements.iter().enumerate() {
+    for (index, element) in elements.iter().enumerate() {
         let base = format!("/elements/{index}");
 
         if !seen.insert(element.id.as_str()) {
@@ -242,17 +748,19 @@ fn validate_elements(diagnostics: &mut Diagnostics, scene: &Scene) {
             );
         }
 
-        if !element.opacity.is_finite() || !(0.0..=1.0).contains(&element.opacity) {
-            diagnostics.push(
-                Diagnostic::error(DiagnosticCode::SCHEMA, "`opacity` must be between 0 and 1")
-                    .at_path(format!("{base}/opacity")),
-            );
+        if let Some(opacity) = element.opacity.literal() {
+            if !opacity.is_finite() || !(0.0..=1.0).contains(&opacity) {
+                diagnostics.push(
+                    Diagnostic::error(DiagnosticCode::SCHEMA, "`opacity` must be between 0 and 1")
+                        .at_path(format!("{base}/opacity")),
+                );
+            }
         }
 
         validate_geometry(diagnostics, &element.geometry, &base);
         validate_transform(diagnostics, &element.transform, &base);
         validate_text(diagnostics, element, &base);
-        validate_text_operand(diagnostics, scene, element, &base, &index_of);
+        validate_text_operand(diagnostics, elements, element, &base, &index_of);
     }
 }
 
@@ -260,7 +768,15 @@ fn validate_elements(diagnostics: &mut Diagnostics, scene: &Scene) {
 /// belongs only to a text element (FEAT-002, FEAT-024).
 fn validate_text(diagnostics: &mut Diagnostics, element: &Element, base: &str) {
     if element.kind == ElementKind::Text {
-        if element.geometry.text.as_deref().is_none_or(str::is_empty) {
+        // A parameter reference is a well-formed value whose binding is checked
+        // separately; only a literal must be a non-empty string and a positive
+        // size (FEAT-030).
+        let text_ok = match &element.geometry.text {
+            None => false,
+            Some(StringValue::Literal(text)) => !text.is_empty(),
+            Some(StringValue::Param(_)) => true,
+        };
+        if !text_ok {
             diagnostics.push(
                 Diagnostic::error(
                     DiagnosticCode::SCHEMA,
@@ -272,9 +788,13 @@ fn validate_text(diagnostics: &mut Diagnostics, element: &Element, base: &str) {
                 )),
             );
         }
-        match element.geometry.font_size {
-            Some(size) if size.is_finite() && size > 0.0 => {}
-            _ => diagnostics.push(
+        let size_ok = match &element.geometry.font_size {
+            None => false,
+            Some(NumberValue::Literal(size)) => size.is_finite() && *size > 0.0,
+            Some(NumberValue::Param(_)) => true,
+        };
+        if !size_ok {
+            diagnostics.push(
                 Diagnostic::error(
                     DiagnosticCode::SCHEMA,
                     format!(
@@ -286,7 +806,7 @@ fn validate_text(diagnostics: &mut Diagnostics, element: &Element, base: &str) {
                     element.id.clone(),
                     format!("{base}/geometry/fontSize"),
                 )),
-            ),
+            );
         }
     } else if element.font_id.is_some() {
         diagnostics.push(
@@ -309,7 +829,7 @@ fn validate_text(diagnostics: &mut Diagnostics, element: &Element, base: &str) {
 /// repeat, or alongPath element (FEAT-002, FEAT-011).
 fn validate_text_operand(
     diagnostics: &mut Diagnostics,
-    scene: &Scene,
+    elements: &[Element],
     element: &Element,
     base: &str,
     index_of: &std::collections::HashMap<&str, usize>,
@@ -323,7 +843,7 @@ fn validate_text_operand(
     let Some(&parent_index) = index_of.get(parent_id) else {
         return;
     };
-    let parent_kind = scene.elements[parent_index].kind;
+    let parent_kind = elements[parent_index].kind;
     if is_text_operand_kind(parent_kind) {
         diagnostics.push(
             Diagnostic::error(
@@ -355,62 +875,87 @@ fn is_text_operand_kind(kind: ElementKind) -> bool {
 }
 
 fn validate_geometry(diagnostics: &mut Diagnostics, geometry: &Geometry, base: &str) {
-    validate_optional_number(diagnostics, geometry.x, &format!("{base}/geometry/x"), "x");
-    validate_optional_number(diagnostics, geometry.y, &format!("{base}/geometry/y"), "y");
+    // Accessors return only literals, so a parameter reference is left to the
+    // parameter check (FEAT-030).
+    validate_optional_number(
+        diagnostics,
+        geometry.x(),
+        &format!("{base}/geometry/x"),
+        "x",
+    );
+    validate_optional_number(
+        diagnostics,
+        geometry.y(),
+        &format!("{base}/geometry/y"),
+        "y",
+    );
     validate_non_negative_number(
         diagnostics,
-        geometry.width,
+        geometry.width(),
         &format!("{base}/geometry/width"),
         "width",
     );
     validate_non_negative_number(
         diagnostics,
-        geometry.height,
+        geometry.height(),
         &format!("{base}/geometry/height"),
         "height",
     );
     validate_non_negative_number(
         diagnostics,
-        geometry.rx,
+        geometry.rx(),
         &format!("{base}/geometry/rx"),
         "rx",
     );
     validate_non_negative_number(
         diagnostics,
-        geometry.ry,
+        geometry.ry(),
         &format!("{base}/geometry/ry"),
         "ry",
     );
     validate_optional_number(
         diagnostics,
-        geometry.spacing,
+        geometry.spacing(),
         &format!("{base}/geometry/spacing"),
         "spacing",
     );
     validate_optional_number(
         diagnostics,
-        geometry.distance,
+        geometry.distance(),
         &format!("{base}/geometry/distance"),
         "distance",
     );
     validate_non_negative_number(
         diagnostics,
-        geometry.font_size,
+        geometry.font_size(),
         &format!("{base}/geometry/fontSize"),
         "fontSize",
     );
     validate_non_negative_number(
         diagnostics,
-        geometry.line_height,
+        geometry.line_height(),
         &format!("{base}/geometry/lineHeight"),
         "lineHeight",
     );
     validate_optional_number(
         diagnostics,
-        geometry.letter_spacing,
+        geometry.letter_spacing(),
         &format!("{base}/geometry/letterSpacing"),
         "letterSpacing",
     );
+
+    // A repeat's count is a whole number (schema.md, "Element").
+    if let Some(count) = geometry.count.as_ref().and_then(NumberValue::literal) {
+        if !count.is_finite() || count < 0.0 || count.fract() != 0.0 {
+            diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::SCHEMA,
+                    "`count` must be a whole number zero or greater",
+                )
+                .at_path(format!("{base}/geometry/count")),
+            );
+        }
+    }
 
     if let Some(points) = &geometry.points {
         for (point_index, point) in points.iter().enumerate() {
@@ -430,12 +975,14 @@ fn validate_geometry(diagnostics: &mut Diagnostics, geometry: &Geometry, base: &
 }
 
 fn validate_transform(diagnostics: &mut Diagnostics, transform: &Transform, base: &str) {
+    // Accessors return only literals, so a parameter reference is left to the
+    // parameter check (FEAT-030).
     let fields = [
-        ("translateX", transform.translate_x),
-        ("translateY", transform.translate_y),
-        ("rotate", transform.rotate),
-        ("scaleX", transform.scale_x),
-        ("scaleY", transform.scale_y),
+        ("translateX", transform.translate_x()),
+        ("translateY", transform.translate_y()),
+        ("rotate", transform.rotate()),
+        ("scaleX", transform.scale_x()),
+        ("scaleY", transform.scale_y()),
     ];
     for (field, value) in fields {
         validate_optional_number(
@@ -447,13 +994,13 @@ fn validate_transform(diagnostics: &mut Diagnostics, transform: &Transform, base
     }
     validate_optional_number(
         diagnostics,
-        transform.skew_x,
+        transform.skew_x(),
         &format!("{base}/transform/skewX"),
         "skewX",
     );
     validate_optional_number(
         diagnostics,
-        transform.skew_y,
+        transform.skew_y(),
         &format!("{base}/transform/skewY"),
         "skewY",
     );
@@ -636,8 +1183,8 @@ mod tests {
             .as_ref()
             .expect("a stroke");
         assert_eq!(stroke.profile_id, "stroke-1");
-        assert_eq!(stroke.paint.kind, PaintKind::Token);
-        assert_eq!(stroke.paint.reference, "accent");
+        assert_eq!(stroke.paint.literal().unwrap().kind, PaintKind::Token);
+        assert_eq!(stroke.paint.literal().unwrap().reference, "accent");
         let text = scene.to_json_string().expect("serializable");
         assert!(
             text.contains(
@@ -692,7 +1239,7 @@ mod tests {
             r#"{{"id":"s","projectId":"p","name":"Scene","formatVersion":"{SHIPPED_VERSION}","canvas":{{"width":100,"height":100,"background":"transparent"}},"elements":[{{"id":"o1","sceneId":"s","order":0,"kind":"offset","geometry":{{"distance":4.5}},"transform":{{"translateX":0,"translateY":0,"rotate":0,"scaleX":1,"scaleY":1}},"opacity":1,"visible":true}},{{"id":"p1","sceneId":"s","order":1,"kind":"projection","geometry":{{"axis":"isometric"}},"transform":{{"translateX":0,"translateY":0,"rotate":0,"scaleX":1,"scaleY":1}},"opacity":1,"visible":true}}]}}"#
         );
         let scene = parse(&source).expect("the revised geometry parses");
-        assert_eq!(scene.element("o1").unwrap().geometry.distance, Some(4.5));
+        assert_eq!(scene.element("o1").unwrap().geometry.distance(), Some(4.5));
         assert_eq!(
             scene.element("p1").unwrap().geometry.axis,
             Some(ProjectionAxis::Isometric)
@@ -710,13 +1257,13 @@ mod tests {
             r#"{{"id":"s","projectId":"p","name":"Scene","formatVersion":"{SHIPPED_VERSION}","canvas":{{"width":1,"height":1,"background":"transparent"}},"elements":[{{"id":"o1","sceneId":"s","order":0,"kind":"offset","geometry":{{"distance":-2}},"transform":{{"translateX":0,"translateY":0,"rotate":0,"scaleX":1,"scaleY":1}},"opacity":1,"visible":true}}]}}"#
         );
         let scene = parse(&source).expect("an inward offset is valid");
-        assert_eq!(scene.element("o1").unwrap().geometry.distance, Some(-2.0));
+        assert_eq!(scene.element("o1").unwrap().geometry.distance(), Some(-2.0));
     }
 
     #[test]
     fn a_non_finite_offset_distance_is_rejected() {
         let mut scene = parse(&full_scene()).expect("valid scene");
-        scene.elements[0].geometry.distance = Some(f64::INFINITY);
+        scene.elements[0].geometry.distance = Some(NumberValue::Literal(f64::INFINITY));
 
         let diagnostics = validate(&scene);
         let error = diagnostics
@@ -974,12 +1521,12 @@ mod tests {
         let scene = parse(&source).expect("a valid text scene");
         let element = scene.element("t1").expect("the text element");
         assert_eq!(element.kind, ElementKind::Text);
-        assert_eq!(element.geometry.text.as_deref(), Some("Hello"));
-        assert_eq!(element.geometry.font_size, Some(24.0));
+        assert_eq!(element.geometry.text(), Some("Hello"));
+        assert_eq!(element.geometry.font_size(), Some(24.0));
         assert_eq!(element.geometry.align, Some(TextAlign::Center));
-        assert_eq!(element.geometry.line_height, Some(30.0));
-        assert_eq!(element.geometry.letter_spacing, Some(1.5));
-        assert_eq!(element.geometry.width, Some(100.0));
+        assert_eq!(element.geometry.line_height(), Some(30.0));
+        assert_eq!(element.geometry.letter_spacing(), Some(1.5));
+        assert_eq!(element.geometry.width(), Some(100.0));
         assert_eq!(element.font_id.as_deref(), Some("font-1"));
 
         let text = scene.to_json_string().expect("serializable");
@@ -1062,5 +1609,86 @@ mod tests {
             assert_eq!(align.as_str(), name);
         }
         assert_eq!(TextAlign::from_name("middle"), None);
+    }
+
+    #[test]
+    fn a_scene_element_holding_a_parameter_reference_is_refused() {
+        let source = format!(
+            r#"{{"id":"s","projectId":"p","name":"Scene","formatVersion":"{SHIPPED_VERSION}","canvas":{{"width":1,"height":1,"background":"transparent"}},"elements":[{{"id":"r1","sceneId":"s","order":0,"kind":"rect","geometry":{{"width":{{"param":"w"}},"height":1}},"transform":{{"translateX":0,"translateY":0,"rotate":0,"scaleX":1,"scaleY":1}},"opacity":1,"visible":true}}]}}"#
+        );
+        let diagnostics = parse_error(&source);
+        let error = diagnostics.errors().next().expect("an error");
+        assert_eq!(error.code, DiagnosticCode::SCHEMA);
+        assert_eq!(
+            error
+                .location
+                .as_ref()
+                .and_then(|location| location.json_path.as_deref()),
+            Some("/elements/0/geometry/width")
+        );
+    }
+
+    #[test]
+    fn a_definition_element_may_hold_a_parameter_reference() {
+        let definition = parse_definition(
+            r#"{"id":"chip","projectId":"p","name":"Chip","parameters":[{"name":"w","type":"number"}],"origin":{"x":0,"y":0},"elements":[{"id":"body","definitionId":"chip","order":0,"kind":"rect","geometry":{"width":{"param":"w"},"height":10},"transform":{"translateX":0,"translateY":0,"rotate":0,"scaleX":1,"scaleY":1},"opacity":1,"visible":true}]}"#,
+        )
+        .expect("a definition element may hold a parameter reference");
+        assert_eq!(definition.elements.len(), 1);
+        assert_eq!(
+            definition.elements[0]
+                .geometry
+                .width
+                .as_ref()
+                .and_then(NumberValue::param),
+            Some("w")
+        );
+        let text = definition.to_json_string().expect("serializable");
+        assert_eq!(parse_definition(&text).expect("round-trips"), definition);
+    }
+
+    #[test]
+    fn an_invalid_value_for_a_parameter_capable_field_names_the_value() {
+        let source = full_scene().replace("\"rotate\": 45", "\"rotate\": \"sideways\"");
+        let diagnostics = parse_error(&source);
+        let error = diagnostics.errors().next().expect("an error");
+        assert_eq!(error.code, DiagnosticCode::SCHEMA);
+        assert!(
+            error.message.contains("sideways"),
+            "names the invalid value: {}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn a_repeat_count_must_be_a_whole_number() {
+        let source = format!(
+            r#"{{"id":"s","projectId":"p","name":"Scene","formatVersion":"{SHIPPED_VERSION}","canvas":{{"width":1,"height":1,"background":"transparent"}},"elements":[{{"id":"r1","sceneId":"s","order":0,"kind":"repeat","geometry":{{"count":2.5}},"transform":{{"translateX":0,"translateY":0,"rotate":0,"scaleX":1,"scaleY":1}},"opacity":1,"visible":true}}]}}"#
+        );
+        let diagnostics = parse_error(&source);
+        let error = diagnostics.errors().next().expect("an error");
+        assert_eq!(error.code, DiagnosticCode::SCHEMA);
+        assert_eq!(
+            error
+                .location
+                .as_ref()
+                .and_then(|location| location.json_path.as_deref()),
+            Some("/elements/0/geometry/count")
+        );
+    }
+
+    #[test]
+    fn an_overrides_field_is_an_unknown_property() {
+        // Parameters are the only use-adjustment mechanism, so the removed
+        // per-use override is not part of the element shape (D-038).
+        let source = full_scene().replace(
+            r#""opacity": 0.5"#,
+            r#""opacity": 0.5, "overrides": [{"target": "mark"}]"#,
+        );
+        let diagnostics = parse_error(&source);
+        assert_eq!(
+            diagnostics.errors().next().map(|d| d.code.clone()),
+            Some(DiagnosticCode::SCHEMA)
+        );
     }
 }

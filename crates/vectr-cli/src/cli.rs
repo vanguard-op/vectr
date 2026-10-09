@@ -30,15 +30,17 @@ use vectr_core::export::png as png_export;
 use vectr_core::export::svg as svg_export;
 use vectr_core::scene::INVALID_COLOR;
 use vectr_core::{
-    compile_with_style, export_png_reporting, export_svg_reporting, parse as parse_scene_source,
-    schema, schema_for, validate as validate_scene_model, validate_gradient_usage,
-    validate_palette_usage, Diagnostic, DiagnosticCode, Diagnostics, RasterOptions, Scene,
-    SchemaForm, SvgOptions,
+    compile_definition, compile_subtree, compile_with_style, export_png_reporting,
+    export_svg_reporting, parse as parse_scene_source, schema, schema_for,
+    validate as validate_scene_model, validate_gradient_usage, validate_palette_usage, Diagnostic,
+    DiagnosticCode, Diagnostics, RasterOptions, RenderModel, Scene, SchemaForm, SvgOptions,
 };
 
 use crate::init;
 use crate::output::write_atomic;
-use vectr_project::{project_root_from, resolve_scene, ProjectAssets, ProjectScene};
+use vectr_project::{
+    project_root_from, resolve_part, resolve_scene, ProjectAssets, ProjectScene, ResolvedPart,
+};
 
 /// The command succeeded.
 pub const EXIT_SUCCESS: i32 = 0;
@@ -60,11 +62,14 @@ Usage:
   vectr validate [<scene>] [--json]
   vectr compile [<scene>] [--out <file>] [--check]
   vectr export [<scene>] --format svg|png [--out <file>] [--width <n>] [--height <n>] [--density <n>] [--background <color|transparent>]
+  vectr render <part> [--out <file>] [--format svg|png] [--width <n>] [--height <n>] [--density <n>] [--background <color|transparent>]
   vectr schema [--type <name>] [--compact]
 
 <scene> is a scene identifier resolved among the project's scenes; the project
 is found from the working directory. Omitting it uses the project's default
-scene.";
+scene. <part> is a reusable definition's identifier, or an element subtree's
+identifier, resolved within the project; it is rendered on its own, framed to
+its own bounds.";
 
 /// One parsed command line.
 #[derive(Debug, Clone, PartialEq)]
@@ -102,6 +107,23 @@ pub enum Command {
         format: Format,
         /// Where to write the output; the default `dist/` path when absent.
         out: Option<PathBuf>,
+        /// Output width override.
+        width: Option<f64>,
+        /// Output height override.
+        height: Option<f64>,
+        /// Pixel density multiplier; PNG only.
+        density: Option<f64>,
+        /// Background override, or `transparent`.
+        background: Option<String>,
+    },
+    /// Render one part on its own: a reusable definition or an element subtree.
+    Render {
+        /// The part's identifier, resolved within the project.
+        part: String,
+        /// Where to write the preview; the default `dist/` path when absent.
+        out: Option<PathBuf>,
+        /// The output format.
+        format: Format,
         /// Output width override.
         width: Option<f64>,
         /// Output height override.
@@ -178,6 +200,7 @@ pub fn help_text() -> String {
          \x20 validate  Check a scene against the language contract.\n\
          \x20 compile   Compile a scene into its render model.\n\
          \x20 export    Export a scene as SVG or PNG.\n\
+         \x20 render    Render one part on its own, framed to its bounds.\n\
          \x20 schema    Print the language contract.\n\n\
          Exit codes:\n\
          \x20 0 success   1 invalid scene   2 usage or unreadable input\n\
@@ -212,8 +235,9 @@ pub fn parse(args: Vec<OsString>) -> Result<Command, String> {
         "validate" => parse_validate(rest),
         "compile" => parse_compile(rest),
         "export" => parse_export(rest),
+        "render" => parse_render(rest),
         "schema" => parse_schema(rest),
-        "render" | "inspect" => Err(format!("`{name}` is reserved for a later release")),
+        "inspect" => Err("`inspect` is reserved for a later release".to_string()),
         _ if name.starts_with('-') => Err(format!("unknown option `{name}`")),
         _ => Err(format!("unknown command `{name}`")),
     }
@@ -278,6 +302,30 @@ pub fn run_in(command: Command, cwd: &Path) -> Report {
             }
             Err(report) => report,
         },
+        Command::Render {
+            part,
+            out,
+            format,
+            width,
+            height,
+            density,
+            background,
+        } => {
+            let target = out
+                .as_deref()
+                .map(|path| absolute(cwd, path))
+                .unwrap_or_else(|| cwd.join(default_output(&part, format.extension())));
+            render_part(
+                cwd,
+                &part,
+                format,
+                &target,
+                width,
+                height,
+                density,
+                background.as_deref(),
+            )
+        }
         Command::Schema { type_name, compact } => schema_command(type_name.as_deref(), compact),
     }
 }
@@ -457,6 +505,95 @@ fn parse_export(args: Vec<OsString>) -> Result<Command, String> {
     })
 }
 
+/// Parses the `render` command: one part plus the export-style options.
+///
+/// The format is optional here, defaulting to SVG: a vector preview is always
+/// available, while PNG depends on the rasterizer (FEAT-031).
+fn parse_render(args: Vec<OsString>) -> Result<Command, String> {
+    let mut part: Option<String> = None;
+    let mut format = Format::Svg;
+    let mut out: Option<PathBuf> = None;
+    let mut width: Option<f64> = None;
+    let mut height: Option<f64> = None;
+    let mut density: Option<f64> = None;
+    let mut background: Option<String> = None;
+
+    let mut i = 0;
+    while i < args.len() {
+        let raw = args[i].clone();
+        let text = raw.to_str().map(str::to_owned);
+        match text.as_deref() {
+            None => set_part(&mut part, raw)?,
+            Some("-h") | Some("--help") => return Ok(Command::Help),
+            Some(text) => {
+                if let Some(value) = text.strip_prefix("--format=") {
+                    format = parse_format(value)?;
+                } else if let Some(value) = text.strip_prefix("--out=") {
+                    out = Some(PathBuf::from(value));
+                } else if let Some(value) = text.strip_prefix("--width=") {
+                    width = Some(parse_number(value, "width")?);
+                } else if let Some(value) = text.strip_prefix("--height=") {
+                    height = Some(parse_number(value, "height")?);
+                } else if let Some(value) = text.strip_prefix("--density=") {
+                    density = Some(parse_number(value, "density")?);
+                } else if let Some(value) = text.strip_prefix("--background=") {
+                    background = Some(value.to_string());
+                } else {
+                    match text {
+                        "--format" => {
+                            format = parse_format(
+                                &take_value(&args, &mut i, "--format")?.to_string_lossy(),
+                            )?
+                        }
+                        "--out" => out = Some(PathBuf::from(take_value(&args, &mut i, "--out")?)),
+                        "--width" => {
+                            width = Some(parse_number(
+                                &take_value(&args, &mut i, "--width")?.to_string_lossy(),
+                                "width",
+                            )?)
+                        }
+                        "--height" => {
+                            height = Some(parse_number(
+                                &take_value(&args, &mut i, "--height")?.to_string_lossy(),
+                                "height",
+                            )?)
+                        }
+                        "--density" => {
+                            density = Some(parse_number(
+                                &take_value(&args, &mut i, "--density")?.to_string_lossy(),
+                                "density",
+                            )?)
+                        }
+                        "--background" => {
+                            background = Some(
+                                take_value(&args, &mut i, "--background")?
+                                    .to_string_lossy()
+                                    .into_owned(),
+                            )
+                        }
+                        t if t.starts_with('-') && t != "-" => {
+                            return Err(format!("unknown option `{t}` for `render`"))
+                        }
+                        _ => set_part(&mut part, raw)?,
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+
+    let part = part.ok_or_else(|| "`render` needs a part identifier".to_string())?;
+    Ok(Command::Render {
+        part,
+        out,
+        format,
+        width,
+        height,
+        density,
+        background,
+    })
+}
+
 /// Parses the `schema` command's `--type` and `--compact` flags.
 fn parse_schema(args: Vec<OsString>) -> Result<Command, String> {
     let mut type_name: Option<String> = None;
@@ -529,6 +666,18 @@ fn set_scene_id(slot: &mut Option<String>, value: OsString) -> Result<(), String
     Ok(())
 }
 
+/// Records the single part identifier `render` accepts.
+fn set_part(slot: &mut Option<String>, value: OsString) -> Result<(), String> {
+    if slot.is_some() {
+        return Err("`render` accepts at most one part identifier".to_string());
+    }
+    let id = value
+        .into_string()
+        .map_err(|_| "the part identifier is not valid UTF-8".to_string())?;
+    *slot = Some(id);
+    Ok(())
+}
+
 fn parse_format(value: &str) -> Result<Format, String> {
     match value {
         "svg" => Ok(Format::Svg),
@@ -559,12 +708,20 @@ fn validate_scene(scene: &ProjectScene, json: bool) -> Report {
     // Validation is the gate a project's references pass: a palette token the
     // palette no longer defines, a stroke profile, or a font that does not
     // resolve is an error naming it, so a restyle that broke a scene is caught
-    // before anything is compiled (FEAT-005, FEAT-024).
+    // before anything is compiled (FEAT-005, FEAT-024). The checks run against
+    // the scene with its definition instances expanded, so a reference written
+    // inside a reusable part is checked like one written in the scene (FEAT-030).
     let mut findings = validate_scene_model(&parsed);
+    let expanded = assets.expanded_scene(&parsed);
+    let usage_scene = expanded.as_ref().unwrap_or(&parsed);
     if let Some(palette) = assets.palette() {
-        findings.extend(validate_palette_usage(&parsed, palette, assets.gradients()));
+        findings.extend(validate_palette_usage(
+            usage_scene,
+            palette,
+            assets.gradients(),
+        ));
     }
-    findings.extend(validate_gradient_usage(&parsed, assets.gradients()));
+    findings.extend(validate_gradient_usage(usage_scene, assets.gradients()));
     findings.extend(assets.check_references(&parsed));
 
     let code = if findings.has_errors() {
@@ -689,24 +846,170 @@ fn export_scene(
     };
     let mut warnings = diagnostics_text(&model.diagnostics);
 
-    let bytes = match format {
+    let bytes = match export_bytes(
+        &model,
+        format,
+        width,
+        height,
+        density,
+        background,
+        &mut warnings,
+    ) {
+        Ok(bytes) => bytes,
+        Err(report) => return report,
+    };
+
+    write_report(target, &bytes, &warnings)
+}
+
+/// Renders one part on its own, framed to its own bounds (FEAT-031).
+///
+/// The part is a reusable definition or an element subtree, resolved in the
+/// project's shared definition-and-element namespace. A definition is previewed
+/// against the project's default palette and default recipe, so its tokens and
+/// style resolve with no placing scene; an element subtree is previewed against
+/// the style of the scene that owns it (FEAT-005, D-039). A part identifier
+/// that resolves to nothing, or to more than one definition or element, is
+/// missing input (exit 2).
+#[allow(clippy::too_many_arguments)]
+fn render_part(
+    cwd: &Path,
+    part: &str,
+    format: Format,
+    target: &Path,
+    width: Option<f64>,
+    height: Option<f64>,
+    density: Option<f64>,
+    background: Option<&str>,
+) -> Report {
+    if format == Format::Svg && density.is_some() {
+        return Report::failure(
+            EXIT_USAGE,
+            "error: `--density` applies only to PNG output\n".to_string(),
+        );
+    }
+
+    // A background override is a colour value like any other, refused before
+    // anything is rendered so no partial output can be produced (FEAT-005).
+    if let Some(background) = background {
+        if !vectr_core::scene::is_color(background) {
+            let diagnostics = Diagnostics::from(Diagnostic::error(
+                INVALID_COLOR,
+                format!("`--background` is not a colour SVG supports: `{background}`"),
+            ));
+            return Report::failure(EXIT_USAGE, diagnostics_text(&diagnostics));
+        }
+    }
+
+    let root = project_root_from(cwd);
+    let resolved = match resolve_part(&root, part) {
+        Ok(resolved) => resolved,
+        Err(diagnostics) => {
+            return Report::failure(
+                asset_exit_code(&diagnostics),
+                diagnostics_text(&diagnostics),
+            )
+        }
+    };
+
+    let compiled = match &resolved {
+        ResolvedPart::Definition { definition, assets } => {
+            compile_definition(definition, &assets.style_context())
+        }
+        ResolvedPart::Element { scene, assets } => {
+            compile_subtree(scene, part, &assets.style_context())
+        }
+    };
+    let model = match compiled {
+        Ok(model) => model,
+        Err(diagnostics) => {
+            return Report::failure(
+                dependency_exit_code(&diagnostics, EXIT_COMPILE),
+                diagnostics_text(&diagnostics),
+            )
+        }
+    };
+
+    let frame = output_frame(&model, format, width, height, density);
+    let mut warnings = diagnostics_text(&model.diagnostics);
+    let bytes = match export_bytes(
+        &model,
+        format,
+        width,
+        height,
+        density,
+        background,
+        &mut warnings,
+    ) {
+        Ok(bytes) => bytes,
+        Err(report) => return report,
+    };
+    write_part(target, &bytes, &warnings, frame)
+}
+
+/// The output frame a preview actually uses, after size and density compose.
+///
+/// A single requested dimension scales the other to keep the part's aspect
+/// ratio, and PNG density multiplies the resolved size, mirroring the
+/// exporters. Reporting the resolved frame tells a caller how large the preview
+/// came out when the part did not fit the requested size (FEAT-031).
+fn output_frame(
+    model: &RenderModel,
+    format: Format,
+    width: Option<f64>,
+    height: Option<f64>,
+    density: Option<f64>,
+) -> (f64, f64) {
+    let canvas = &model.canvas;
+    let mut resolved_width = width.unwrap_or(canvas.width);
+    let mut resolved_height = height.unwrap_or(canvas.height);
+    let scalable = canvas.width > 0.0 && canvas.height > 0.0;
+    match (width, height) {
+        (Some(width), None) if scalable => {
+            resolved_height = width * canvas.height / canvas.width;
+        }
+        (None, Some(height)) if scalable => {
+            resolved_width = height * canvas.width / canvas.height;
+        }
+        _ => {}
+    }
+    if format == Format::Png {
+        let density = density.unwrap_or(1.0);
+        resolved_width *= density;
+        resolved_height *= density;
+    }
+    (resolved_width, resolved_height)
+}
+
+/// Exports a compiled model to bytes, mapping an export failure to a report.
+///
+/// Shared by `export` and `render`, so both surface the same exporter warnings
+/// and classify a missing dependency the same way (C-004).
+fn export_bytes(
+    model: &RenderModel,
+    format: Format,
+    width: Option<f64>,
+    height: Option<f64>,
+    density: Option<f64>,
+    background: Option<&str>,
+    warnings: &mut String,
+) -> Result<Vec<u8>, Report> {
+    match format {
         Format::Svg => {
             let options = SvgOptions {
                 width,
                 height,
                 background: background.map(str::to_string),
             };
-            match export_svg_reporting(&model, &options) {
+            match export_svg_reporting(model, &options) {
                 Ok(export) => {
                     warnings.push_str(&diagnostics_text(&export.diagnostics));
-                    export.svg.into_bytes()
+                    Ok(export.svg.into_bytes())
                 }
-                Err(diagnostics) => {
-                    return Report::failure(
-                        export_exit_code(&diagnostics),
-                        diagnostics_text(&diagnostics),
-                    )
-                }
+                Err(diagnostics) => Err(Report::failure(
+                    export_exit_code(&diagnostics),
+                    diagnostics_text(&diagnostics),
+                )),
             }
         }
         Format::Png => {
@@ -716,22 +1019,41 @@ fn export_scene(
                 density,
                 background: background.map(str::to_string),
             };
-            match export_png_reporting(&model, &options) {
+            match export_png_reporting(model, &options) {
                 Ok(export) => {
                     warnings.push_str(&diagnostics_text(&export.diagnostics));
-                    export.png
+                    Ok(export.png)
                 }
-                Err(diagnostics) => {
-                    return Report::failure(
-                        export_exit_code(&diagnostics),
-                        diagnostics_text(&diagnostics),
-                    )
-                }
+                Err(diagnostics) => Err(Report::failure(
+                    export_exit_code(&diagnostics),
+                    diagnostics_text(&diagnostics),
+                )),
             }
         }
-    };
+    }
+}
 
-    write_report(target, &bytes, &warnings)
+/// Writes a part preview, reporting the frame it was rendered in (FEAT-031).
+fn write_part(target: &Path, bytes: &[u8], warnings: &str, frame: (f64, f64)) -> Report {
+    match write_atomic(target, bytes) {
+        Ok(()) => Report {
+            code: EXIT_SUCCESS,
+            stdout: format!(
+                "wrote {}\nframe {}x{}\n",
+                target.display(),
+                frame.0,
+                frame.1
+            ),
+            stderr: warnings.to_string(),
+        },
+        Err(error) => Report::failure(
+            EXIT_OUTPUT,
+            format!(
+                "{warnings}error: cannot write output `{}`: {error}\n",
+                target.display()
+            ),
+        ),
+    }
 }
 
 /// Prints the language contract, or one type, mapping a bad request to exit 2.
@@ -1022,10 +1344,8 @@ mod tests {
 
     #[test]
     fn a_reserved_command_is_reported() {
-        for command in ["render", "inspect"] {
-            let error = parse_args(&[command]).expect_err("reserved");
-            assert!(error.contains("reserved"), "{error}");
-        }
+        let error = parse_args(&["inspect"]).expect_err("reserved");
+        assert!(error.contains("reserved"), "{error}");
     }
 
     #[test]
@@ -1811,5 +2131,357 @@ mod tests {
         );
         assert_eq!(report.code, EXIT_USAGE);
         assert!(report.stderr.contains("absent"), "{}", report.stderr);
+    }
+
+    // -----------------------------------------------------------------------
+    // Part-scoped rendering (FEAT-031)
+    // -----------------------------------------------------------------------
+
+    /// A definition whose single rect sits off the origin, so a preview must
+    /// frame it to its own bounds.
+    const BADGE_DEFINITION: &str = r##"{
+      "id": "badge",
+      "projectId": "project",
+      "name": "Badge",
+      "parameters": [],
+      "origin": { "x": 0, "y": 0 },
+      "elements": [
+        {
+          "id": "r1", "definitionId": "badge", "order": 0, "kind": "rect",
+          "geometry": { "x": 10, "y": 20, "width": 30, "height": 40 },
+          "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
+          "fill": { "kind": "token", "ref": "accent" },
+          "opacity": 1, "visible": true
+        }
+      ]
+    }"##;
+
+    /// A definition with no drawable geometry.
+    const EMPTY_DEFINITION: &str = r##"{
+      "id": "empty",
+      "projectId": "project",
+      "name": "Empty",
+      "parameters": [],
+      "origin": { "x": 0, "y": 0 },
+      "elements": []
+    }"##;
+
+    /// A scene holding a named group subtree beside an unrelated shape.
+    const SUBTREE_SCENE: &str = r##"{
+      "id": "main",
+      "projectId": "project",
+      "name": "Main",
+      "formatVersion": "0.2",
+      "paletteId": "brand",
+      "canvas": { "width": 200, "height": 200, "background": "#ffffff" },
+      "elements": [
+        {
+          "id": "mark", "sceneId": "main", "order": 0, "kind": "group", "name": "Mark",
+          "geometry": {},
+          "transform": { "translateX": 50, "translateY": 50, "rotate": 0, "scaleX": 1, "scaleY": 1 },
+          "opacity": 1, "visible": true
+        },
+        {
+          "id": "mark-rect", "sceneId": "main", "parentId": "mark", "order": 0, "kind": "rect",
+          "geometry": { "x": 0, "y": 0, "width": 20, "height": 10 },
+          "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
+          "fill": { "kind": "token", "ref": "accent" },
+          "opacity": 1, "visible": true
+        },
+        {
+          "id": "other", "sceneId": "main", "order": 1, "kind": "rect",
+          "geometry": { "x": 100, "y": 100, "width": 50, "height": 50 },
+          "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
+          "opacity": 1, "visible": true
+        }
+      ]
+    }"##;
+
+    /// Writes a project with a default scene, a default palette, and two
+    /// definitions.
+    ///
+    /// The project names `brand` as its default palette, so an isolated
+    /// definition resolves its `accent` token without a placing scene
+    /// (FEAT-005, D-039).
+    fn part_project(dir: &TempDir) {
+        write_at(
+            dir,
+            "vectr.project.json",
+            r#"{"defaultSceneId":"main","defaultPaletteId":"brand"}"#,
+        );
+        write_at(dir, "palettes/brand.json", PALETTE);
+        write_at(dir, "definitions/badge.json", BADGE_DEFINITION);
+        write_at(dir, "definitions/empty.json", EMPTY_DEFINITION);
+        write_at(dir, "scenes/main.json", SUBTREE_SCENE);
+    }
+
+    fn render(part: &str, out: Option<PathBuf>, format: Format, width: Option<f64>) -> Command {
+        Command::Render {
+            part: part.to_string(),
+            out,
+            format,
+            width,
+            height: None,
+            density: None,
+            background: None,
+        }
+    }
+
+    #[test]
+    fn render_parses_the_part_and_defaults_to_svg() {
+        assert_eq!(
+            parse_args(&["render", "badge"]).unwrap(),
+            Command::Render {
+                part: "badge".to_string(),
+                out: None,
+                format: Format::Svg,
+                width: None,
+                height: None,
+                density: None,
+                background: None,
+            }
+        );
+    }
+
+    #[test]
+    fn render_parses_every_option() {
+        let command = parse_args(&[
+            "render",
+            "badge",
+            "--format",
+            "png",
+            "--out",
+            "dist/badge.png",
+            "--width",
+            "64",
+            "--height",
+            "64",
+            "--density",
+            "2",
+            "--background",
+            "transparent",
+        ])
+        .unwrap();
+        assert_eq!(
+            command,
+            Command::Render {
+                part: "badge".to_string(),
+                out: Some(PathBuf::from("dist/badge.png")),
+                format: Format::Png,
+                width: Some(64.0),
+                height: Some(64.0),
+                density: Some(2.0),
+                background: Some("transparent".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn render_requires_a_part_and_refuses_unknown_options() {
+        assert!(parse_args(&["render"]).is_err());
+        assert!(parse_args(&["render", "a", "b"]).is_err());
+        assert!(parse_args(&["render", "badge", "--nope"]).is_err());
+    }
+
+    #[test]
+    fn render_writes_a_definition_preview_framed_to_its_bounds() {
+        let dir = TempDir::new("render-definition");
+        part_project(&dir);
+        let out = dir.path().join("badge.svg");
+        let report = run_in(
+            render("badge", Some(out.clone()), Format::Svg, None),
+            dir.path(),
+        );
+        assert_eq!(report.code, EXIT_SUCCESS, "{}", report.stderr);
+        assert!(report.stdout.contains("frame 30x40"), "{}", report.stdout);
+
+        let svg = fs::read_to_string(&out).expect("reads the preview");
+        assert!(svg.contains("viewBox=\"0 0 30 40\""), "{svg}");
+        assert!(svg.contains("fill=\"#ff0000\""), "{svg}");
+    }
+
+    #[test]
+    fn render_writes_an_element_subtree_preview() {
+        let dir = TempDir::new("render-subtree");
+        part_project(&dir);
+        let out = dir.path().join("mark.svg");
+        let report = run_in(
+            render("mark", Some(out.clone()), Format::Svg, None),
+            dir.path(),
+        );
+        assert_eq!(report.code, EXIT_SUCCESS, "{}", report.stderr);
+        assert!(report.stdout.contains("frame 20x10"), "{}", report.stdout);
+
+        let svg = fs::read_to_string(&out).expect("reads the preview");
+        assert!(svg.contains("viewBox=\"0 0 20 10\""), "{svg}");
+        assert!(svg.contains("mark-rect"), "{svg}");
+        assert!(
+            !svg.contains("other"),
+            "the rest of the scene is absent: {svg}"
+        );
+    }
+
+    #[test]
+    fn render_reports_the_resolved_output_frame() {
+        let dir = TempDir::new("render-frame");
+        part_project(&dir);
+        let report = run_in(render("mark", None, Format::Svg, Some(100.0)), dir.path());
+        assert_eq!(report.code, EXIT_SUCCESS, "{}", report.stderr);
+        assert!(
+            report.stdout.contains("frame 100x50"),
+            "a single dimension scales the other: {}",
+            report.stdout
+        );
+    }
+
+    #[test]
+    fn render_reports_an_unknown_part_by_name() {
+        let dir = TempDir::new("render-unknown");
+        part_project(&dir);
+        let out = dir.path().join("absent.svg");
+        let report = run_in(
+            render("absent", Some(out.clone()), Format::Svg, None),
+            dir.path(),
+        );
+        assert_eq!(report.code, EXIT_USAGE);
+        assert!(report.stderr.contains("E_PART"), "{}", report.stderr);
+        assert!(report.stderr.contains("absent"), "{}", report.stderr);
+        assert!(!out.exists(), "no preview is written for an unknown part");
+    }
+
+    #[test]
+    fn render_reports_an_empty_part_with_the_fallback_frame() {
+        let dir = TempDir::new("render-empty");
+        part_project(&dir);
+        let out = dir.path().join("empty.svg");
+        let report = run_in(
+            render("empty", Some(out.clone()), Format::Svg, None),
+            dir.path(),
+        );
+        assert_eq!(report.code, EXIT_SUCCESS, "{}", report.stderr);
+        assert!(report.stdout.contains("frame 100x100"), "{}", report.stdout);
+        assert!(
+            report.stderr.contains("W_EMPTY_PART_FRAME"),
+            "{}",
+            report.stderr
+        );
+        assert!(out.exists(), "an empty part still yields a preview");
+    }
+
+    #[test]
+    fn render_refuses_a_density_on_svg() {
+        let dir = TempDir::new("render-density");
+        part_project(&dir);
+        let report = run_in(
+            Command::Render {
+                part: "badge".to_string(),
+                out: None,
+                format: Format::Svg,
+                width: None,
+                height: None,
+                density: Some(2.0),
+                background: None,
+            },
+            dir.path(),
+        );
+        assert_eq!(report.code, EXIT_USAGE);
+    }
+
+    #[test]
+    fn render_writes_a_png_preview() {
+        let dir = TempDir::new("render-png");
+        part_project(&dir);
+        let out = dir.path().join("badge.png");
+        let report = run_in(
+            render("badge", Some(out.clone()), Format::Png, None),
+            dir.path(),
+        );
+        assert_eq!(report.code, EXIT_SUCCESS, "{}", report.stderr);
+        let bytes = fs::read(&out).expect("reads the png");
+        assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n", "PNG signature");
+    }
+
+    #[test]
+    fn render_resolves_a_definition_from_the_project_default_palette() {
+        // The default scene names a different palette, so a preview that still
+        // resolves `accent` to the project default proves an isolated definition
+        // takes the project's default palette, not its default scene's
+        // (FEAT-005, FEAT-031).
+        let dir = TempDir::new("render-project-palette");
+        part_project(&dir);
+        write_at(
+            &dir,
+            "palettes/scene.json",
+            r##"{"id":"scene","projectId":"project","name":"Scene","tokens":[{"name":"accent","value":"#0000ff"}]}"##,
+        );
+        write_at(
+            &dir,
+            "scenes/main.json",
+            &SUBTREE_SCENE.replace(r##""paletteId": "brand""##, r##""paletteId": "scene""##),
+        );
+
+        let out = dir.path().join("badge.svg");
+        let report = run_in(
+            render("badge", Some(out.clone()), Format::Svg, None),
+            dir.path(),
+        );
+        assert_eq!(report.code, EXIT_SUCCESS, "{}", report.stderr);
+        let svg = fs::read_to_string(&out).expect("reads the preview");
+        assert!(
+            svg.contains("fill=\"#ff0000\""),
+            "the project default palette resolved: {svg}"
+        );
+    }
+
+    #[test]
+    fn render_refuses_a_definition_when_the_project_names_no_default_palette() {
+        let dir = TempDir::new("render-no-default-palette");
+        write_at(&dir, "vectr.project.json", r#"{"defaultSceneId":"main"}"#);
+        write_at(&dir, "palettes/brand.json", PALETTE);
+        write_at(&dir, "definitions/badge.json", BADGE_DEFINITION);
+        write_at(&dir, "scenes/main.json", SUBTREE_SCENE);
+
+        let out = dir.path().join("badge.svg");
+        let report = run_in(
+            render("badge", Some(out.clone()), Format::Svg, None),
+            dir.path(),
+        );
+        assert_eq!(report.code, EXIT_USAGE, "{}", report.stderr);
+        assert!(
+            report.stderr.contains("default palette"),
+            "the missing palette is named: {}",
+            report.stderr
+        );
+        assert!(!out.exists(), "no preview is written");
+    }
+
+    #[test]
+    fn render_refuses_a_part_identifier_that_is_not_unique() {
+        // The `mark` element in the default scene and a `mark` definition share
+        // one namespace, so the identifier is a duplicate rather than resolved
+        // by an arbitrary ordering (FEAT-016, FEAT-031).
+        let dir = TempDir::new("render-duplicate");
+        part_project(&dir);
+        write_at(
+            &dir,
+            "definitions/mark.json",
+            r##"{"id":"mark","projectId":"project","name":"Mark","parameters":[],"origin":{"x":0,"y":0},"elements":[]}"##,
+        );
+
+        let out = dir.path().join("mark.svg");
+        let report = run_in(
+            render("mark", Some(out.clone()), Format::Svg, None),
+            dir.path(),
+        );
+        assert_eq!(report.code, EXIT_USAGE, "{}", report.stderr);
+        assert!(
+            report.stderr.contains("E_DUPLICATE_ID"),
+            "the duplicate is reported: {}",
+            report.stderr
+        );
+        assert!(
+            !out.exists(),
+            "no preview is written before the duplicate fails"
+        );
     }
 }

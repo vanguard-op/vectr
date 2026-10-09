@@ -41,6 +41,7 @@ by the `id` they declare, whatever their file is called.
 | StrokeProfile | `strokes/` | `element.stroke.profileId` |
 | StyleRecipe | `recipes/` | `scene.recipeId`, else the project's `defaultRecipeId` |
 | Gradient | `gradients/` | a paint `ref` with `kind: "gradient"` |
+| Definition | `definitions/<id>.json` | an `instance` element's `definitionRef` |
 | Asset (font) | `assets/` | `element.fontId` on a text element |
 
 A command that omits the scene uses the project's `defaultSceneId`; a command
@@ -62,8 +63,8 @@ Run the tools from inside the project so the root is found. If there is no
 project yet, scaffold one with `vectr init [dir]`; it writes the configuration,
 a starter scene at `scenes/example.json` that the project names as its default,
 a default recipe, the entity folders
-`scenes/ palettes/ strokes/ gradients/ recipes/ assets/ dist/`, and this guide
-at the project root. Running it again reports the project as already
+`scenes/ palettes/ strokes/ gradients/ recipes/ definitions/ assets/ dist/`, and
+this guide at the project root. Running it again reports the project as already
 initialized and leaves every file untouched.
 
 ## 2. The workflow
@@ -81,6 +82,14 @@ initialized and leaves every file untouched.
 Never render before validation passes, and never export from a scene that failed
 to compile. A failed step stops the pipeline; there is no partial output.
 
+A simple mark follows those six steps once. A request that names several distinct
+objects, repeats an object, or spans background and foreground layers is a
+complex graphic: build it up in verified parts instead of authoring it in one
+pass — decompose it into named parts, author each part as a reusable definition,
+verify it on its own, then compose the verified parts one at a time, verifying
+the scene after each addition. **Build a complex graphic up in verified parts**
+(section 6) is that method.
+
 Prefer the MCP tools when the host exposes them; otherwise use the CLI. Both
 produce identical results. In the CLI, `<scene>` is a scene identifier resolved
 among the project's scenes (`scenes/<id>.json`), not a file path; omit it to use
@@ -92,6 +101,12 @@ the project's default scene.
 | Validate | `validate` `{scene?, draft?, project?}` | `vectr validate <scene> [--json]` |
 | Compile | `compile` `{scene?, draft?, project?}` | `vectr compile <scene> [--check] [--out <file>]` |
 | Render | `render` `{scene?, draft?, project?, format, out?, width?, height?, density?, background?}` | `vectr export <scene> --format svg\|png [--out <file>] [--width <n>] [--height <n>] [--density <n>] [--background <color\|transparent>]` |
+| Render a part | `render-part` `{part, project?, format, out?, width?, height?, density?, background?}` | `vectr render <part> --format svg\|png [--out <file>] [--width <n>] [--height <n>] [--density <n>] [--background <color\|transparent>]` |
+| Scaffold | — | `vectr init [dir]` |
+
+`render-part` and `vectr render` preview one part on its own — a reusable
+definition or a named element subtree, addressed by its identifier — framed to
+the part's own bounds or to a requested size; the CLI prints the frame it used.
 
 An MCP tool addresses a scene by the same rules as the CLI. `scene` is the
 identifier; omitting both `scene` and `draft` uses the project's default, and a
@@ -126,6 +141,8 @@ vectr schema --type Palette
 vectr schema --type StrokeProfile
 vectr schema --type StyleRecipe
 vectr schema --type Gradient
+vectr schema --type Definition
+vectr schema --type Binding
 ```
 
 Type names are matched case-insensitively; an unknown name is refused with the
@@ -167,6 +184,22 @@ enforced by the engine and are easy to miss:
 - **Constraints** (`equalSpacing`, `align`, `attach`, `contain`, `snapToGrid`)
   are optional and resolve at compile time; two that cannot both hold fail
   compilation. Leave them out for a simple scene.
+- **A definition is a project-scoped part, not a scene.** It has no `canvas`; it
+  declares `parameters` and an `origin` and holds its own `elements`. Its
+  elements carry `definitionId` where a scene's carry `sceneId` — exactly one of
+  the two, in the same element shape. A definition renders only where a scene
+  places it with an `instance` element.
+- **A parameter reference is `{"param": "<name>"}`.** It stands in for a literal
+  in a parameter-capable field (a number, `geometry.text` or `pathData`,
+  `visible`, or a whole `fill` or `stroke.paint`). It is valid only inside the
+  definition that declares the parameter, and its type must match the field. A
+  `token` parameter takes the place of a whole paint, so `{"param": "colour"}` is
+  a fill, not a token reference.
+- **An instance places a definition.**
+  `{"kind": "instance", "definitionRef": "<id>", "bindings": [{"name":
+  "<param>", "value": ...}]}`. It carries its own `transform` and `opacity` and
+  no geometry of its own; the definition's elements render under it. A parameter
+  left unbound takes its declared `default`.
 - **`formatVersion` must be `"0.2"`.**
 
 ## 4. Author the scene
@@ -338,7 +371,10 @@ A detailed request is not a reason to simplify, and the language carries
 complexity through composition rather than a wider set of shape kinds: build
 the illustration from its parts by grouping them and layering the composition
 elements over them. Never reduce a detailed request to a single mark or drop
-the parts it names.
+the parts it names. A request this size is built with the build-up method below:
+the repeated and reused pieces — the pine, the cloud, the ripple, the step — are
+the parts to author as definitions and verify on their own before they are
+composed. The scene below is that composition in one document.
 
 "An alpine lake at dawn — mountains with snow, a pine forest, a lake with reeds
 and a trail of stepping stones, and a low sun" becomes the scene below. It
@@ -419,7 +455,8 @@ are about to use it.
 }
 ```
 
-Compose it in passes rather than in one shot:
+Whether a part is a definition or an element in the scene, compose in this
+order:
 
 1. Block in the large shapes first — sky, peaks, shore, lake — as siblings with
    increasing `order`, and validate.
@@ -432,7 +469,186 @@ Compose it in passes rather than in one shot:
    wrong way along a guide is an `alongPath` direction problem; a copy far from
    where you expected is a composition-relative coordinate problem.
 
-## 5. Validate, then compile
+## 5. Reusable parts: definitions and instances
+
+A reusable part is a **Definition**: a project-scoped group of elements with its
+own identity and an optional set of named parameters. It lives in
+`definitions/<id>.json` and is placed by an `instance` element, in one scene or
+several. Author a part once and place it wherever it is needed instead of
+repeating its elements by hand.
+
+A definition declares its `parameters`, an `origin`, and its own `elements`.
+Each element carries `definitionId` where a scene element carries `sceneId` —
+exactly one of the two, in the same element shape. A parameter-capable field
+holds `{"param": "<name>"}` in place of a literal; a `token` parameter replaces a
+whole paint, so `{"param": "colour"}` is a fill. A reference is valid only inside
+the definition that declares the parameter, and its type must match the field.
+`definitions/cloud.json`:
+
+```json
+{
+  "id": "cloud",
+  "projectId": "project",
+  "name": "Cloud",
+  "parameters": [
+    { "name": "colour", "type": "token", "default": "paper" },
+    { "name": "size", "type": "number", "default": 120 }
+  ],
+  "origin": { "x": 0, "y": 0 },
+  "elements": [
+    {
+      "id": "cloud-body",
+      "definitionId": "cloud",
+      "order": 0,
+      "kind": "ellipse",
+      "name": "Cloud body",
+      "geometry": { "x": 0, "y": 0, "width": { "param": "size" }, "height": 40 },
+      "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
+      "fill": { "param": "colour" },
+      "opacity": 1,
+      "visible": true
+    }
+  ]
+}
+```
+
+An `instance` element places it. The instance carries its own `transform` and
+`opacity` and no geometry of its own; it renders the definition's elements under
+that placement, binding each parameter this use varies and taking the declared
+`default` for one it leaves unbound:
+
+```json
+{
+  "id": "cloud-left",
+  "sceneId": "skyline",
+  "order": 1,
+  "kind": "instance",
+  "name": "Cloud left",
+  "geometry": {},
+  "transform": { "translateX": 70, "translateY": 60, "rotate": 0, "scaleX": 1, "scaleY": 1 },
+  "opacity": 1,
+  "visible": true,
+  "definitionRef": "cloud",
+  "bindings": [ { "name": "size", "value": 90 } ]
+}
+```
+
+One definition can be placed many times with different bindings, and a scene in
+the same project can place it too; editing the definition changes every
+placement on the next compile. A definition may itself place another definition,
+so parts compose into deeper wholes. A definition that no scene places renders
+nothing and warns (`W_UNUSED_DEFINITION`); it is not an error.
+
+The scene that places the part, `scenes/skyline.json`, uses one definition twice
+with different bindings — the second instance varies `colour` and takes the
+default `size`:
+
+```json
+{
+  "id": "skyline",
+  "projectId": "project",
+  "name": "Skyline",
+  "formatVersion": "0.2",
+  "paletteId": "brand",
+  "canvas": { "width": 320, "height": 200, "background": "transparent" },
+  "elements": [
+    {
+      "id": "sky",
+      "sceneId": "skyline",
+      "order": 0,
+      "kind": "rect",
+      "geometry": { "x": 0, "y": 0, "width": 320, "height": 200 },
+      "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
+      "fill": { "kind": "token", "ref": "sky" },
+      "opacity": 1,
+      "visible": true
+    },
+    {
+      "id": "cloud-left",
+      "sceneId": "skyline",
+      "order": 1,
+      "kind": "instance",
+      "name": "Cloud left",
+      "geometry": {},
+      "transform": { "translateX": 70, "translateY": 60, "rotate": 0, "scaleX": 1, "scaleY": 1 },
+      "opacity": 1,
+      "visible": true,
+      "definitionRef": "cloud",
+      "bindings": [ { "name": "size", "value": 90 } ]
+    },
+    {
+      "id": "cloud-right",
+      "sceneId": "skyline",
+      "order": 2,
+      "kind": "instance",
+      "name": "Cloud right",
+      "geometry": {},
+      "transform": { "translateX": 210, "translateY": 90, "rotate": 0, "scaleX": 1, "scaleY": 1 },
+      "opacity": 0.6,
+      "visible": true,
+      "definitionRef": "cloud",
+      "bindings": [ { "name": "colour", "value": "paper" } ]
+    }
+  ]
+}
+```
+
+## 6. Build a complex graphic up in verified parts
+
+A detailed illustration is reliable when each part is correct before it is
+composed. This is the method for a complex request; a simple mark does not need
+it. Work one part at a time, and never compose a part that has not been
+verified.
+
+1. **Decompose.** Name the parts the drawing is made of and record the order.
+   When the request names no parts, use the documented default decomposition:
+   background and sky; the midground masses (land, water, large structures); the
+   repeating or reused objects (trees, clouds, ripples, steps); then the
+   foreground detail (reeds, stones, flowers, text). A request that does not
+   decompose cleanly still gets this decomposition rather than a stall.
+2. **Author one part as a definition.** Write `definitions/<part>.json`. Give it
+   a parameter for each value a use may vary, with a default, so one definition
+   serves every placement.
+3. **Verify the part in isolation.** Render it on its own and look at the
+   result:
+
+   ```sh
+   vectr render <part> --format png --out dist/<part>.png
+   ```
+
+   The render parses and validates the definition structurally, then draws the
+   part alone, framed to its own bounds; it prints the frame it used. Read the
+   diagnostics on failure — `E_SCHEMA`, `E_DEFINITION_CYCLE`, `E_BINDING`, and
+   the definition's own reference errors all name the element and its location.
+   Correct the definition and render it again until it is structurally sound and
+   matches the request. Do not compose a part that is not verified.
+4. **Compose the verified part.** Add an `instance` element to the scene,
+   binding the parameters this use varies and setting the placement transform.
+   Then validate and render the scene so far:
+
+   ```sh
+   vectr validate <scene>
+   vectr export <scene> --format png --out dist/<scene>.png
+   ```
+
+   Inspect the composition before adding the next part. If it does not match,
+   correct the instance's placement or binding — the parts are already verified,
+   so a composition failure names the composition step, not the parts.
+5. **Repeat for each part.** Place a part already verified without re-authoring
+   it: another instance, or another scene in the same project, reuses the same
+   definition.
+6. **Verify the whole and export.** When every part is composed, validate and
+   compile the whole scene, then export the final SVG and PNG.
+
+Two ordering rules. Author and verify a part that depends on another — a boat on
+the lake, a tree on the hill — after the part it sits on, and record that order.
+If an increment expands past the tool's element limit, the error names the
+definition and refuses the whole rather than truncating it; reduce the part's
+repetition or nesting, or split it, and re-verify. The whole is complete when
+every part is placed and the scene validates, compiles, and renders
+deterministically with no part dropped.
+
+## 7. Validate, then compile
 
 Name the scene by its identifier; the document is `scenes/<id>.json`:
 
@@ -465,7 +681,7 @@ or `{"draft": {...}}` to validate an inline document. Exit codes: `0` success,
 `1` invalid scene, `2` usage or unreadable input, `3` compilation failure, `4`
 export dependency missing, `5` output I/O failure.
 
-## 6. Render and look at the result
+## 8. Render and look at the result
 
 Render a preview you can see:
 
@@ -505,7 +721,7 @@ re-render:
 Re-render after each correction and look again; stop when the render matches the
 request.
 
-## 7. When authoring fails
+## 9. When authoring fails
 
 Validation diagnostics name the problem and its location. The usual findings:
 
@@ -528,6 +744,17 @@ Validation diagnostics name the problem and its location. The usual findings:
 - `E_SCHEMA_TYPE` — a `schema --type` name does not exist; pick one of the
   listed similar names.
 - `E_CYCLE` — elements reference each other as parents; break the loop.
+- `E_DEFINITION` — an `instance` references a definition that does not resolve;
+  check `definitions/<id>.json` and the `definitionRef` id.
+- `E_DEFINITION_CYCLE` — two definitions place each other, directly or through a
+  chain; break the loop.
+- `E_BINDING` — an instance binds a parameter the definition does not declare,
+  or a parameter has neither a binding nor a default; fix the binding or give the
+  parameter a default.
+- `E_PART` — a part identifier resolves to no definition or element in the
+  project; check the id and run the command from inside the project.
+- `W_UNUSED_DEFINITION` — a definition no scene places renders nothing; place it
+  or remove it. It is a warning, not an error.
 - An undefined-token, undefined-stroke, undefined-gradient, or missing-font
   error — the element names something the project does not provide; add it or
   fix the reference.
@@ -539,7 +766,7 @@ validate and compile. If the authoring model is unavailable, stop and report
 that authoring cannot proceed and produce no output; never emit a placeholder
 asset.
 
-## 8. Defaults for an ambiguous request
+## 10. Defaults for an ambiguous request
 
 When the request leaves something open, choose the documented default, state it
 in one line, and proceed rather than stopping to ask:
@@ -550,18 +777,18 @@ in one line, and proceed rather than stopping to ask:
 | Scene identifier | A short kebab-case name for the request (e.g. `habit-logo`); its file is `scenes/<id>.json` and commands address it by that id |
 | Background | `transparent` |
 | Scope of the graphic | When the request leaves it open, one simple mark — a primary shape plus an optional wordmark. A request that asks for a detailed or complex illustration is authored in full |
+| Parts of a complex request | The default decomposition in the build-up method: background and sky; midground masses; repeating or reused objects; then foreground detail |
 | Shape placement | Centred, with an even margin from each edge |
 | Colours | A palette named for the request (`accent`, `ink`, `paper`) so it restyles |
 | Text font | The bundled open-licensed sans (omit `fontId`) |
 | Recipe | The project's `defaultRecipeId`; set `recipeId` only when the request names a look |
 | Icon set | Every icon on the same canvas and style, each exported to its own file |
 
-Keep the first version valid and renderable, then refine it toward the request:
-block in the composition, validate, render, and add detail between passes. A
-detailed or complex request is built out over those passes, not simplified to a
-simple mark.
+Keep a simple request's first version valid and renderable, then refine it toward
+the request. A detailed or complex request is built up in verified parts
+(section 6), not authored in one pass and not simplified to a simple mark.
 
-## 9. Licensing and cost
+## 11. Licensing and cost
 
 Vectr claims no ownership of the content an authoring model produces. That
 content may carry the model provider's own terms; check your provider's terms

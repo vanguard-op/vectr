@@ -1,15 +1,18 @@
-//! Acceptance tests for the MCP server (FEAT-019, C-005).
+//! Acceptance tests for the MCP server (FEAT-019, FEAT-031, C-005).
 //!
 //! Drives the built `vectr-mcp` binary as an agent host would. Over stdio: the
-//! server publishes its four tools with input and output schemas; a scene is
+//! server publishes its five tools with input and output schemas; a scene is
 //! addressed exactly as the command line addresses it — by its identifier among
 //! a project's scenes, or the project's default when none is named — and an
 //! inline draft is accepted instead of a project scene without ever becoming or
 //! reading the default; a valid scene compiles and renders, an invalid scene or
 //! an unsupported capability is a structured error, a call naming both a scene
 //! and a draft is malformed, the server refuses to leave the filesystem scope,
-//! and it leaves no partial or temporary output behind. Over its opt-in loopback
-//! HTTP transport: concurrent calls stay independent.
+//! and it leaves no partial or temporary output behind. The render-part tool
+//! previews one part on its own — a reusable definition or a named element
+//! subtree, each addressed by its identifier — framed to its own bounds or to a
+//! requested size, with the part's resolved style (FEAT-031). Over its opt-in
+//! loopback HTTP transport: concurrent calls stay independent.
 
 mod common;
 
@@ -96,8 +99,23 @@ fn first_fill(result: &Value) -> &str {
         .unwrap_or_else(|| panic!("the first node carries a resolved fill: {result}"))
 }
 
+// ---------------------------------------------------------------------------
+// Part-scoped rendering over MCP (FEAT-031, C-005)
+// ---------------------------------------------------------------------------
+
+/// Renders one part over MCP and returns the tool result value.
+fn render_part(dir: &TempDir, arguments: Value) -> Value {
+    let run = run_mcp_session(
+        dir.path(),
+        &[],
+        &[mcp_tool_call(1, "render-part", arguments)],
+    );
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    response(&run, 1)["result"].clone()
+}
+
 #[test]
-fn an_mcp_client_lists_four_tools_with_their_schemas_and_the_server_version() {
+fn an_mcp_client_lists_five_tools_with_their_schemas_and_the_server_version() {
     let dir = TempDir::new("mcp-list");
     let run = run_mcp_session(
         dir.path(),
@@ -138,7 +156,10 @@ fn an_mcp_client_lists_four_tools_with_their_schemas_and_the_server_version() {
         .iter()
         .filter_map(|tool| tool["name"].as_str())
         .collect();
-    assert_eq!(names, vec!["validate", "compile", "render", "schema"]);
+    assert_eq!(
+        names,
+        vec!["validate", "compile", "render", "render-part", "schema"]
+    );
     for tool in tools {
         assert!(
             tool["inputSchema"].is_object(),
@@ -155,7 +176,12 @@ fn an_mcp_client_lists_four_tools_with_their_schemas_and_the_server_version() {
     // The scene-addressing arguments are discoverable: every scene tool
     // publishes `scene`, `draft` and `project`, and neither `scene` nor `draft`
     // is required, so omitting both applies the default-scene rule (FEAT-019).
-    for tool in tools.iter().filter(|tool| tool["name"] != "schema") {
+    for tool in tools.iter().filter(|tool| {
+        matches!(
+            tool["name"].as_str(),
+            Some("validate" | "compile" | "render")
+        )
+    }) {
         let properties = &tool["inputSchema"]["properties"];
         for name in ["scene", "draft", "project"] {
             assert!(
@@ -176,6 +202,42 @@ fn an_mcp_client_lists_four_tools_with_their_schemas_and_the_server_version() {
             tool["name"]
         );
     }
+
+    // The part tool addresses a part within a project rather than a scene, and
+    // requires the part and a format; an omitted size frames the part to its
+    // own bounds (FEAT-031).
+    let part = tools
+        .iter()
+        .find(|tool| tool["name"] == "render-part")
+        .expect("the part tool is published");
+    let properties = &part["inputSchema"]["properties"];
+    for name in [
+        "part",
+        "project",
+        "format",
+        "out",
+        "width",
+        "height",
+        "density",
+        "background",
+    ] {
+        assert!(
+            properties.get(name).is_some(),
+            "render-part publishes `{name}`: {part}"
+        );
+    }
+    assert!(properties.get("scene").is_none(), "{part}");
+    assert!(properties.get("draft").is_none(), "{part}");
+    let required: Vec<&str> = part["inputSchema"]["required"]
+        .as_array()
+        .expect("required")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert_eq!(required, vec!["part", "format"]);
+    let frame = &part["outputSchema"]["properties"]["frame"];
+    assert!(frame["properties"]["width"].is_object(), "{part}");
+    assert!(frame["properties"]["height"].is_object(), "{part}");
 }
 
 #[test]
@@ -674,7 +736,7 @@ fn an_unsupported_capability_is_a_structured_error_and_the_server_survives() {
     let tools = response(&run, 2)["result"]["tools"]
         .as_array()
         .map(Vec::len);
-    assert_eq!(tools, Some(4));
+    assert_eq!(tools, Some(5));
 }
 
 #[test]
@@ -955,4 +1017,289 @@ fn concurrent_calls_are_independent_over_the_http_transport() {
     for worker in workers {
         worker.join().expect("a worker thread panicked");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Part-scoped rendering over MCP (FEAT-031, C-005)
+// ---------------------------------------------------------------------------
+
+/// The preview text a successful render-part result wrote.
+fn written_preview(result: &Value) -> String {
+    let path = result["structuredContent"]["path"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the written path is returned: {result}"));
+    std::fs::read_to_string(path).expect("the preview was written")
+}
+
+/// The structured error body of a failed render-part result.
+fn part_error(result: &Value) -> &Value {
+    assert_eq!(result["isError"], true, "{result}");
+    &result["structuredContent"]
+}
+
+/// A definition addressed by its identifier renders on its own: the preview
+/// carries the part's structure and its project-resolved style, framed to the
+/// part's own bounds rather than a scene canvas (FEAT-031).
+#[test]
+fn a_definition_renders_on_its_own_through_mcp() {
+    let dir = part_project("mcp-part-definition");
+    let result = render_part(
+        &dir,
+        json!({ "part": "badge", "format": "svg", "out": "dist/badge.svg" }),
+    );
+    assert_eq!(result["isError"], false, "{result}");
+    let body = &result["structuredContent"];
+    assert_eq!(body["format"], "svg");
+    assert_eq!(
+        body["frame"]["width"], 30.0,
+        "framed to the part's own width: {body}"
+    );
+    assert_eq!(
+        body["frame"]["height"], 40.0,
+        "framed to the part's own height: {body}"
+    );
+    assert_eq!(body["diagnostics"], json!([]), "{body}");
+
+    let svg = written_preview(&result);
+    assert!(svg.contains("<svg") && svg.contains("</svg>"), "{svg}");
+    assert!(
+        svg.contains("viewBox=\"0 0 30 40\""),
+        "the preview is framed to the part alone: {svg}"
+    );
+    assert!(
+        svg.contains("badge-body"),
+        "the part's own structure is visible: {svg}"
+    );
+    assert!(
+        svg.contains("fill=\"#ff0000\""),
+        "the part carries the project's resolved style: {svg}"
+    );
+}
+
+/// A named element subtree addressed by its identifier renders on its own: the
+/// subtree's structure appears and the rest of the scene does not (FEAT-031).
+#[test]
+fn an_element_subtree_renders_on_its_own_through_mcp() {
+    let dir = part_project("mcp-part-subtree");
+    let result = render_part(
+        &dir,
+        json!({ "part": "mark", "format": "svg", "out": "dist/mark.svg" }),
+    );
+    assert_eq!(result["isError"], false, "{result}");
+    let body = &result["structuredContent"];
+    assert_eq!(body["frame"]["width"], 20.0, "{body}");
+    assert_eq!(body["frame"]["height"], 10.0, "{body}");
+
+    let svg = written_preview(&result);
+    assert!(
+        svg.contains("mark-rect"),
+        "the subtree's own structure is visible: {svg}"
+    );
+    assert!(
+        !svg.contains("other"),
+        "the rest of the scene is absent from the subtree preview: {svg}"
+    );
+}
+
+/// A part that places another definition is included and resolved when rendered
+/// in isolation: the referenced part's geometry reaches the preview (FEAT-031).
+#[test]
+fn a_part_that_places_another_definition_resolves_it_through_mcp() {
+    let dir = part_project("mcp-part-nested");
+    dir.write(
+        "definitions/inner.json",
+        &definition(
+            "inner",
+            json!([]),
+            vec![def_rect("dot", "inner", 0, 0.0, 0.0, 5.0, 5.0)],
+        )
+        .to_string(),
+    );
+    dir.write(
+        "definitions/outer.json",
+        &definition(
+            "outer",
+            json!([]),
+            vec![def_instance("place", "outer", 0, "inner")],
+        )
+        .to_string(),
+    );
+
+    let result = render_part(
+        &dir,
+        json!({ "part": "outer", "format": "svg", "out": "dist/outer.svg" }),
+    );
+    assert_eq!(result["isError"], false, "{result}");
+    let body = &result["structuredContent"];
+    assert_eq!(
+        body["frame"]["width"], 5.0,
+        "the referenced definition's geometry reaches the preview: {body}"
+    );
+    assert_eq!(body["frame"]["height"], 5.0, "{body}");
+    assert_eq!(body["diagnostics"], json!([]), "{body}");
+}
+
+/// A corrected part re-rendered in isolation reflects the correction: the same
+/// identifier previews the edited bounds (FEAT-031).
+#[test]
+fn a_corrected_part_re_renders_reflecting_the_correction_through_mcp() {
+    let dir = part_project("mcp-part-correction");
+    let before = render_part(
+        &dir,
+        json!({ "part": "badge", "format": "svg", "out": "dist/badge.svg" }),
+    );
+    assert_eq!(before["structuredContent"]["frame"]["width"], 30.0);
+
+    dir.write(
+        "definitions/badge.json",
+        &definition(
+            "badge",
+            json!([]),
+            vec![def_rect("badge-body", "badge", 0, 10.0, 20.0, 60.0, 80.0)],
+        )
+        .to_string(),
+    );
+    let after = render_part(
+        &dir,
+        json!({ "part": "badge", "format": "svg", "out": "dist/badge.svg" }),
+    );
+    assert_eq!(after["isError"], false, "{after}");
+    assert_eq!(
+        after["structuredContent"]["frame"]["width"], 60.0,
+        "the re-render reflects the corrected part: {after}"
+    );
+    assert_eq!(after["structuredContent"]["frame"]["height"], 80.0);
+}
+
+/// A part with no resolved geometry is reported with a defined fallback frame
+/// rather than failing: the tool returns a preview and a warning (FEAT-031).
+#[test]
+fn a_part_with_no_resolved_geometry_is_reported_rather_than_failing() {
+    let dir = part_project("mcp-part-empty");
+    let result = render_part(
+        &dir,
+        json!({ "part": "empty", "format": "svg", "out": "dist/empty.svg" }),
+    );
+    assert_eq!(result["isError"], false, "{result}");
+    let body = &result["structuredContent"];
+    assert_eq!(
+        body["frame"]["width"], 100.0,
+        "the defined fallback frame is reported: {body}"
+    );
+    assert_eq!(body["frame"]["height"], 100.0, "{body}");
+    let diagnostics = body["diagnostics"].as_array().expect("diagnostics");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|finding| finding["code"] == "W_EMPTY_PART_FRAME"),
+        "the empty part is reported: {body}"
+    );
+    assert!(
+        dir.path().join("dist/empty.svg").is_file(),
+        "an empty part still yields a preview"
+    );
+}
+
+/// A part identifier that resolves to no definition or element is a structured
+/// error naming it, and no preview is written (FEAT-031).
+#[test]
+fn a_part_identifier_that_resolves_to_nothing_is_a_structured_error_naming_it() {
+    let dir = part_project("mcp-part-unknown");
+    let result = render_part(&dir, json!({ "part": "absent", "format": "svg" }));
+    let body = part_error(&result);
+    assert_eq!(body["code"], "E_PART", "{body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("absent")),
+        "the unresolved part is named: {body}"
+    );
+    assert!(
+        !dir.path().join("dist/absent.svg").exists(),
+        "no preview is written for an unresolved part"
+    );
+}
+
+/// A part larger than the requested preview size is rendered at the requested
+/// size, and the render reports the frame it used (FEAT-031).
+#[test]
+fn a_part_too_large_for_the_requested_size_reports_the_frame_used() {
+    let dir = part_project("mcp-part-size");
+    let result = render_part(
+        &dir,
+        json!({ "part": "badge", "format": "svg", "width": 15.0 }),
+    );
+    assert_eq!(result["isError"], false, "{result}");
+    let body = &result["structuredContent"];
+    assert_eq!(body["frame"]["width"], 15.0, "{body}");
+    assert_eq!(
+        body["frame"]["height"], 20.0,
+        "a single dimension scales the other to the part's aspect ratio: {body}"
+    );
+    assert!(written_preview(&result).contains("<svg"));
+}
+
+/// A part preview with no `out` writes to `<project>/dist/<part>.<format>`, so
+/// the preview is named for the part it renders (FEAT-031).
+#[test]
+fn a_part_preview_defaults_its_output_to_the_part_identifier() {
+    let dir = part_project("mcp-part-default-out");
+    let result = render_part(&dir, json!({ "part": "badge", "format": "svg" }));
+    assert_eq!(result["isError"], false, "{result}");
+    let path = result["structuredContent"]["path"]
+        .as_str()
+        .expect("the written path is returned");
+    assert!(path.ends_with("dist/badge.svg"), "{path}");
+    assert!(dir.path().join("dist/badge.svg").is_file());
+}
+
+/// A part preview renders to PNG as well as SVG, so an agent can inspect the
+/// rasterized part (FEAT-031).
+#[test]
+fn a_part_renders_to_png_through_mcp() {
+    let dir = part_project("mcp-part-png");
+    let result = render_part(
+        &dir,
+        json!({ "part": "badge", "format": "png", "out": "dist/badge.png" }),
+    );
+    assert_eq!(result["isError"], false, "{result}");
+    let path = result["structuredContent"]["path"]
+        .as_str()
+        .expect("the written path is returned");
+    let bytes = std::fs::read(path).expect("the preview was written");
+    assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
+}
+
+/// An unsupported render-part capability is a structured error and writes
+/// nothing, rather than crashing the server (FEAT-031, C-005).
+#[test]
+fn an_unsupported_part_capability_is_a_structured_error_and_writes_nothing() {
+    let dir = part_project("mcp-part-unsupported");
+    let run = run_mcp_session(
+        dir.path(),
+        &[],
+        &[
+            mcp_tool_call(
+                1,
+                "render-part",
+                json!({ "part": "badge", "format": "pdf", "out": "dist/badge.pdf" }),
+            ),
+            mcp_request(2, "tools/list", json!({})),
+        ],
+    );
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let result = &response(&run, 1)["result"];
+    assert_eq!(result["isError"], true, "{:?}", run.responses);
+    assert_eq!(result["structuredContent"]["code"], "E_UNSUPPORTED");
+    assert!(
+        !dir.path().join("dist/badge.pdf").exists(),
+        "nothing is written for an unsupported capability"
+    );
+    // The server answered the next request, so the failure did not crash it.
+    assert_eq!(
+        response(&run, 2)["result"]["tools"]
+            .as_array()
+            .map(Vec::len),
+        Some(5)
+    );
 }

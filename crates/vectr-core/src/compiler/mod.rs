@@ -72,14 +72,16 @@
 //! into the table too, so the font manager substitutes a glyph the resolved font
 //! lacks rather than drawing a blank box (D-018, FEAT-024).
 
+pub mod expand;
+
 use std::collections::{HashMap, HashSet};
 
 use crate::composition::{
-    self, along_path_placements, combine, flatten_shape, offset_shape,
+    self, along_path_placements, combine, flatten_shape, flatten_subpaths, offset_shape,
     placements as repeat_placements, Affine,
 };
 use crate::constraints::{self, Point, Resolution};
-use crate::fonts::FALLBACK_FONT_ID;
+use crate::fonts::{FontLibrary, FALLBACK_FONT_ID};
 use crate::primitives::{
     self, parse as parse_path, Ellipse, Line, Path as PathGeometry, Polygon, Rect, Segment, Shape,
     SubPath,
@@ -89,8 +91,9 @@ use crate::render::{
     ResolvedNode, TextRun,
 };
 use crate::scene::{
-    validate, BooleanOperation, Diagnostic, DiagnosticCode, Diagnostics, ElementKind, Location,
-    Scene, TextAlign,
+    validate, BoolValue, BooleanOperation, Canvas, Definition, Diagnostic, DiagnosticCode,
+    Diagnostics, Element, ElementKind, Geometry, Location, NumberValue, Scene, TextAlign,
+    Transform, CURRENT_FORMAT_VERSION,
 };
 use crate::style::{self, Gradient, Palette, StrokeProfile, StyleRecipe, UNDEFINED_STROKE};
 
@@ -156,6 +159,9 @@ pub struct StyleContext<'a> {
     /// A flat recipe resolves to even, solid palette fills with no texture,
     /// honoring an element's explicit gradient as its one exception (FEAT-007).
     pub recipe: Option<&'a StyleRecipe>,
+    /// The project's reusable definitions, so an instance element expands
+    /// without filesystem access (C-002, FEAT-030).
+    pub definitions: &'a [Definition],
 }
 
 /// A font asset a caller supplies so the compiler can resolve a text element's
@@ -216,6 +222,19 @@ pub fn compile_with_style<'s>(
     if diagnostics.has_errors() {
         return Err(diagnostics);
     }
+
+    // Reusable-definition instances are lowered to concrete elements before the
+    // compiler walks the tree, so no emission path needs a second element
+    // universe and the model carries no unresolved reference (FEAT-030).
+    let expansion = match expand::expand(scene, style.definitions) {
+        Ok(expansion) => expansion,
+        Err(errors) => {
+            diagnostics.extend(errors);
+            return Err(diagnostics);
+        }
+    };
+    diagnostics.extend(expansion.diagnostics);
+    let scene = &expansion.scene;
 
     let resolution = match constraints::resolve(scene) {
         Ok(resolution) => resolution,
@@ -304,6 +323,331 @@ pub fn compile_with_style<'s>(
         Err(model.diagnostics)
     } else {
         Ok(model)
+    }
+}
+
+/// A part identifier resolves to no definition or element.
+pub const PART: DiagnosticCode = DiagnosticCode::new("E_PART");
+
+/// A part's preview was framed from empty or degenerate bounds.
+pub const EMPTY_PART_FRAME: DiagnosticCode = DiagnosticCode::new("W_EMPTY_PART_FRAME");
+
+/// The square frame a part with no drawable geometry is previewed in, in scene
+/// units. The fallback is defined rather than left to an exporter's default so
+/// an empty part still yields a deterministic, usable preview (FEAT-031).
+pub const PART_FRAME_FALLBACK: f64 = 100.0;
+
+/// Compiles one reusable definition on its own (C-002, FEAT-031).
+///
+/// The definition is previewed as if placed once with no bindings, so every
+/// parameter takes its declared default and any definition it places resolves
+/// through the same context (FEAT-030). The returned model is framed to the
+/// part's own bounds: its canvas is the part's extent with the part translated
+/// to the origin, so an exporter previews the part alone rather than against a
+/// scene's canvas. Project assets the context carries but the part never uses
+/// are not reported, because the part is rendered in isolation (FEAT-031).
+pub fn compile_definition(
+    definition: &Definition,
+    style: &StyleContext<'_>,
+) -> Result<RenderModel, Diagnostics> {
+    let scene = definition_scene(definition);
+    let mut model = compile_with_style(&scene, style)?;
+    drop_isolation_warnings(&mut model);
+    frame_part(&mut model, &definition.name);
+    Ok(model)
+}
+
+/// Compiles one element subtree on its own (C-002, FEAT-031).
+///
+/// The scene is validated and its instances expanded first, so a subtree that
+/// places a definition resolves it exactly as a whole-scene compile would
+/// (FEAT-030). `element_id` names the subtree's root: the element and every
+/// descendant, re-rooted so it renders alone. A subtree whose identifier no
+/// element provides is a located error naming it. The returned model is framed
+/// to the subtree's own bounds, like [`compile_definition`].
+pub fn compile_subtree(
+    scene: &Scene,
+    element_id: &str,
+    style: &StyleContext<'_>,
+) -> Result<RenderModel, Diagnostics> {
+    let sub_scene = subtree_scene(scene, element_id)?;
+    let mut model = compile_with_style(&sub_scene, style)?;
+    drop_isolation_warnings(&mut model);
+    frame_part(&mut model, element_id);
+    Ok(model)
+}
+
+/// A scene that places `definition` once with no bindings, so the compiler
+/// resolves it exactly as a scene's instance would (FEAT-030).
+fn definition_scene(definition: &Definition) -> Scene {
+    let instance = Element {
+        id: definition.id.clone(),
+        scene_id: Some(definition.id.clone()),
+        definition_id: None,
+        parent_id: None,
+        order: 0,
+        name: Some(definition.name.clone()),
+        kind: ElementKind::Instance,
+        geometry: Geometry::default(),
+        transform: identity_transform(),
+        fill: None,
+        stroke: None,
+        font_id: None,
+        opacity: NumberValue::Literal(1.0),
+        visible: BoolValue::Literal(true),
+        definition_ref: Some(definition.id.clone()),
+        bindings: None,
+    };
+    Scene {
+        id: definition.id.clone(),
+        project_id: definition.project_id.clone(),
+        name: definition.name.clone(),
+        format_version: CURRENT_FORMAT_VERSION.to_string(),
+        canvas: Canvas {
+            width: 1.0,
+            height: 1.0,
+            background: "transparent".to_string(),
+        },
+        palette_id: None,
+        recipe_id: None,
+        title: None,
+        description: None,
+        elements: vec![instance],
+        constraints: None,
+    }
+}
+
+/// The synthetic scene one element subtree renders as.
+///
+/// The named element and its descendants are kept in document order, the root
+/// is re-parented to the scene, and only constraints wholly inside the subtree
+/// are retained, so the preview carries no dangling reference to an element the
+/// subtree leaves behind.
+fn subtree_scene(scene: &Scene, element_id: &str) -> Result<Scene, Diagnostics> {
+    if scene.element(element_id).is_none() {
+        return Err(Diagnostics::from(
+            Diagnostic::error(
+                PART,
+                format!(
+                    "part `{element_id}` resolves to no element in scene `{}`",
+                    scene.id
+                ),
+            )
+            .with_location(Location::element(element_id)),
+        ));
+    }
+
+    let mut children: HashMap<&str, Vec<&Element>> = HashMap::new();
+    for element in &scene.elements {
+        if let Some(parent) = element.parent_id.as_deref() {
+            children.entry(parent).or_default().push(element);
+        }
+    }
+
+    let mut keep: HashSet<&str> = HashSet::new();
+    let mut stack = vec![element_id];
+    while let Some(id) = stack.pop() {
+        if !keep.insert(id) {
+            continue;
+        }
+        if let Some(descendants) = children.get(id) {
+            for descendant in descendants {
+                stack.push(descendant.id.as_str());
+            }
+        }
+    }
+
+    let mut elements: Vec<Element> = scene
+        .elements
+        .iter()
+        .filter(|element| keep.contains(element.id.as_str()))
+        .cloned()
+        .collect();
+    for element in &mut elements {
+        if element.id == element_id {
+            element.parent_id = None;
+        }
+    }
+
+    let constraints = scene
+        .constraints
+        .as_ref()
+        .map(|constraints| {
+            constraints
+                .iter()
+                .filter(|constraint| {
+                    constraint
+                        .element_ids
+                        .iter()
+                        .all(|id| keep.contains(id.as_str()))
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .filter(|constraints| !constraints.is_empty());
+
+    Ok(Scene {
+        id: scene.id.clone(),
+        project_id: scene.project_id.clone(),
+        name: scene.name.clone(),
+        format_version: scene.format_version.clone(),
+        canvas: scene.canvas.clone(),
+        palette_id: scene.palette_id.clone(),
+        recipe_id: scene.recipe_id.clone(),
+        title: scene.title.clone(),
+        description: scene.description.clone(),
+        elements,
+        constraints,
+    })
+}
+
+/// The identity transform a synthetic element declares.
+fn identity_transform() -> Transform {
+    Transform {
+        translate_x: NumberValue::Literal(0.0),
+        translate_y: NumberValue::Literal(0.0),
+        rotate: NumberValue::Literal(0.0),
+        scale_x: NumberValue::Literal(1.0),
+        scale_y: NumberValue::Literal(1.0),
+        skew_x: None,
+        skew_y: None,
+    }
+}
+
+/// Drops the warnings that describe a scene's unused project assets.
+///
+/// A part is rendered in isolation, so a definition or gradient the whole
+/// project carries but the part does not place is not "unused" and must not be
+/// reported against the preview (FEAT-031).
+fn drop_isolation_warnings(model: &mut RenderModel) {
+    let diagnostics = std::mem::take(&mut model.diagnostics);
+    model.diagnostics = diagnostics
+        .into_iter()
+        .filter(|finding| {
+            finding.code != expand::UNUSED_DEFINITION && finding.code != style::UNUSED_GRADIENT
+        })
+        .collect();
+}
+
+/// Frames a compiled part to its own bounds, translating it to the origin.
+///
+/// The canvas becomes the part's extent so an exporter previews the part alone;
+/// a part with no drawable geometry is reported and given a defined fallback
+/// frame rather than failing (FEAT-031).
+fn frame_part(model: &mut RenderModel, part: &str) {
+    let (min, size) = match model_bounds(model) {
+        Some((min, max)) if max[0] > min[0] && max[1] > min[1] => {
+            (min, [max[0] - min[0], max[1] - min[1]])
+        }
+        _ => {
+            model.diagnostics.push(Diagnostic::warning(
+                EMPTY_PART_FRAME,
+                format!(
+                    "part `{part}` has no drawable geometry; previewed in a {PART_FRAME_FALLBACK}x{PART_FRAME_FALLBACK} frame"
+                ),
+            ));
+            ([0.0, 0.0], [PART_FRAME_FALLBACK, PART_FRAME_FALLBACK])
+        }
+    };
+
+    for node in &mut model.nodes {
+        node.transform.e -= min[0];
+        node.transform.f -= min[1];
+    }
+    model.canvas = RenderCanvas {
+        width: size[0],
+        height: size[1],
+        background: "transparent".to_string(),
+    };
+}
+
+/// The axis-aligned bounds every visible node of a model spans.
+///
+/// Geometry is measured in world coordinates, with a node's stroke half-width
+/// included so a stroked part is not clipped by its own outline. A text node is
+/// outlined against the model's fonts, so a part made of text frames correctly.
+fn model_bounds(model: &RenderModel) -> Option<([f64; 2], [f64; 2])> {
+    let fonts = FontLibrary::new(&model.fonts);
+    let mut bounds: Option<([f64; 2], [f64; 2])> = None;
+    for node in &model.nodes {
+        if !node.visible || !node.transform.is_finite() {
+            continue;
+        }
+        let half_stroke = node
+            .paint
+            .stroke
+            .as_ref()
+            .filter(|stroke| stroke.width.is_finite())
+            .map(|stroke| stroke.width.abs() / 2.0)
+            .unwrap_or(0.0);
+        for point in node_points(node, &fonts) {
+            if !point[0].is_finite() || !point[1].is_finite() {
+                continue;
+            }
+            let transformed = node.transform.apply(point);
+            let low = [transformed[0] - half_stroke, transformed[1] - half_stroke];
+            let high = [transformed[0] + half_stroke, transformed[1] + half_stroke];
+            bounds = Some(match bounds {
+                Some((min, max)) => (
+                    [min[0].min(low[0]), min[1].min(low[1])],
+                    [max[0].max(high[0]), max[1].max(high[1])],
+                ),
+                None => (low, high),
+            });
+        }
+    }
+    bounds
+}
+
+/// The local points a node's geometry spans, or its outlined glyphs.
+fn node_points(node: &ResolvedNode, fonts: &FontLibrary<'_>) -> Vec<[f64; 2]> {
+    if let Some(shape) = &node.geometry {
+        return shape_points(shape);
+    }
+    if let Some(run) = &node.text {
+        return flatten_subpaths(&fonts.outline(run, &node.id).path)
+            .into_iter()
+            .flatten()
+            .collect();
+    }
+    Vec::new()
+}
+
+/// The local points a concrete shape spans.
+fn shape_points(shape: &Shape) -> Vec<[f64; 2]> {
+    match shape {
+        Shape::Rect(rect) => {
+            let (x, width) = normalize_extent(rect.x, rect.width);
+            let (y, height) = normalize_extent(rect.y, rect.height);
+            vec![
+                [x, y],
+                [x + width, y],
+                [x + width, y + height],
+                [x, y + height],
+            ]
+        }
+        Shape::Ellipse(ellipse) => {
+            let rx = ellipse.rx.abs();
+            let ry = ellipse.ry.abs();
+            vec![
+                [ellipse.cx - rx, ellipse.cy - ry],
+                [ellipse.cx + rx, ellipse.cy - ry],
+                [ellipse.cx + rx, ellipse.cy + ry],
+                [ellipse.cx - rx, ellipse.cy + ry],
+            ]
+        }
+        Shape::Polygon(polygon) => polygon.points.clone(),
+        Shape::Line(line) => line.points.clone(),
+        Shape::Path(path) => flatten_subpaths(path).into_iter().flatten().collect(),
+    }
+}
+
+/// A rectangle's origin and extent with a negative extent normalised positive.
+fn normalize_extent(origin: f64, extent: f64) -> (f64, f64) {
+    if extent < 0.0 {
+        (origin + extent, -extent)
+    } else {
+        (origin, extent)
     }
 }
 
@@ -464,8 +808,8 @@ impl Compiler<'_, '_> {
             return;
         };
         let world = parent_world.then(local);
-        let opacity = parent_opacity * self.scene.elements[index].opacity;
-        let visible = parent_visible && self.scene.elements[index].visible;
+        let opacity = parent_opacity * self.scene.elements[index].opacity();
+        let visible = parent_visible && self.scene.elements[index].visible();
 
         // A group contributes no node; it only deepens the chain its descendants
         // carry. Every other kind passes the chain through unchanged.
@@ -480,6 +824,9 @@ impl Compiler<'_, '_> {
 
         match kind {
             ElementKind::Raster => self.reject_unsupported(index, "raster"),
+            // An instance is lowered to concrete elements before compilation;
+            // reaching one here means a scene was compiled without expansion.
+            ElementKind::Instance => self.reject_unsupported(index, "instance"),
             ElementKind::Rect
             | ElementKind::Ellipse
             | ElementKind::Polygon
@@ -519,7 +866,7 @@ impl Compiler<'_, '_> {
             }
             ElementKind::Repeat => {
                 let mut findings = Diagnostics::new();
-                let count = self.scene.elements[index].geometry.count.unwrap_or(0);
+                let count = self.scene.elements[index].geometry.count().unwrap_or(0);
                 if !self.guard_count(index, count) {
                     return;
                 }
@@ -548,7 +895,7 @@ impl Compiler<'_, '_> {
                 let Some(guide) = self.guide_path(index) else {
                     return;
                 };
-                let count = self.scene.elements[index].geometry.count.unwrap_or(0);
+                let count = self.scene.elements[index].geometry.count().unwrap_or(0);
                 if !self.guard_count(index, count) {
                     return;
                 }
@@ -606,7 +953,10 @@ impl Compiler<'_, '_> {
                 }
             }
             ElementKind::Offset => {
-                let distance = self.scene.elements[index].geometry.distance.unwrap_or(0.0);
+                let distance = self.scene.elements[index]
+                    .geometry
+                    .distance()
+                    .unwrap_or(0.0);
                 let children = self.children[index].clone();
                 for child in children {
                     if self.limit_hit {
@@ -638,6 +988,10 @@ impl Compiler<'_, '_> {
         match kind {
             ElementKind::Raster => {
                 self.reject_unsupported(index, "raster");
+                None
+            }
+            ElementKind::Instance => {
+                self.reject_unsupported(index, "instance");
                 None
             }
             ElementKind::Text => {
@@ -678,7 +1032,7 @@ impl Compiler<'_, '_> {
             }
             ElementKind::Repeat => {
                 let mut findings = Diagnostics::new();
-                let count = self.scene.elements[index].geometry.count.unwrap_or(0);
+                let count = self.scene.elements[index].geometry.count().unwrap_or(0);
                 if !self.guard_count(index, count) {
                     return None;
                 }
@@ -700,7 +1054,7 @@ impl Compiler<'_, '_> {
             }
             ElementKind::AlongPath => {
                 let guide = self.guide_path(index)?;
-                let count = self.scene.elements[index].geometry.count.unwrap_or(0);
+                let count = self.scene.elements[index].geometry.count().unwrap_or(0);
                 if !self.guard_count(index, count) {
                     return None;
                 }
@@ -727,7 +1081,10 @@ impl Compiler<'_, '_> {
                 self.bake(combined, local)
             }
             ElementKind::Offset => {
-                let distance = self.scene.elements[index].geometry.distance.unwrap_or(0.0);
+                let distance = self.scene.elements[index]
+                    .geometry
+                    .distance()
+                    .unwrap_or(0.0);
                 let children = self.children[index].clone();
                 let mut shapes = Vec::new();
                 for child in children {
@@ -892,7 +1249,10 @@ impl Compiler<'_, '_> {
             (
                 element.id.clone(),
                 element.transform.clone(),
-                [element.transform.translate_x, element.transform.translate_y],
+                [
+                    element.transform.translate_x(),
+                    element.transform.translate_y(),
+                ],
             )
         };
         let translation = self
@@ -901,8 +1261,7 @@ impl Compiler<'_, '_> {
             .copied()
             .or_else(|| self.resolution.translation(&id))
             .unwrap_or(declared);
-        transform.translate_x = translation[0];
-        transform.translate_y = translation[1];
+        transform.set_translation(translation[0], translation[1]);
         match Affine::from_scene(&transform) {
             Ok(affine) if affine.is_finite() => Some(affine),
             _ => None,
@@ -944,7 +1303,10 @@ impl Compiler<'_, '_> {
             .iter()
             .enumerate()
             .map(|(index, element)| {
-                let declared = [element.transform.translate_x, element.transform.translate_y];
+                let declared = [
+                    element.transform.translate_x(),
+                    element.transform.translate_y(),
+                ];
                 let current = self.resolution.translation(&element.id).unwrap_or(declared);
                 let (translation, transform_moved) = recipe.snap_point(current);
                 let geometry_moved = self.geometry_off_grid(index, recipe);
@@ -991,8 +1353,8 @@ impl Compiler<'_, '_> {
         let moved = |point: [f64; 2]| recipe.snap_point(point).1;
         match element.kind {
             ElementKind::Rect | ElementKind::Ellipse => moved([
-                element.geometry.x.unwrap_or(0.0),
-                element.geometry.y.unwrap_or(0.0),
+                element.geometry.x().unwrap_or(0.0),
+                element.geometry.y().unwrap_or(0.0),
             ]),
             ElementKind::Polygon | ElementKind::Line => element
                 .geometry
@@ -1119,7 +1481,11 @@ impl Compiler<'_, '_> {
 
     /// Parses an `alongPath` element's guide, or reports why it cannot.
     fn guide_path(&mut self, index: usize) -> Option<PathGeometry> {
-        let Some(data) = self.scene.elements[index].geometry.path_data.clone() else {
+        let Some(data) = self.scene.elements[index]
+            .geometry
+            .path_data()
+            .map(str::to_string)
+        else {
             self.reject_composition(index, "must declare a guide pathData");
             return None;
         };
@@ -1246,12 +1612,12 @@ impl Compiler<'_, '_> {
     fn text_run(&mut self, index: usize) -> Option<TextRun> {
         let element = &self.scene.elements[index];
         let geometry = &element.geometry;
-        let value = geometry.text.clone().unwrap_or_default();
-        let font_size = geometry.font_size.unwrap_or(0.0);
+        let value = geometry.text().unwrap_or_default().to_string();
+        let font_size = geometry.font_size().unwrap_or(0.0);
         let align = geometry.align.unwrap_or(TextAlign::Start);
-        let line_height = geometry.line_height.unwrap_or(font_size);
-        let letter_spacing = geometry.letter_spacing.unwrap_or(0.0);
-        let width = geometry.width;
+        let line_height = geometry.line_height().unwrap_or(font_size);
+        let letter_spacing = geometry.letter_spacing().unwrap_or(0.0);
+        let width = geometry.width();
         let declared = element.font_id.clone();
         let element_id = element.id.clone();
 
@@ -1348,7 +1714,7 @@ impl Compiler<'_, '_> {
     ) {
         let anchor = {
             let geometry = &self.scene.elements[index].geometry;
-            Affine::translate(geometry.x.unwrap_or(0.0), geometry.y.unwrap_or(0.0))
+            Affine::translate(geometry.x().unwrap_or(0.0), geometry.y().unwrap_or(0.0))
         };
         self.push_text_node(index, world.then(anchor), opacity, visible, copy, groups);
     }
@@ -1590,6 +1956,7 @@ impl Compiler<'_, '_> {
         let kind = self.scene.elements[index].kind;
         let value = match kind {
             ElementKind::Raster => 0,
+            ElementKind::Instance => 0,
             ElementKind::Rect
             | ElementKind::Ellipse
             | ElementKind::Polygon
@@ -1608,7 +1975,7 @@ impl Compiler<'_, '_> {
                     .min(cap)
             }
             ElementKind::Repeat | ElementKind::AlongPath => {
-                let count = u64::from(self.scene.elements[index].geometry.count.unwrap_or(0));
+                let count = u64::from(self.scene.elements[index].geometry.count().unwrap_or(0));
                 let children = self.children[index].clone();
                 let per_copy = children.into_iter().fold(0u64, |sum, child| {
                     sum.saturating_add(self.subtree_nodes(child))
@@ -1877,7 +2244,7 @@ mod tests {
     #[test]
     fn an_invalid_scene_fails_with_a_location() {
         let mut scene = scene_of(json!([rect("e1", 0, 10.0, 10.0)]), None);
-        scene.elements[0].opacity = 1.5;
+        scene.elements[0].opacity = crate::scene::NumberValue::Literal(1.5);
         let diagnostics = compile(&scene).expect_err("an invalid scene is refused");
         let error = diagnostics.errors().next().expect("an error");
         assert_eq!(error.code, DiagnosticCode::SCHEMA);
@@ -2308,6 +2675,7 @@ mod tests {
             gradients: &[],
             fonts: &[],
             recipe: None,
+            definitions: &[],
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -2355,6 +2723,7 @@ mod tests {
             gradients: &gradients,
             fonts: &[],
             recipe: Some(&recipe),
+            definitions: &[],
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -2403,6 +2772,7 @@ mod tests {
             gradients: &[],
             fonts: &[],
             recipe: None,
+            definitions: &[],
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -2425,6 +2795,7 @@ mod tests {
             gradients: &[],
             fonts: &[],
             recipe: Some(&recipe),
+            definitions: &[],
         };
 
         let model = compile_with_style(&scene, &style).expect("the scene still compiles");
@@ -2459,6 +2830,7 @@ mod tests {
             gradients: &[],
             fonts: &[],
             recipe: Some(&recipe),
+            definitions: &[],
         };
 
         let model = compile_with_style(&scene, &style).expect("the shading request is not fatal");
@@ -2518,6 +2890,7 @@ mod tests {
             gradients: &[],
             fonts: &[],
             recipe: Some(&recipe),
+            definitions: &[],
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -2557,6 +2930,7 @@ mod tests {
             gradients: &[],
             fonts: &[],
             recipe: Some(&recipe),
+            definitions: &[],
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -2588,6 +2962,7 @@ mod tests {
             gradients: &[],
             fonts: &[],
             recipe: Some(&recipe),
+            definitions: &[],
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -2611,6 +2986,7 @@ mod tests {
             gradients: &[],
             fonts: &[],
             recipe: Some(&recipe),
+            definitions: &[],
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -2644,6 +3020,7 @@ mod tests {
             gradients: &[],
             fonts: &[],
             recipe: Some(&recipe),
+            definitions: &[],
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -2677,6 +3054,7 @@ mod tests {
             gradients: &[],
             fonts: &[],
             recipe: Some(&recipe),
+            definitions: &[],
         };
 
         let model =
@@ -2714,6 +3092,7 @@ mod tests {
                 gradients: &[],
                 fonts: &[],
                 recipe: None,
+                definitions: &[],
             },
         )
         .expect("compiles");
@@ -2725,6 +3104,7 @@ mod tests {
                 gradients: &[],
                 fonts: &[],
                 recipe: None,
+                definitions: &[],
             },
         )
         .expect("compiles");
@@ -2774,6 +3154,7 @@ mod tests {
             gradients: &[],
             fonts: &[],
             recipe: None,
+            definitions: &[],
         };
 
         let diagnostics =
@@ -2909,6 +3290,7 @@ mod tests {
             gradients: &[],
             fonts: &fonts,
             recipe: None,
+            definitions: &[],
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -2932,6 +3314,7 @@ mod tests {
             gradients: &[],
             fonts: &fonts,
             recipe: None,
+            definitions: &[],
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -2953,6 +3336,7 @@ mod tests {
             gradients: &[],
             fonts: &fonts,
             recipe: None,
+            definitions: &[],
         };
 
         let diagnostics =
@@ -2993,6 +3377,7 @@ mod tests {
             gradients: &[],
             fonts: &fonts,
             recipe: None,
+            definitions: &[],
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -3022,6 +3407,7 @@ mod tests {
             gradients: &[],
             fonts: &fonts,
             recipe: None,
+            definitions: &[],
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -3050,6 +3436,7 @@ mod tests {
             gradients: &[],
             fonts: &fonts,
             recipe: None,
+            definitions: &[],
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -3123,6 +3510,7 @@ mod tests {
             gradients: &[],
             fonts: &[],
             recipe: Some(&recipe),
+            definitions: &[],
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -3157,6 +3545,7 @@ mod tests {
             gradients: &[],
             fonts: &[],
             recipe: Some(&recipe),
+            definitions: &[],
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -3199,6 +3588,7 @@ mod tests {
             gradients: &[],
             fonts: &[],
             recipe: Some(&recipe),
+            definitions: &[],
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -3233,6 +3623,7 @@ mod tests {
             gradients: &[],
             fonts: &[],
             recipe: Some(&recipe),
+            definitions: &[],
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -3278,6 +3669,7 @@ mod tests {
             gradients: &[],
             fonts: &[],
             recipe: Some(&recipe),
+            definitions: &[],
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -3337,6 +3729,7 @@ mod tests {
             gradients: &[],
             fonts: &[],
             recipe: Some(&recipe),
+            definitions: &[],
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -3367,6 +3760,7 @@ mod tests {
             gradients: &[],
             fonts: &[],
             recipe: Some(&recipe),
+            definitions: &[],
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -3404,6 +3798,7 @@ mod tests {
             gradients: &[],
             fonts: &[],
             recipe: Some(&recipe),
+            definitions: &[],
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -3433,6 +3828,7 @@ mod tests {
             gradients: &[],
             fonts: &[],
             recipe: Some(&recipe),
+            definitions: &[],
         };
         assert_eq!(
             compile_with_style(&scene, &style).expect("compiles"),
@@ -3461,6 +3857,7 @@ mod tests {
             gradients: &[],
             fonts: &[],
             recipe: Some(recipe),
+            definitions: &[],
         }
     }
 
@@ -3667,6 +4064,223 @@ mod tests {
             compile_with_style(&scene, &isometric_style(&recipe)).expect("compiles"),
             compile_with_style(&scene, &isometric_style(&recipe)).expect("compiles"),
             "repeated runs must be identical (NFR-010)"
+        );
+    }
+
+    /// One element owned by a definition, the same shape a scene's is.
+    fn def_element(id: &str, definition: &str, order: u64, kind: &str, geometry: Value) -> Value {
+        json!({
+            "id": id,
+            "definitionId": definition,
+            "order": order,
+            "kind": kind,
+            "geometry": geometry,
+            "transform": {
+                "translateX": 0.0,
+                "translateY": 0.0,
+                "rotate": 0.0,
+                "scaleX": 1.0,
+                "scaleY": 1.0
+            },
+            "opacity": 1.0,
+            "visible": true
+        })
+    }
+
+    fn definition(id: &str, parameters: Value, elements: Value) -> crate::scene::Definition {
+        crate::scene::parse_definition(
+            &json!({
+                "id": id,
+                "projectId": "p",
+                "name": id,
+                "parameters": parameters,
+                "origin": { "x": 0.0, "y": 0.0 },
+                "elements": elements
+            })
+            .to_string(),
+        )
+        .expect("a valid definition")
+    }
+
+    #[test]
+    fn a_definition_preview_frames_the_part_to_its_own_bounds() {
+        let badge = definition(
+            "badge",
+            json!([]),
+            json!([def_element(
+                "r1",
+                "badge",
+                0,
+                "rect",
+                json!({ "x": 10.0, "y": 20.0, "width": 30.0, "height": 40.0 })
+            )]),
+        );
+        let style = StyleContext {
+            definitions: std::slice::from_ref(&badge),
+            ..StyleContext::default()
+        };
+
+        let model = compile_definition(&badge, &style).expect("compiles");
+        assert_eq!(model.nodes.len(), 1);
+        assert_eq!(model.canvas.width, 30.0);
+        assert_eq!(model.canvas.height, 40.0);
+        assert_eq!(model.canvas.background, "transparent");
+        assert_eq!(model.nodes[0].transform.e, -10.0);
+        assert_eq!(model.nodes[0].transform.f, -20.0);
+        assert!(
+            model.diagnostics.is_empty(),
+            "isolation must not report unused project assets: {:?}",
+            model.diagnostics
+        );
+    }
+
+    #[test]
+    fn a_definition_preview_resolves_a_definition_it_places() {
+        let dot = definition(
+            "dot",
+            json!([]),
+            json!([def_element(
+                "dot-rect",
+                "dot",
+                0,
+                "rect",
+                json!({ "x": 0.0, "y": 0.0, "width": 5.0, "height": 5.0 })
+            )]),
+        );
+        let badge = definition(
+            "badge",
+            json!([]),
+            json!([{
+                "id": "place",
+                "definitionId": "badge",
+                "order": 0,
+                "kind": "instance",
+                "definitionRef": "dot",
+                "geometry": {},
+                "transform": {
+                    "translateX": 0.0,
+                    "translateY": 0.0,
+                    "rotate": 0.0,
+                    "scaleX": 1.0,
+                    "scaleY": 1.0
+                },
+                "opacity": 1.0,
+                "visible": true
+            }]),
+        );
+        let definitions = [dot, badge.clone()];
+        let style = StyleContext {
+            definitions: &definitions,
+            ..StyleContext::default()
+        };
+
+        let model = compile_definition(&badge, &style).expect("compiles");
+        assert_eq!(model.nodes.len(), 1, "the placed definition is resolved");
+        assert!(model
+            .diagnostics
+            .iter()
+            .all(|finding| finding.code != crate::compiler::expand::UNUSED_DEFINITION));
+    }
+
+    #[test]
+    fn a_definition_preview_applies_parameter_defaults() {
+        let badge = definition(
+            "badge",
+            json!([{ "name": "w", "type": "number", "default": 25.0 }]),
+            json!([def_element(
+                "r1",
+                "badge",
+                0,
+                "rect",
+                json!({ "x": 0.0, "y": 0.0, "width": { "param": "w" }, "height": 4.0 })
+            )]),
+        );
+        let style = StyleContext {
+            definitions: std::slice::from_ref(&badge),
+            ..StyleContext::default()
+        };
+
+        let model = compile_definition(&badge, &style).expect("compiles");
+        assert_eq!(
+            model.nodes[0].geometry,
+            Some(Shape::Rect(PrimRect {
+                x: 0.0,
+                y: 0.0,
+                width: 25.0,
+                height: 4.0,
+                rx: 0.0,
+                ry: 0.0,
+            }))
+        );
+        assert_eq!(model.canvas.width, 25.0);
+    }
+
+    #[test]
+    fn a_definition_preview_with_no_geometry_uses_the_fallback_frame() {
+        let empty = definition("empty", json!([]), json!([]));
+        let style = StyleContext {
+            definitions: std::slice::from_ref(&empty),
+            ..StyleContext::default()
+        };
+
+        let model = compile_definition(&empty, &style).expect("compiles");
+        assert!(model.nodes.is_empty());
+        assert_eq!(model.canvas.width, PART_FRAME_FALLBACK);
+        assert_eq!(model.canvas.height, PART_FRAME_FALLBACK);
+        assert_eq!(
+            model.diagnostics.warnings().next().map(|w| w.code.clone()),
+            Some(EMPTY_PART_FRAME)
+        );
+    }
+
+    #[test]
+    fn a_subtree_preview_renders_only_the_named_element_and_its_children() {
+        let mut group = base("g", 0, "group", json!({}));
+        group["name"] = json!("Part");
+        let mut child = rect("c", 0, 10.0, 10.0);
+        child["parentId"] = json!("g");
+        let sibling = rect("s", 1, 100.0, 100.0);
+        let scene = scene_of(json!([group, child, sibling]), None);
+
+        let style = StyleContext::default();
+        let model = compile_subtree(&scene, "g", &style).expect("compiles");
+        assert_eq!(model.nodes.len(), 1, "only the subtree renders");
+        assert_eq!(model.nodes[0].id, "c");
+        assert_eq!(model.canvas.width, 10.0);
+        assert_eq!(model.canvas.height, 10.0);
+    }
+
+    #[test]
+    fn a_subtree_identifier_no_element_provides_is_reported() {
+        let scene = scene_of(json!([rect("e1", 0, 10.0, 10.0)]), None);
+        let diagnostics =
+            compile_subtree(&scene, "absent", &StyleContext::default()).expect_err("refused");
+        let error = diagnostics.errors().next().expect("an error");
+        assert_eq!(error.code, PART);
+        assert!(error.message.contains("absent"), "{}", error.message);
+    }
+
+    #[test]
+    fn part_previews_are_deterministic() {
+        let badge = definition(
+            "badge",
+            json!([]),
+            json!([def_element(
+                "r1",
+                "badge",
+                0,
+                "rect",
+                json!({ "x": 3.0, "y": 4.0, "width": 8.0, "height": 9.0 })
+            )]),
+        );
+        let style = StyleContext {
+            definitions: std::slice::from_ref(&badge),
+            ..StyleContext::default()
+        };
+        assert_eq!(
+            compile_definition(&badge, &style).expect("compiles"),
+            compile_definition(&badge, &style).expect("compiles"),
+            "repeated part previews must be identical (NFR-010)"
         );
     }
 }

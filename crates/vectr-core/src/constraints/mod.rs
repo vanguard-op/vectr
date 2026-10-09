@@ -174,7 +174,10 @@ impl<'a> Solver<'a> {
         for element in &scene.elements {
             let affine = composition::resolve_transform(element, &mut diagnostics)
                 .unwrap_or(Affine::IDENTITY);
-            let base_translation = [element.transform.translate_x, element.transform.translate_y];
+            let base_translation = [
+                element.transform.translate_x(),
+                element.transform.translate_y(),
+            ];
             index_of.insert(element.id.clone(), elements.len());
             elements.push(ElementState {
                 id: element.id.clone(),

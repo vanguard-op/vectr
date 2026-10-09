@@ -189,30 +189,30 @@ impl Affine {
     /// is reported rather than silently dropped.
     pub fn from_scene(transform: &Transform) -> Result<Self, &'static str> {
         let fields = [
-            ("translateX", transform.translate_x),
-            ("translateY", transform.translate_y),
-            ("rotate", transform.rotate),
-            ("scaleX", transform.scale_x),
-            ("scaleY", transform.scale_y),
+            ("translateX", transform.translate_x()),
+            ("translateY", transform.translate_y()),
+            ("rotate", transform.rotate()),
+            ("scaleX", transform.scale_x()),
+            ("scaleY", transform.scale_y()),
         ];
         for (name, value) in fields {
             if !value.is_finite() {
                 return Err(name);
             }
         }
-        for (name, value) in [("skewX", transform.skew_x), ("skewY", transform.skew_y)] {
+        for (name, value) in [("skewX", transform.skew_x()), ("skewY", transform.skew_y())] {
             if value.is_some_and(|value| !value.is_finite()) {
                 return Err(name);
             }
         }
 
         Ok(
-            Self::translate(transform.translate_x, transform.translate_y)
-                .then(Self::rotate(transform.rotate))
-                .then(Self::scale(transform.scale_x, transform.scale_y))
+            Self::translate(transform.translate_x(), transform.translate_y())
+                .then(Self::rotate(transform.rotate()))
+                .then(Self::scale(transform.scale_x(), transform.scale_y()))
                 .then(Self::skew(
-                    transform.skew_x.unwrap_or(0.0),
-                    transform.skew_y.unwrap_or(0.0),
+                    transform.skew_x().unwrap_or(0.0),
+                    transform.skew_y().unwrap_or(0.0),
                 )),
         )
     }
@@ -221,14 +221,19 @@ impl Affine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scene::NumberValue;
+
+    fn n(value: f64) -> NumberValue {
+        NumberValue::Literal(value)
+    }
 
     fn scene_transform() -> Transform {
         Transform {
-            translate_x: 0.0,
-            translate_y: 0.0,
-            rotate: 0.0,
-            scale_x: 1.0,
-            scale_y: 1.0,
+            translate_x: n(0.0),
+            translate_y: n(0.0),
+            rotate: n(0.0),
+            scale_x: n(1.0),
+            scale_y: n(1.0),
             skew_x: None,
             skew_y: None,
         }
@@ -259,8 +264,8 @@ mod tests {
         // A group at (100, 0) rotated 90°: a child at local (10, 0) lands at
         // (100, 10), so the rotation pivots on the group's origin (100, 0).
         let group = Affine::from_scene(&Transform {
-            translate_x: 100.0,
-            rotate: 90.0,
+            translate_x: n(100.0),
+            rotate: n(90.0),
             ..scene_transform()
         })
         .unwrap();
@@ -279,11 +284,11 @@ mod tests {
     #[test]
     fn scene_transform_decomposes_into_one_matrix() {
         let transform = Transform {
-            translate_x: 5.0,
-            translate_y: 7.0,
-            rotate: 0.0,
-            scale_x: 2.0,
-            scale_y: 3.0,
+            translate_x: n(5.0),
+            translate_y: n(7.0),
+            rotate: n(0.0),
+            scale_x: n(2.0),
+            scale_y: n(3.0),
             skew_x: None,
             skew_y: None,
         };
@@ -296,9 +301,9 @@ mod tests {
         // skewX 45° maps (0, 1) to (1, 1); scaling by (2, 3) then maps it to
         // (2, 3). The reverse order would give (3, 3).
         let transform = Transform {
-            scale_x: 2.0,
-            scale_y: 3.0,
-            skew_x: Some(45.0),
+            scale_x: n(2.0),
+            scale_y: n(3.0),
+            skew_x: Some(n(45.0)),
             ..scene_transform()
         };
         let affine = Affine::from_scene(&transform).unwrap();
@@ -310,7 +315,7 @@ mod tests {
     #[test]
     fn a_non_finite_field_is_named() {
         let transform = Transform {
-            scale_x: f64::NAN,
+            scale_x: n(f64::NAN),
             ..scene_transform()
         };
         assert_eq!(Affine::from_scene(&transform), Err("scaleX"));

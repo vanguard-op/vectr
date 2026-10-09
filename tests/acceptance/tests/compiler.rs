@@ -34,6 +34,7 @@ fn compiling_the_same_scene_twice_yields_an_identical_model() {
         gradients: &[],
         fonts: &[],
         recipe: None,
+        definitions: &[],
     };
 
     let first = compile_with(&document, &style).expect("compiles");
@@ -49,7 +50,7 @@ fn compiling_the_same_scene_twice_yields_an_identical_model() {
 fn an_invalid_scene_fails_naming_the_location_of_the_error() {
     let document = scene(vec![rect("card", 0, 0.0, 0.0, 10.0, 10.0)]);
     let mut scene = parse_scene(&document);
-    scene.elements[0].opacity = 1.5;
+    scene.elements[0].opacity = vectr_core::NumberValue::Literal(1.5);
 
     let diagnostics = vectr_core::compile(&scene).expect_err("refused");
     let error = diagnostics.errors().next().expect("an error");
@@ -122,6 +123,7 @@ fn a_text_element_carries_its_string_resolved_font_and_layout() {
         gradients: &[],
         fonts: &fonts,
         recipe: None,
+        definitions: &[],
     };
 
     let model = compile_with(&document, &style).expect("compiles");
@@ -170,6 +172,7 @@ fn the_render_model_round_trips_through_its_json_representation() {
         gradients: &[],
         fonts: &[],
         recipe: None,
+        definitions: &[],
     };
     let model = compile_with(&document, &style).expect("compiles");
 

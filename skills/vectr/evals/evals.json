@@ -42,6 +42,12 @@
       "prompt": "Build a rich, detailed illustration: a mountain lake at dawn with snow-capped peaks, a pine forest, reeds at the water's edge, a trail of stepping stones, and a low sun.",
       "expected_output": "A compositionally complex Vectr scene: nested groups plus composition elements (repeat for the clouds and forest, boolean for the lake and snow cap, alongPath for the reeds and trail, offset for the sun halo, projection for the boardwalk) and at least one constraint, with every colour drawn from palette tokens. The skill validates, compiles, renders, and refines it, composing the full illustration rather than reducing it to a simple mark.",
       "files": []
+    },
+    {
+      "id": 8,
+      "prompt": "Build a detailed scene for me: a wide valley at sunset with two mirrored mountain ridges, a river winding between them, a row of three identical pine trees, and a herd of four deer — two facing left and two facing right.",
+      "expected_output": "The skill follows the incremental build-up method rather than authoring one scene in a single pass: it decomposes the request into named parts, authors each part (the mirrored ridge, the winding river, the pine, the deer) as a reusable definition in definitions/<id>.json, verifies each part on its own with render-part / vectr render before composing it, then composes the verified parts into the scene one instance at a time — reusing the pine and deer definitions for the repeated and mirrored placements instead of re-authoring them — rendering the composition after each addition and exporting only once the whole validates and compiles.",
+      "files": []
     }
   ]
 }

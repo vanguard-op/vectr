@@ -19,8 +19,10 @@
 
 mod assets;
 mod guide;
+mod part;
 mod scene;
 
 pub use assets::{project_root, project_root_from, ProjectAssets, STYLE_ASSET};
 pub use guide::{authoring_guide, AUTHORING_GUIDE_FILE};
-pub use scene::{resolve_scene, ProjectScene, SCENE, SCENE_DIR};
+pub use part::{resolve_part, ResolvedPart};
+pub use scene::{project_scenes, resolve_scene, ProjectScene, SCENE, SCENE_DIR};

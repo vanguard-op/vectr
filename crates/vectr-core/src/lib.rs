@@ -33,7 +33,14 @@ pub mod scene;
 pub mod schema;
 pub mod style;
 
-pub use compiler::{compile, compile_with_style, FontAsset, StyleContext, DEFAULT_FONT_ID};
+pub use compiler::expand::{
+    expand, validate_instances, Expansion, DEFINITION_CYCLE, INVALID_BINDING,
+    UNRESOLVED_DEFINITION, UNUSED_DEFINITION,
+};
+pub use compiler::{
+    compile, compile_definition, compile_subtree, compile_with_style, FontAsset, StyleContext,
+    DEFAULT_FONT_ID, EMPTY_PART_FRAME, PART, PART_FRAME_FALLBACK,
+};
 pub use composition::{flatten_shape, is_composition, projection_for, resolve_transform, Affine};
 pub use constraints::{resolve as resolve_constraints, Attachment, Frame, Placement, Resolution};
 pub use export::png::{export_png, export_png_reporting, PngExport, RasterOptions};
@@ -47,9 +54,11 @@ pub use render::{
     ResolvedFont, ResolvedNode, ResolvedStop, TextRun,
 };
 pub use scene::{
-    parse, validate, Canvas, Constraint, ConstraintKind, Diagnostic, DiagnosticCode, Diagnostics,
-    Element, ElementKind, Geometry, Location, PaintKind, ProjectionAxis, Scene, Severity,
-    TextAlign, Transform, MAX_SCENE_BYTES,
+    parse, parse_definition, validate, validate_definition, Binding, BindingValue, BoolValue,
+    Canvas, Constraint, ConstraintKind, Definition, Diagnostic, DiagnosticCode, Diagnostics,
+    Element, ElementKind, Geometry, Location, NumberValue, Origin, PaintKind, PaintValue, ParamRef,
+    Parameter, ParameterType, ParameterValue, ProjectionAxis, Scene, Severity, StringValue,
+    TextAlign, Transform, CURRENT_FORMAT_VERSION, MAX_SCENE_BYTES,
 };
 pub use schema::{schema, schema_for, SchemaForm, SCHEMA_VERSION, UNKNOWN_SCHEMA_TYPE};
 pub use style::{

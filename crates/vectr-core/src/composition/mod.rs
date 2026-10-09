@@ -104,12 +104,13 @@ pub fn projection_for(axis: ProjectionAxis) -> Affine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scene::{Geometry, Transform};
+    use crate::scene::{BoolValue, Geometry, NumberValue, Transform};
 
     fn element(kind: ElementKind, transform: Transform) -> Element {
         Element {
             id: "g1".to_string(),
-            scene_id: "s1".to_string(),
+            scene_id: Some("s1".to_string()),
+            definition_id: None,
             parent_id: None,
             order: 0,
             name: None,
@@ -119,18 +120,20 @@ mod tests {
             fill: None,
             stroke: None,
             font_id: None,
-            opacity: 1.0,
-            visible: true,
+            opacity: NumberValue::Literal(1.0),
+            visible: BoolValue::Literal(true),
+            definition_ref: None,
+            bindings: None,
         }
     }
 
     fn identity() -> Transform {
         Transform {
-            translate_x: 0.0,
-            translate_y: 0.0,
-            rotate: 0.0,
-            scale_x: 1.0,
-            scale_y: 1.0,
+            translate_x: NumberValue::Literal(0.0),
+            translate_y: NumberValue::Literal(0.0),
+            rotate: NumberValue::Literal(0.0),
+            scale_x: NumberValue::Literal(1.0),
+            scale_y: NumberValue::Literal(1.0),
             skew_x: None,
             skew_y: None,
         }
@@ -142,8 +145,8 @@ mod tests {
             &element(
                 ElementKind::Group,
                 Transform {
-                    translate_x: 100.0,
-                    rotate: 90.0,
+                    translate_x: NumberValue::Literal(100.0),
+                    rotate: NumberValue::Literal(90.0),
                     ..identity()
                 },
             ),
@@ -163,7 +166,7 @@ mod tests {
             &element(
                 ElementKind::Group,
                 Transform {
-                    skew_x: Some(f64::INFINITY),
+                    skew_x: Some(NumberValue::Literal(f64::INFINITY)),
                     ..identity()
                 },
             ),

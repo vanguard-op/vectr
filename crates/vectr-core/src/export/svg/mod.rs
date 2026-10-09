@@ -301,6 +301,7 @@ mod tests {
             gradients: &[],
             fonts: &[],
             recipe: None,
+            definitions: &[],
         };
 
         let compiled = compile_with_style(&scene, &style).expect("compiles");
@@ -861,6 +862,7 @@ mod tests {
                 gradients: &[],
                 fonts: &fonts,
                 recipe: None,
+                definitions: &[],
             },
         )
         .expect("compiles");

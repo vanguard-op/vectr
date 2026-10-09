@@ -151,6 +151,7 @@ fn a_text_element_rasterizes_its_glyphs() {
         gradients: &[],
         fonts: &fonts,
         recipe: None,
+        definitions: &[],
     };
     let model = compile_with(&document, &style).expect("compiles");
 

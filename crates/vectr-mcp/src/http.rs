@@ -244,7 +244,7 @@ mod tests {
             .map(|(_, body)| body)
             .expect("a body");
         let value: serde_json::Value = serde_json::from_str(payload).expect("valid JSON");
-        assert_eq!(value["result"]["tools"].as_array().map(Vec::len), Some(4));
+        assert_eq!(value["result"]["tools"].as_array().map(Vec::len), Some(5));
     }
 
     #[test]

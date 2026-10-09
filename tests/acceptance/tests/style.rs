@@ -43,6 +43,7 @@ fn changing_a_palette_token_restyles_every_referencing_element() {
         gradients: &[],
         fonts: &[],
         recipe: None,
+        definitions: &[],
     };
     let after_style = StyleContext {
         palette: Some(&after),
@@ -50,6 +51,7 @@ fn changing_a_palette_token_restyles_every_referencing_element() {
         gradients: &[],
         fonts: &[],
         recipe: None,
+        definitions: &[],
     };
 
     let before_model = compile_with(&document, &before_style).expect("compiles");
@@ -75,6 +77,7 @@ fn a_stroke_profile_is_shared_by_every_referencing_primitive() {
         gradients: &[],
         fonts: &[],
         recipe: None,
+        definitions: &[],
     };
 
     let mut first = rect("first", 0, 0.0, 0.0, 10.0, 10.0);
@@ -115,6 +118,7 @@ fn an_undefined_palette_token_is_an_error_naming_the_missing_token() {
         gradients: &[],
         fonts: &[],
         recipe: None,
+        definitions: &[],
     };
 
     let diagnostics = compile_with(&document, &style).expect_err("refused");
@@ -161,6 +165,7 @@ fn an_undefined_stroke_profile_is_an_error_naming_it() {
         gradients: &[],
         fonts: &[],
         recipe: None,
+        definitions: &[],
     };
 
     let diagnostics = compile_with(&document, &style).expect_err("refused");
@@ -194,6 +199,7 @@ fn a_token_redefined_mid_document_uses_the_later_value_and_warns() {
         gradients: &[],
         fonts: &[],
         recipe: None,
+        definitions: &[],
     };
     let model = compile_with(&document, &style).expect("compiles");
     assert_eq!(

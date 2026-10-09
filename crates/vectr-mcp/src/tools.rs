@@ -1,19 +1,25 @@
-//! The four MCP tools: validate, compile, render and schema (C-005, FEAT-019).
+//! The five MCP tools: validate, compile, render, render-part and schema
+//! (C-005, FEAT-019, FEAT-031).
 //!
 //! Each tool is a thin, stateless wrapper over the same engine calls the command
 //! line makes, so an agent gets identical results to `vectr validate`, `vectr
-//! compile`, `vectr export` and `vectr schema` (C-005: the MCP tools consume the
-//! CLI's capabilities). A tool call carries no server state: it resolves the
-//! input under the server's [`Scope`], runs the engine, and returns a JSON
-//! value. That keeps concurrent calls independent (FEAT-021, FEAT-019).
+//! compile`, `vectr export`, `vectr render` and `vectr schema` (C-005: the MCP
+//! tools consume the CLI's capabilities). A tool call carries no server state:
+//! it resolves the input under the server's [`Scope`], runs the engine, and
+//! returns a JSON value. That keeps concurrent calls independent (FEAT-021,
+//! FEAT-019).
 //!
-//! A tool addresses a scene exactly as the command line does: by the scene's
-//! identifier resolved among a project's scenes, or, when none is named, the
-//! project's default. The project is the one the caller names, or the server's
-//! project context. A tool also accepts a scene document sent inline as a
-//! draft, which is not a project scene: it never becomes or reads the default,
+//! A scene tool addresses a scene exactly as the command line does: by the
+//! scene's identifier resolved among a project's scenes, or, when none is named,
+//! the project's default. The project is the one the caller names, or the
+//! server's project context. A tool also accepts a scene document sent inline as
+//! a draft, which is not a project scene: it never becomes or reads the default,
 //! and its assets resolve against the same project a project scene uses. A call
 //! naming both a scene identifier and a draft is malformed (C-005, FEAT-019).
+//!
+//! The render-part tool renders one part on its own — a reusable definition or
+//! an element subtree, each addressed by its identifier — so a model can verify
+//! it before it is composed (FEAT-031).
 
 use std::path::{Path, PathBuf};
 
@@ -21,12 +27,13 @@ use serde_json::{json, Map, Value};
 
 use vectr_core::scene::{is_color, INVALID_COLOR};
 use vectr_core::{
-    compile_with_style, export_png_reporting, export_svg_reporting, parse as parse_scene, schema,
-    schema_for, validate as validate_scene, validate_gradient_usage, validate_palette_usage,
-    Diagnostics, Location, RasterOptions, RenderModel, Scene, SchemaForm, SvgOptions,
+    compile_definition as compile_part_definition, compile_subtree, compile_with_style,
+    export_png_reporting, export_svg_reporting, parse as parse_scene, schema, schema_for,
+    validate as validate_scene, validate_gradient_usage, validate_palette_usage, Diagnostics,
+    Location, RasterOptions, RenderModel, Scene, SchemaForm, SvgOptions,
 };
 
-use vectr_project::{resolve_scene, ProjectAssets};
+use vectr_project::{resolve_part, resolve_scene, ProjectAssets, ResolvedPart};
 
 use crate::output::write_atomic;
 use crate::scope::{Scope, ScopeError, SCOPE};
@@ -123,17 +130,19 @@ pub fn call(scope: &Scope, name: &str, arguments: &Map<String, Value>) -> Result
         "validate" => validate_tool(scope, arguments),
         "compile" => compile_tool(scope, arguments),
         "render" => render_tool(scope, arguments),
+        "render-part" => render_part_tool(scope, arguments),
         "schema" => schema_tool(arguments),
         other => Err(CallError::InvalidParams(format!("Unknown tool: {other}"))),
     }
 }
 
-/// The four tool definitions, in the order `tools/list` publishes them.
+/// The five tool definitions, in the order `tools/list` publishes them.
 pub fn definitions() -> Value {
     json!([
         validate_definition(),
         compile_definition(),
         render_definition(),
+        render_part_definition(),
         schema_definition(),
     ])
 }
@@ -255,6 +264,118 @@ fn render_tool(scope: &Scope, arguments: &Map<String, Value>) -> Result<Value, C
     Ok(json!({
         "path": report_path(&target),
         "format": format,
+        "diagnostics": serde_json::to_value(&diagnostics).unwrap_or(Value::Null),
+    }))
+}
+
+/// Renders one part on its own: a reusable definition or an element subtree,
+/// each addressed by its identifier (C-005, FEAT-031).
+///
+/// The part is resolved within the project — the caller's `project`, or the
+/// server's project context — in the project's shared definition-and-element
+/// namespace, a definition first and otherwise the element subtree, and compiled
+/// in isolation, framed to its own bounds or to the requested size. A definition
+/// has no placing scene, so it resolves its colours and style from the project's
+/// default palette and default recipe; an element subtree resolves them from the
+/// scene that owns it. The returned frame is the size the preview actually came
+/// out at, so a caller can see when a part did not fit the requested size. A
+/// part identifier that resolves to neither a definition nor an element, or that
+/// is not unique across the namespace, is a structured error naming it; a part
+/// with no drawable geometry is reported with a defined fallback frame rather
+/// than failing (FEAT-031, D-039).
+fn render_part_tool(scope: &Scope, arguments: &Map<String, Value>) -> Result<Value, CallError> {
+    let args = Args::new(arguments);
+    args.allowed(&[
+        "part",
+        "project",
+        "format",
+        "out",
+        "width",
+        "height",
+        "density",
+        "background",
+    ])?;
+
+    let part = args.required_string("part")?;
+    let format = args.required_string("format")?;
+    if format != "svg" && format != "png" {
+        return Err(unsupported(format!(
+            "rendering `{format}` is not supported; use `svg` or `png`"
+        )));
+    }
+    let width = args.number("width")?;
+    let height = args.number("height")?;
+    let density = args.number("density")?;
+    let background = args.string("background")?;
+
+    if format == "svg" && density.is_some() {
+        return Err(unsupported("`density` applies only to PNG output"));
+    }
+    if let Some(colour) = &background {
+        if !is_color(colour) {
+            return Err(exec(ToolError::new(
+                INVALID_COLOR.as_str(),
+                format!("`background` is not a colour SVG supports: `{colour}`"),
+            )));
+        }
+    }
+
+    let root = resolve_project_root(scope, args.string("project")?.as_deref())?;
+    let resolved = resolve_part(&root, &part).map_err(exec_diagnostics)?;
+
+    let model = match &resolved {
+        ResolvedPart::Definition { definition, assets } => {
+            compile_part_definition(definition, &assets.style_context())
+        }
+        ResolvedPart::Element { scene, assets } => {
+            compile_subtree(scene, &part, &assets.style_context())
+        }
+    }
+    .map_err(exec_diagnostics)?;
+    let mut diagnostics = model.diagnostics.clone();
+
+    let frame = output_frame(&model, &format, width, height, density);
+
+    let bytes = match format.as_str() {
+        "svg" => {
+            let options = SvgOptions {
+                width,
+                height,
+                background: background.clone(),
+            };
+            let export = export_svg_reporting(&model, &options).map_err(exec_diagnostics)?;
+            diagnostics.extend(export.diagnostics);
+            export.svg.into_bytes()
+        }
+        _ => {
+            let options = RasterOptions {
+                width,
+                height,
+                density,
+                background: background.clone(),
+            };
+            let export = export_png_reporting(&model, &options).map_err(exec_diagnostics)?;
+            diagnostics.extend(export.diagnostics);
+            export.png
+        }
+    };
+
+    let target = match args.string("out")? {
+        Some(out) => PathBuf::from(out),
+        None => default_part_output(&root, &part, &format),
+    };
+    let target = scope.write_path(&target).map_err(scope_error)?;
+    write_atomic(&target, &bytes).map_err(|error| {
+        exec(ToolError::new(
+            "E_OUTPUT",
+            format!("cannot write output `{}`: {error}", report_path(&target)),
+        ))
+    })?;
+
+    Ok(json!({
+        "path": report_path(&target),
+        "format": format,
+        "frame": { "width": frame.0, "height": frame.1 },
         "diagnostics": serde_json::to_value(&diagnostics).unwrap_or(Value::Null),
     }))
 }
@@ -409,6 +530,46 @@ fn default_output(input: &SceneInput, extension: &str) -> PathBuf {
     input.root.join("dist").join(format!("{stem}.{extension}"))
 }
 
+/// The default output path for a part: `<project>/dist/<part>.<extension>`.
+fn default_part_output(root: &Path, part: &str, extension: &str) -> PathBuf {
+    root.join("dist").join(format!("{part}.{extension}"))
+}
+
+/// The output frame a part preview actually uses, after size and density
+/// compose (FEAT-031).
+///
+/// A single requested dimension scales the other to keep the part's aspect
+/// ratio, and PNG density multiplies the resolved size, mirroring the
+/// exporters. Reporting the resolved frame tells a caller how large the preview
+/// came out when the part did not fit the requested size.
+fn output_frame(
+    model: &RenderModel,
+    format: &str,
+    width: Option<f64>,
+    height: Option<f64>,
+    density: Option<f64>,
+) -> (f64, f64) {
+    let canvas = &model.canvas;
+    let mut resolved_width = width.unwrap_or(canvas.width);
+    let mut resolved_height = height.unwrap_or(canvas.height);
+    let scalable = canvas.width > 0.0 && canvas.height > 0.0;
+    match (width, height) {
+        (Some(width), None) if scalable => {
+            resolved_height = width * canvas.height / canvas.width;
+        }
+        (None, Some(height)) if scalable => {
+            resolved_width = height * canvas.width / canvas.height;
+        }
+        _ => {}
+    }
+    if format == "png" {
+        let density = density.unwrap_or(1.0);
+        resolved_width *= density;
+        resolved_height *= density;
+    }
+    (resolved_width, resolved_height)
+}
+
 /// The written output's path as it is reported to a client (C-005, FEAT-019).
 ///
 /// The path is a JSON string that crosses the tool boundary, so it must read
@@ -446,6 +607,14 @@ fn unsupported(message: impl Into<String>) -> CallError {
     exec(ToolError::new("E_UNSUPPORTED", message))
 }
 
+/// The `project` input property shared by the tools that resolve a project.
+fn project_property() -> Value {
+    json!({
+        "type": "string",
+        "description": "Project root holding scenes/, definitions/, palettes/, strokes/, gradients/, recipes/ and assets/. Defaults to the server's project context."
+    })
+}
+
 /// The shared `scene` / `draft` / `project` input properties (C-005).
 fn scene_properties() -> Value {
     json!({
@@ -457,10 +626,7 @@ fn scene_properties() -> Value {
             "type": ["object", "string"],
             "description": "An inline scene document, as a JSON object or JSON text, used as a draft instead of a project scene. It is never the project's default; its assets resolve against `project` or the server's project context. Mutually exclusive with `scene`."
         },
-        "project": {
-            "type": "string",
-            "description": "Project root holding scenes/, palettes/, strokes/, gradients/, recipes/ and assets/. Defaults to the server's project context."
-        }
+        "project": project_property()
     })
 }
 
@@ -568,6 +734,57 @@ fn render_definition() -> Value {
                 }
             },
             "required": ["path", "format", "diagnostics"]
+        },
+        "annotations": { "readOnlyHint": false }
+    })
+}
+
+fn render_part_definition() -> Value {
+    let properties = json!({
+        "part": {
+            "type": "string",
+            "description": "The identifier of a reusable definition or of a named element subtree, resolved within the project."
+        },
+        "project": project_property(),
+        "format": { "type": "string", "enum": ["svg", "png"], "description": "The output format." },
+        "out": { "type": "string", "description": "Where to write the preview. Defaults to <project>/dist/<part>.<format>." },
+        "width": { "type": "number", "description": "Preview width in scene units; the part's own width when absent." },
+        "height": { "type": "number", "description": "Preview height in scene units; the part's own height when absent." },
+        "density": { "type": "number", "description": "Pixel density multiplier; PNG only." },
+        "background": { "type": "string", "description": "Background override, or `transparent`." }
+    });
+
+    json!({
+        "name": "render-part",
+        "title": "Render a part",
+        "description": "Compile one part on its own — a reusable definition or a named element subtree, each addressed by its identifier — and write it as SVG or PNG, framed to the part's own bounds or to a requested size. Returns the path it wrote and the frame the preview used; a failure writes nothing.",
+        "inputSchema": {
+            "type": "object",
+            "properties": properties,
+            "required": ["part", "format"],
+            "additionalProperties": false
+        },
+        "outputSchema": {
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "description": "The path the preview was written to." },
+                "format": { "type": "string", "enum": ["svg", "png"] },
+                "frame": {
+                    "type": "object",
+                    "description": "The preview's resolved size after the requested size and density compose.",
+                    "properties": {
+                        "width": { "type": "number" },
+                        "height": { "type": "number" }
+                    },
+                    "required": ["width", "height"]
+                },
+                "diagnostics": {
+                    "type": "array",
+                    "description": "Warnings recorded while compiling and exporting, including an empty part's fallback frame.",
+                    "items": { "type": "object" }
+                }
+            },
+            "required": ["path", "format", "frame", "diagnostics"]
         },
         "annotations": { "readOnlyHint": false }
     })
@@ -723,6 +940,123 @@ mod tests {
         }
     }
 
+    /// Writes one project file, creating its parent directory.
+    fn write_file(dir: &Path, name: &str, text: &str) {
+        let path = dir.join(name);
+        fs::create_dir_all(path.parent().expect("a parent")).expect("creates the parent");
+        fs::write(path, text).expect("writes the file");
+    }
+
+    /// A palette the part previews resolve their tokens against.
+    const PART_PALETTE: &str = r##"{"id":"brand","projectId":"project","name":"Brand","tokens":[{"name":"accent","value":"#ff0000"}]}"##;
+
+    /// A definition whose single rect sits off the origin, so a preview must
+    /// frame it to its own bounds.
+    const BADGE_DEFINITION: &str = r##"{
+      "id": "badge",
+      "projectId": "project",
+      "name": "Badge",
+      "parameters": [],
+      "origin": { "x": 0, "y": 0 },
+      "elements": [
+        {
+          "id": "r1", "definitionId": "badge", "order": 0, "kind": "rect",
+          "geometry": { "x": 10, "y": 20, "width": 30, "height": 40 },
+          "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
+          "fill": { "kind": "token", "ref": "accent" },
+          "opacity": 1, "visible": true
+        }
+      ]
+    }"##;
+
+    /// A definition with no drawable geometry.
+    const EMPTY_DEFINITION: &str = r##"{
+      "id": "empty",
+      "projectId": "project",
+      "name": "Empty",
+      "parameters": [],
+      "origin": { "x": 0, "y": 0 },
+      "elements": []
+    }"##;
+
+    /// A scene holding a named group subtree beside an unrelated shape.
+    const SUBTREE_SCENE: &str = r##"{
+      "id": "main",
+      "projectId": "project",
+      "name": "Main",
+      "formatVersion": "0.2",
+      "paletteId": "brand",
+      "canvas": { "width": 200, "height": 200, "background": "#ffffff" },
+      "elements": [
+        {
+          "id": "mark", "sceneId": "main", "order": 0, "kind": "group", "name": "Mark",
+          "geometry": {},
+          "transform": { "translateX": 50, "translateY": 50, "rotate": 0, "scaleX": 1, "scaleY": 1 },
+          "opacity": 1, "visible": true
+        },
+        {
+          "id": "mark-rect", "sceneId": "main", "parentId": "mark", "order": 0, "kind": "rect",
+          "geometry": { "x": 0, "y": 0, "width": 20, "height": 10 },
+          "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
+          "fill": { "kind": "token", "ref": "accent" },
+          "opacity": 1, "visible": true
+        },
+        {
+          "id": "other", "sceneId": "main", "order": 1, "kind": "rect",
+          "geometry": { "x": 100, "y": 100, "width": 50, "height": 50 },
+          "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
+          "opacity": 1, "visible": true
+        }
+      ]
+    }"##;
+
+    /// A palette the default scene names, distinct from the project's default,
+    /// so a test can tell which palette a definition resolved against.
+    const BLUE_PALETTE: &str = r##"{"id":"blue","projectId":"project","name":"Blue","tokens":[{"name":"accent","value":"#0000ff"}]}"##;
+
+    /// A default scene that names the `blue` palette rather than the project's
+    /// default `brand`, so an isolated definition must not resolve its tokens.
+    const BLUE_SCENE: &str = r##"{
+      "id": "main",
+      "projectId": "project",
+      "name": "Main",
+      "formatVersion": "0.2",
+      "paletteId": "blue",
+      "canvas": { "width": 200, "height": 200, "background": "#ffffff" },
+      "elements": [
+        {
+          "id": "main-rect", "sceneId": "main", "order": 0, "kind": "rect",
+          "geometry": { "x": 0, "y": 0, "width": 10, "height": 10 },
+          "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
+          "fill": { "kind": "token", "ref": "accent" },
+          "opacity": 1, "visible": true
+        }
+      ]
+    }"##;
+
+    /// A definition whose identifier collides with the default scene's `mark`
+    /// element, so the shared namespace is not unique (FEAT-031, D-039).
+    const MARK_DEFINITION: &str = r##"{
+      "id": "mark",
+      "projectId": "project",
+      "name": "Mark",
+      "parameters": [],
+      "origin": { "x": 0, "y": 0 },
+      "elements": []
+    }"##;
+
+    /// Writes a project with a default scene, a palette, and two definitions.
+    fn part_project(dir: &Path) {
+        write_project(
+            dir,
+            r#"{"defaultSceneId":"main","defaultPaletteId":"brand"}"#,
+            &[("main", SUBTREE_SCENE)],
+        );
+        write_file(dir, "palettes/brand.json", PART_PALETTE);
+        write_file(dir, "definitions/badge.json", BADGE_DEFINITION);
+        write_file(dir, "definitions/empty.json", EMPTY_DEFINITION);
+    }
+
     fn args(value: Value) -> Map<String, Value> {
         value.as_object().expect("an object").clone()
     }
@@ -744,14 +1078,17 @@ mod tests {
     }
 
     #[test]
-    fn definitions_name_four_tools_with_input_and_output_schemas() {
+    fn definitions_name_five_tools_with_input_and_output_schemas() {
         let tools = definitions();
         let list = tools.as_array().expect("an array");
         let names: Vec<&str> = list
             .iter()
             .filter_map(|tool| tool.get("name").and_then(Value::as_str))
             .collect();
-        assert_eq!(names, vec!["validate", "compile", "render", "schema"]);
+        assert_eq!(
+            names,
+            vec!["validate", "compile", "render", "render-part", "schema"]
+        );
         for tool in list {
             assert!(tool.get("inputSchema").is_some(), "input schema: {tool}");
             assert!(tool.get("outputSchema").is_some(), "output schema: {tool}");
@@ -760,7 +1097,12 @@ mod tests {
         // The scene-addressing arguments are discoverable: every scene tool
         // publishes `scene`, `draft` and `project`, and neither `scene` nor
         // `draft` is required, so omitting both applies the default rule.
-        for tool in list.iter().filter(|tool| tool["name"] != "schema") {
+        for tool in list.iter().filter(|tool| {
+            matches!(
+                tool["name"].as_str(),
+                Some("validate" | "compile" | "render")
+            )
+        }) {
             let properties = &tool["inputSchema"]["properties"];
             for name in ["scene", "draft", "project"] {
                 assert!(
@@ -777,6 +1119,25 @@ mod tests {
                 .iter()
                 .any(|name| name == "scene" || name == "draft"));
         }
+
+        // The part tool addresses a part within a project rather than a scene,
+        // and requires the part and a format; an omitted size frames the part to
+        // its own bounds (FEAT-031).
+        let part = list
+            .iter()
+            .find(|tool| tool["name"] == "render-part")
+            .expect("the part tool is published");
+        let properties = &part["inputSchema"]["properties"];
+        assert!(properties.get("part").is_some(), "{part}");
+        assert!(properties.get("project").is_some(), "{part}");
+        assert!(properties.get("scene").is_none(), "{part}");
+        let required: Vec<&str> = part["inputSchema"]["required"]
+            .as_array()
+            .expect("required")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert_eq!(required, vec!["part", "format"]);
     }
 
     #[test]
@@ -1129,6 +1490,339 @@ mod tests {
             &scope(&dir),
             "render",
             &args(json!({ "draft": RECT_SCENE, "format": "svg", "out": outside.join("out.svg") })),
+        ));
+        assert_eq!(error.code, SCOPE);
+    }
+
+    // -----------------------------------------------------------------------
+    // Part-scoped rendering (FEAT-031)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn render_part_writes_a_definition_preview_framed_to_its_bounds() {
+        let dir = tempdir("part-definition");
+        part_project(&dir);
+        let out = dir.join("badge.svg");
+        let result = call(
+            &scope(&dir),
+            "render-part",
+            &args(json!({ "part": "badge", "format": "svg", "out": out })),
+        )
+        .expect("renders");
+        assert_eq!(result["format"], "svg");
+        assert_eq!(result["frame"]["width"], 30.0);
+        assert_eq!(result["frame"]["height"], 40.0);
+
+        let svg = fs::read_to_string(result["path"].as_str().expect("a path")).expect("reads");
+        assert!(svg.contains("viewBox=\"0 0 30 40\""), "{svg}");
+        assert!(svg.contains("fill=\"#ff0000\""), "{svg}");
+    }
+
+    #[test]
+    fn render_part_writes_an_element_subtree_preview() {
+        let dir = tempdir("part-subtree");
+        part_project(&dir);
+        let out = dir.join("mark.svg");
+        let result = call(
+            &scope(&dir),
+            "render-part",
+            &args(json!({ "part": "mark", "format": "svg", "out": out })),
+        )
+        .expect("renders");
+        assert_eq!(result["frame"]["width"], 20.0);
+        assert_eq!(result["frame"]["height"], 10.0);
+
+        let svg = fs::read_to_string(result["path"].as_str().expect("a path")).expect("reads");
+        assert!(svg.contains("mark-rect"), "{svg}");
+        assert!(
+            !svg.contains("other"),
+            "the rest of the scene is absent: {svg}"
+        );
+    }
+
+    #[test]
+    fn render_part_includes_a_referenced_definition() {
+        // A part that places another definition renders with the referenced
+        // part resolved, so its geometry reaches the preview (FEAT-031).
+        let dir = tempdir("part-nested");
+        part_project(&dir);
+        write_file(
+            &dir,
+            "definitions/inner.json",
+            r##"{
+              "id": "inner", "projectId": "project", "name": "Inner",
+              "parameters": [], "origin": { "x": 0, "y": 0 },
+              "elements": [
+                {
+                  "id": "dot", "definitionId": "inner", "order": 0, "kind": "rect",
+                  "geometry": { "x": 0, "y": 0, "width": 5, "height": 5 },
+                  "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
+                  "opacity": 1, "visible": true
+                }
+              ]
+            }"##,
+        );
+        write_file(
+            &dir,
+            "definitions/outer.json",
+            r##"{
+              "id": "outer", "projectId": "project", "name": "Outer",
+              "parameters": [], "origin": { "x": 0, "y": 0 },
+              "elements": [
+                {
+                  "id": "place", "definitionId": "outer", "order": 0, "kind": "instance",
+                  "geometry": {},
+                  "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
+                  "definitionRef": "inner", "opacity": 1, "visible": true
+                }
+              ]
+            }"##,
+        );
+
+        let out = dir.join("outer.svg");
+        let result = call(
+            &scope(&dir),
+            "render-part",
+            &args(json!({ "part": "outer", "format": "svg", "out": out })),
+        )
+        .expect("renders");
+        assert_eq!(
+            result["frame"]["width"], 5.0,
+            "the referenced definition's geometry reaches the preview: {result}"
+        );
+        assert_eq!(result["frame"]["height"], 5.0);
+        assert_eq!(result["diagnostics"], json!([]));
+    }
+
+    #[test]
+    fn render_part_reports_the_resolved_output_frame() {
+        let dir = tempdir("part-frame");
+        part_project(&dir);
+        let result = call(
+            &scope(&dir),
+            "render-part",
+            &args(json!({ "part": "mark", "format": "svg", "width": 100 })),
+        )
+        .expect("renders");
+        assert_eq!(result["frame"]["width"], 100.0);
+        assert_eq!(
+            result["frame"]["height"], 50.0,
+            "a single dimension scales the other"
+        );
+    }
+
+    #[test]
+    fn render_part_defaults_to_dist_part() {
+        let dir = tempdir("part-default-out");
+        part_project(&dir);
+        let result = call(
+            &scope(&dir),
+            "render-part",
+            &args(json!({ "part": "badge", "format": "svg" })),
+        )
+        .expect("renders");
+        let path = result["path"].as_str().expect("a path");
+        assert!(path.ends_with("dist/badge.svg"), "{path}");
+    }
+
+    #[test]
+    fn render_part_reports_an_unknown_part_by_name() {
+        let dir = tempdir("part-unknown");
+        part_project(&dir);
+        let out = dir.join("absent.svg");
+        let error = assert_exec(call(
+            &scope(&dir),
+            "render-part",
+            &args(json!({ "part": "absent", "format": "svg", "out": out.clone() })),
+        ));
+        assert_eq!(error.code, "E_PART");
+        assert!(error.message.contains("absent"), "{}", error.message);
+        assert!(!out.exists(), "no preview is written for an unknown part");
+    }
+
+    #[test]
+    fn render_part_reports_an_empty_part_with_the_fallback_frame() {
+        let dir = tempdir("part-empty");
+        part_project(&dir);
+        let out = dir.join("empty.svg");
+        let result = call(
+            &scope(&dir),
+            "render-part",
+            &args(json!({ "part": "empty", "format": "svg", "out": out })),
+        )
+        .expect("renders");
+        assert_eq!(result["frame"]["width"], 100.0);
+        assert_eq!(result["frame"]["height"], 100.0);
+        let diagnostics = result["diagnostics"].as_array().expect("diagnostics");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|finding| finding["code"] == "W_EMPTY_PART_FRAME"),
+            "{result}"
+        );
+        assert!(out.exists(), "an empty part still yields a preview");
+    }
+
+    #[test]
+    fn render_part_resolves_a_definition_from_the_default_palette_not_the_default_scene() {
+        // A definition has no placing scene, so it resolves its colours from the
+        // project's default palette and default recipe, never from the default
+        // scene's own palette (FEAT-031, D-039).
+        let dir = tempdir("part-default-palette");
+        write_project(
+            &dir,
+            r#"{"defaultSceneId":"main","defaultPaletteId":"brand"}"#,
+            &[("main", BLUE_SCENE)],
+        );
+        write_file(&dir, "palettes/brand.json", PART_PALETTE);
+        write_file(&dir, "palettes/blue.json", BLUE_PALETTE);
+        write_file(&dir, "definitions/badge.json", BADGE_DEFINITION);
+
+        let result = call(
+            &scope(&dir),
+            "render-part",
+            &args(json!({ "part": "badge", "format": "svg" })),
+        )
+        .expect("renders");
+        let svg = fs::read_to_string(result["path"].as_str().expect("a path")).expect("reads");
+        assert!(
+            svg.contains("fill=\"#ff0000\""),
+            "the project default palette resolves the definition: {svg}"
+        );
+        assert!(
+            !svg.contains("#0000ff"),
+            "the default scene's palette does not leak into the definition: {svg}"
+        );
+    }
+
+    #[test]
+    fn render_part_names_a_missing_default_palette_for_a_definition() {
+        // A definition carries no palette of its own and has no placing scene,
+        // so a project that names no default palette cannot resolve its colours;
+        // the missing palette is named before anything is written (FEAT-031).
+        let dir = tempdir("part-no-default-palette");
+        write_project(
+            &dir,
+            r#"{"defaultSceneId":"main"}"#,
+            &[("main", SUBTREE_SCENE)],
+        );
+        write_file(&dir, "palettes/brand.json", PART_PALETTE);
+        write_file(&dir, "definitions/badge.json", BADGE_DEFINITION);
+
+        let out = dir.join("badge.svg");
+        let error = assert_exec(call(
+            &scope(&dir),
+            "render-part",
+            &args(json!({ "part": "badge", "format": "svg", "out": out.clone() })),
+        ));
+        assert_eq!(error.code, "E_PROJECT_ASSET");
+        assert!(
+            error.message.contains("no default palette"),
+            "{}",
+            error.message
+        );
+        assert!(
+            !out.exists(),
+            "no preview is written when the default palette is missing"
+        );
+    }
+
+    #[test]
+    fn render_part_reports_a_duplicate_part_identifier() {
+        // A definition and an element share one identifier, so the project's
+        // namespace is not unique; the resolution is refused naming it before
+        // any render (FEAT-031, D-039).
+        let dir = tempdir("part-duplicate");
+        write_project(
+            &dir,
+            r#"{"defaultSceneId":"main","defaultPaletteId":"brand"}"#,
+            &[("main", SUBTREE_SCENE)],
+        );
+        write_file(&dir, "palettes/brand.json", PART_PALETTE);
+        write_file(&dir, "definitions/mark.json", MARK_DEFINITION);
+
+        let out = dir.join("mark.svg");
+        let error = assert_exec(call(
+            &scope(&dir),
+            "render-part",
+            &args(json!({ "part": "mark", "format": "svg", "out": out.clone() })),
+        ));
+        assert_eq!(error.code, "E_DUPLICATE_ID");
+        assert!(error.message.contains("mark"), "{}", error.message);
+        assert!(
+            !out.exists(),
+            "no preview is written for a duplicate part identifier"
+        );
+    }
+
+    #[test]
+    fn render_part_refuses_a_density_on_svg() {
+        let dir = tempdir("part-density");
+        part_project(&dir);
+        let error = assert_exec(call(
+            &scope(&dir),
+            "render-part",
+            &args(json!({ "part": "badge", "format": "svg", "density": 2 })),
+        ));
+        assert_eq!(error.code, "E_UNSUPPORTED");
+    }
+
+    #[test]
+    fn render_part_refuses_an_unsupported_format_without_writing() {
+        let dir = tempdir("part-format");
+        part_project(&dir);
+        let out = dir.join("out.pdf");
+        let error = assert_exec(call(
+            &scope(&dir),
+            "render-part",
+            &args(json!({ "part": "badge", "format": "pdf", "out": out })),
+        ));
+        assert_eq!(error.code, "E_UNSUPPORTED");
+        assert!(!dir.join("out.pdf").exists());
+    }
+
+    #[test]
+    fn render_part_writes_png() {
+        let dir = tempdir("part-png");
+        part_project(&dir);
+        let out = dir.join("badge.png");
+        let result = call(
+            &scope(&dir),
+            "render-part",
+            &args(json!({ "part": "badge", "format": "png", "out": out })),
+        )
+        .expect("renders");
+        let bytes = fs::read(result["path"].as_str().expect("a path")).expect("reads the png");
+        assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
+    }
+
+    #[test]
+    fn render_part_requires_a_part_and_a_format() {
+        let dir = tempdir("part-required");
+        part_project(&dir);
+        let missing_part = call(
+            &scope(&dir),
+            "render-part",
+            &args(json!({ "format": "svg" })),
+        );
+        assert!(matches!(missing_part, Err(CallError::InvalidParams(_))));
+        let missing_format = call(
+            &scope(&dir),
+            "render-part",
+            &args(json!({ "part": "badge" })),
+        );
+        assert!(matches!(missing_format, Err(CallError::InvalidParams(_))));
+    }
+
+    #[test]
+    fn render_part_refuses_an_output_outside_the_scope() {
+        let dir = tempdir("part-scope");
+        let outside = tempdir("part-outside");
+        part_project(&dir);
+        let error = assert_exec(call(
+            &scope(&dir),
+            "render-part",
+            &args(json!({ "part": "badge", "format": "svg", "out": outside.join("out.svg") })),
         ));
         assert_eq!(error.code, SCOPE);
     }
