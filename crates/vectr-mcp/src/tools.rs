@@ -29,12 +29,11 @@ use vectr_core::scene::{is_color, INVALID_COLOR};
 use vectr_core::{
     compile_definition as compile_part_definition, compile_subtree, compile_with_style,
     export_png_reporting, export_svg_reporting, parse as parse_scene, schema, schema_for,
-    validate as validate_scene, validate_gradient_usage, validate_palette_usage, Canvas,
-    Definition, Diagnostic, Diagnostics, Location, RasterOptions, RenderModel, Scene, SchemaForm,
-    SvgOptions, CURRENT_FORMAT_VERSION, PART,
+    validate as validate_scene, validate_gradient_usage, validate_palette_usage, Diagnostics,
+    Location, RasterOptions, RenderModel, Scene, SchemaForm, SvgOptions,
 };
 
-use vectr_project::{resolve_scene, ProjectAssets, ProjectScene, SCENE_DIR};
+use vectr_project::{resolve_part, resolve_scene, ProjectAssets, ResolvedPart};
 
 use crate::output::write_atomic;
 use crate::scope::{Scope, ScopeError, SCOPE};
@@ -273,15 +272,17 @@ fn render_tool(scope: &Scope, arguments: &Map<String, Value>) -> Result<Value, C
 /// each addressed by its identifier (C-005, FEAT-031).
 ///
 /// The part is resolved within the project — the caller's `project`, or the
-/// server's project context — and compiled in isolation, framed to its own
-/// bounds or to the requested size. A definition previews against the project's
-/// default scene's style so its palette tokens resolve; an element subtree
-/// previews against the style of the scene that owns it. The returned frame is
-/// the size the preview actually came out at, so a caller can see when a part
-/// did not fit the requested size. A part identifier that resolves to neither a
-/// definition nor an element is a structured error naming it; a part with no
-/// drawable geometry is reported with a defined fallback frame rather than
-/// failing (FEAT-031).
+/// server's project context — in the project's shared definition-and-element
+/// namespace, a definition first and otherwise the element subtree, and compiled
+/// in isolation, framed to its own bounds or to the requested size. A definition
+/// has no placing scene, so it resolves its colours and style from the project's
+/// default palette and default recipe; an element subtree resolves them from the
+/// scene that owns it. The returned frame is the size the preview actually came
+/// out at, so a caller can see when a part did not fit the requested size. A
+/// part identifier that resolves to neither a definition nor an element, or that
+/// is not unique across the namespace, is a structured error naming it; a part
+/// with no drawable geometry is reported with a defined fallback frame rather
+/// than failing (FEAT-031, D-039).
 fn render_part_tool(scope: &Scope, arguments: &Map<String, Value>) -> Result<Value, CallError> {
     let args = Args::new(arguments);
     args.allowed(&[
@@ -532,144 +533,6 @@ fn default_output(input: &SceneInput, extension: &str) -> PathBuf {
 /// The default output path for a part: `<project>/dist/<part>.<extension>`.
 fn default_part_output(root: &Path, part: &str, extension: &str) -> PathBuf {
     root.join("dist").join(format!("{part}.{extension}"))
-}
-
-/// A part resolved within a project, with the assets it renders against.
-enum ResolvedPart {
-    /// A reusable definition, previewed with its declared parameter defaults.
-    Definition {
-        definition: Definition,
-        assets: ProjectAssets,
-    },
-    /// An element subtree inside one of the project's scenes.
-    Element { scene: Scene, assets: ProjectAssets },
-}
-
-/// Resolves a part identifier to a definition or an element subtree (FEAT-031).
-///
-/// Definitions are project-scoped, so one is looked up once; an element subtree
-/// is looked up across the project's scenes, the default tried first, then the
-/// rest in a deterministic order, so the same identifier resolves the same way
-/// every run (NFR-010). A part identifier that resolves to neither is an error
-/// naming it, never a silent choice among the project's scenes.
-fn resolve_part(root: &Path, part: &str) -> Result<ResolvedPart, Diagnostics> {
-    if let Some((definition, assets)) = find_definition(root, part)? {
-        return Ok(ResolvedPart::Definition { definition, assets });
-    }
-
-    for scene in project_scenes(root) {
-        let source = scene.source()?;
-        let parsed = match parse_scene(&source) {
-            Ok(parsed) => parsed,
-            Err(_) => continue,
-        };
-        if parsed.element(part).is_none() {
-            continue;
-        }
-        let assets = ProjectAssets::load(root, &parsed)?;
-        return Ok(ResolvedPart::Element {
-            scene: parsed,
-            assets,
-        });
-    }
-
-    Err(Diagnostics::from(Diagnostic::error(
-        PART,
-        format!(
-            "part `{part}` resolves to no definition or element in the project at `{}`",
-            root.display()
-        ),
-    )))
-}
-
-/// Finds a project definition by identifier, with the assets to render it.
-///
-/// The project's default scene supplies the style context, so a definition's
-/// palette tokens and recipe resolve as they would when a scene places it. A
-/// project that names no default scene — or whose default cannot be loaded —
-/// still resolves its definitions, with no palette (FEAT-031).
-fn find_definition(
-    root: &Path,
-    part: &str,
-) -> Result<Option<(Definition, ProjectAssets)>, Diagnostics> {
-    if let Ok(scene) = resolve_scene(root, None) {
-        if let Ok(parsed) = scene.parse() {
-            if let Ok(assets) = ProjectAssets::load(root, &parsed) {
-                let found = assets
-                    .definitions()
-                    .iter()
-                    .find(|definition| definition.id == part)
-                    .cloned();
-                return Ok(found.map(|definition| (definition, assets)));
-            }
-        }
-    }
-
-    let assets = ProjectAssets::load(root, &probe_scene())?;
-    let found = assets
-        .definitions()
-        .iter()
-        .find(|definition| definition.id == part)
-        .cloned();
-    Ok(found.map(|definition| (definition, assets)))
-}
-
-/// The project's scenes, the default first, each resolved by its identifier.
-///
-/// Directory entries are read in sorted order so the resolution is
-/// deterministic when no scene is the default (NFR-010).
-fn project_scenes(root: &Path) -> Vec<ProjectScene> {
-    let mut ids: Vec<String> = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(root.join(SCENE_DIR)) {
-        let mut paths: Vec<PathBuf> = entries
-            .flatten()
-            .map(|entry| entry.path())
-            .filter(|path| {
-                path.is_file()
-                    && path
-                        .extension()
-                        .and_then(std::ffi::OsStr::to_str)
-                        .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
-            })
-            .collect();
-        paths.sort();
-        for path in paths {
-            if let Some(stem) = path.file_stem().and_then(std::ffi::OsStr::to_str) {
-                ids.push(stem.to_string());
-            }
-        }
-    }
-
-    if let Ok(default) = resolve_scene(root, None) {
-        let default = default.id().to_string();
-        ids.retain(|id| id != &default);
-        ids.insert(0, default);
-    }
-
-    ids.into_iter()
-        .filter_map(|id| resolve_scene(root, Some(&id)).ok())
-        .collect()
-}
-
-/// A minimal scene used only to load a project's assets without a palette.
-fn probe_scene() -> Scene {
-    Scene {
-        id: "probe".to_string(),
-        project_id: String::new(),
-        name: "probe".to_string(),
-        format_version: CURRENT_FORMAT_VERSION.to_string(),
-        canvas: Canvas {
-            width: 1.0,
-            height: 1.0,
-            background: "transparent".to_string(),
-        },
-        palette_id: None,
-        recipe_id: None,
-        title: None,
-        description: None,
-        elements: Vec::new(),
-        constraints: None,
-    }
 }
 
 /// The output frame a part preview actually uses, after size and density
@@ -1147,11 +1010,46 @@ mod tests {
       ]
     }"##;
 
+    /// A palette the default scene names, distinct from the project's default,
+    /// so a test can tell which palette a definition resolved against.
+    const BLUE_PALETTE: &str = r##"{"id":"blue","projectId":"project","name":"Blue","tokens":[{"name":"accent","value":"#0000ff"}]}"##;
+
+    /// A default scene that names the `blue` palette rather than the project's
+    /// default `brand`, so an isolated definition must not resolve its tokens.
+    const BLUE_SCENE: &str = r##"{
+      "id": "main",
+      "projectId": "project",
+      "name": "Main",
+      "formatVersion": "0.2",
+      "paletteId": "blue",
+      "canvas": { "width": 200, "height": 200, "background": "#ffffff" },
+      "elements": [
+        {
+          "id": "main-rect", "sceneId": "main", "order": 0, "kind": "rect",
+          "geometry": { "x": 0, "y": 0, "width": 10, "height": 10 },
+          "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
+          "fill": { "kind": "token", "ref": "accent" },
+          "opacity": 1, "visible": true
+        }
+      ]
+    }"##;
+
+    /// A definition whose identifier collides with the default scene's `mark`
+    /// element, so the shared namespace is not unique (FEAT-031, D-039).
+    const MARK_DEFINITION: &str = r##"{
+      "id": "mark",
+      "projectId": "project",
+      "name": "Mark",
+      "parameters": [],
+      "origin": { "x": 0, "y": 0 },
+      "elements": []
+    }"##;
+
     /// Writes a project with a default scene, a palette, and two definitions.
     fn part_project(dir: &Path) {
         write_project(
             dir,
-            r#"{"defaultSceneId":"main"}"#,
+            r#"{"defaultSceneId":"main","defaultPaletteId":"brand"}"#,
             &[("main", SUBTREE_SCENE)],
         );
         write_file(dir, "palettes/brand.json", PART_PALETTE);
@@ -1737,7 +1635,7 @@ mod tests {
             "render-part",
             &args(json!({ "part": "absent", "format": "svg", "out": out.clone() })),
         ));
-        assert_eq!(error.code, PART.as_str());
+        assert_eq!(error.code, "E_PART");
         assert!(error.message.contains("absent"), "{}", error.message);
         assert!(!out.exists(), "no preview is written for an unknown part");
     }
@@ -1763,6 +1661,98 @@ mod tests {
             "{result}"
         );
         assert!(out.exists(), "an empty part still yields a preview");
+    }
+
+    #[test]
+    fn render_part_resolves_a_definition_from_the_default_palette_not_the_default_scene() {
+        // A definition has no placing scene, so it resolves its colours from the
+        // project's default palette and default recipe, never from the default
+        // scene's own palette (FEAT-031, D-039).
+        let dir = tempdir("part-default-palette");
+        write_project(
+            &dir,
+            r#"{"defaultSceneId":"main","defaultPaletteId":"brand"}"#,
+            &[("main", BLUE_SCENE)],
+        );
+        write_file(&dir, "palettes/brand.json", PART_PALETTE);
+        write_file(&dir, "palettes/blue.json", BLUE_PALETTE);
+        write_file(&dir, "definitions/badge.json", BADGE_DEFINITION);
+
+        let result = call(
+            &scope(&dir),
+            "render-part",
+            &args(json!({ "part": "badge", "format": "svg" })),
+        )
+        .expect("renders");
+        let svg = fs::read_to_string(result["path"].as_str().expect("a path")).expect("reads");
+        assert!(
+            svg.contains("fill=\"#ff0000\""),
+            "the project default palette resolves the definition: {svg}"
+        );
+        assert!(
+            !svg.contains("#0000ff"),
+            "the default scene's palette does not leak into the definition: {svg}"
+        );
+    }
+
+    #[test]
+    fn render_part_names_a_missing_default_palette_for_a_definition() {
+        // A definition carries no palette of its own and has no placing scene,
+        // so a project that names no default palette cannot resolve its colours;
+        // the missing palette is named before anything is written (FEAT-031).
+        let dir = tempdir("part-no-default-palette");
+        write_project(
+            &dir,
+            r#"{"defaultSceneId":"main"}"#,
+            &[("main", SUBTREE_SCENE)],
+        );
+        write_file(&dir, "palettes/brand.json", PART_PALETTE);
+        write_file(&dir, "definitions/badge.json", BADGE_DEFINITION);
+
+        let out = dir.join("badge.svg");
+        let error = assert_exec(call(
+            &scope(&dir),
+            "render-part",
+            &args(json!({ "part": "badge", "format": "svg", "out": out.clone() })),
+        ));
+        assert_eq!(error.code, "E_PROJECT_ASSET");
+        assert!(
+            error.message.contains("no default palette"),
+            "{}",
+            error.message
+        );
+        assert!(
+            !out.exists(),
+            "no preview is written when the default palette is missing"
+        );
+    }
+
+    #[test]
+    fn render_part_reports_a_duplicate_part_identifier() {
+        // A definition and an element share one identifier, so the project's
+        // namespace is not unique; the resolution is refused naming it before
+        // any render (FEAT-031, D-039).
+        let dir = tempdir("part-duplicate");
+        write_project(
+            &dir,
+            r#"{"defaultSceneId":"main","defaultPaletteId":"brand"}"#,
+            &[("main", SUBTREE_SCENE)],
+        );
+        write_file(&dir, "palettes/brand.json", PART_PALETTE);
+        write_file(&dir, "definitions/mark.json", MARK_DEFINITION);
+
+        let out = dir.join("mark.svg");
+        let error = assert_exec(call(
+            &scope(&dir),
+            "render-part",
+            &args(json!({ "part": "mark", "format": "svg", "out": out.clone() })),
+        ));
+        assert_eq!(error.code, "E_DUPLICATE_ID");
+        assert!(error.message.contains("mark"), "{}", error.message);
+        assert!(
+            !out.exists(),
+            "no preview is written for a duplicate part identifier"
+        );
     }
 
     #[test]
