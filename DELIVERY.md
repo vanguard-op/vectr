@@ -91,7 +91,7 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | T-104 | FEAT-023 | qa-engineer | Done | — |
 | T-105 | FEAT-023 | ai-engineer | Done | C-006 |
 | T-106 | FEAT-014 | backend-engineer | Done | C-004 |
-| T-107 | FEAT-021 | infra-engineer | In Progress | C-002 |
+| T-107 | FEAT-021 | infra-engineer | Done | C-002 |
 
 ## Decisions log
 | # | Decision | Rationale | By |
@@ -162,6 +162,7 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 - bash scripts/check.sh
 - bash scripts/deny.sh
 - bash scripts/font-inventory.sh
+- bash scripts/no-rasterizer.sh
 - bash scripts/package.sh <target-triple> [out-dir]
 - bash scripts/publish-crates.sh
 - bash scripts/sync-version.sh [--check]
