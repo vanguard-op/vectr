@@ -1,7 +1,7 @@
 # Delivery
 
 ## Source of truth
-docs/Vectr/ — git submodule, remote https://github.com/vanguard-op/vectr-docs.git; working tree at 119c038 (reusable parts settled as one element shape, one literal-or-reference form, and parameters as the only use-adjustment mechanism; part-scoped rendering and incremental authoring specified for Phase 4), the recorded pointer advancing with the build. The docs are authoritative for what to build; this file tracks state only and never restates the spec.
+docs/Vectr/ — git submodule, remote https://github.com/vanguard-op/vectr-docs.git; working tree at faf20f0 (reusable parts settled as one element shape with a single literal-or-reference form; part-scoped rendering resolves style from the project's default palette and a part identifier in one shared namespace), the recorded pointer advancing with the build. The docs are authoritative for what to build; this file tracks state only and never restates the spec.
 
 ## Team & file ownership
 | Member | Owns |
@@ -78,6 +78,8 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | T-074 | FEAT-031 | ai-engineer | Done | C-005 |
 | T-078 | FEAT-031 | qa-engineer | Done | C-005 |
 | T-075 | FEAT-029 | ai-engineer | Done | C-002, C-004, C-005 |
+| T-079 | FEAT-031 | backend-engineer | In Progress | C-002, C-004 |
+| T-080 | FEAT-031 | ai-engineer | Backlog | C-005 |
 
 ## Decisions log
 | # | Decision | Rationale | By |
@@ -120,6 +122,7 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | D-036 | A project's reusable definitions live in a `definitions/` directory, one document per definition named for its identifier (`definitions/<id>.json`), scaffolded by `vectr init`. | Definitions are project documents referenced by identifier, parallel to scenes and palettes; the docs name the directory but not its file naming. Extends D-009. | lead |
 | D-037 | A definition's element is a distinct `TemplateElement` variant whose parameter-capable fields accept a literal or a parameter reference, while a scene's `Element` fields stay literal-typed; `Binding`, `BindingValue`, and `Override` are shared entities; a scene carries an optional `constraints` array. | A single element type cannot admit a reference where a definition allows one and reject it where a scene does not, so the variant keeps validation sound. Ratifies the shape the build had already chosen. | lead |
 | D-038 | A reusable definition's element is the same `Element` shape as a scene's; a parameter-capable field holds a literal or a `ParamRef`; a reference is valid only inside a definition; and parameters are the only use-adjustment mechanism (no separate overrides). | Supersedes D-037: one element shape needs one value form, and one adjustment mechanism removes the last reason for a second element shape, so the model carries no duplicated types. | lead |
+| D-039 | An isolated definition resolves its colours and style from the project's default palette and default recipe (`ProjectConfig.defaultPaletteId`); a project's definitions and elements share one identifier namespace, so a part identifier resolves to a definition first and otherwise to the element subtree, with no scene search. | A definition carries no palette of its own, so an isolated preview needs a project-level source; and "addressed by its identifier" is only unambiguous if definitions and elements share one namespace. | lead |
 
 ## Definition of Done
 - Every acceptance criterion in the task's FEAT file is met, including its edge cases and failure states.
