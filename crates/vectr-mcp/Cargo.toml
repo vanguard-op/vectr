@@ -4,7 +4,13 @@ description = "Vectr MCP server."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-publish = false
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+# Published to crates.io as the MCP server (D-006, C-005). Published after the
+# library crates it depends on.
+keywords = ["mcp", "svg", "vector-graphics", "ai"]
+categories = ["command-line-utilities", "graphics"]
 
 [[bin]]
 name = "vectr-mcp"

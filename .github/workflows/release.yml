@@ -1,18 +1,18 @@
 name: Release
 
-# Builds, checksums and attests the distributable binaries. The workflow is
-# the release path for the GitHub Release channel; it does not deploy a
-# service, because Vectr is distributed rather than hosted.
+# Builds, checksums and attests the distributable artifacts, publishes the
+# product crates to crates.io, and opens the GitHub Release. Vectr is
+# distributed rather than hosted, so there is no service to deploy (release.md,
+# "Environments & Promotion").
 #
-# Distribution also includes crates.io (D-006). Publishing is deliberately not
-# automated here: the crates carry no SPDX license yet and are marked
-# `publish = false` until the project license is settled, and publishing is
-# gated by the release owner. Once that is resolved, publish with:
+# Promotion rule: a release is built from the exact revision that passed
+# continuous integration. The `verify` job refuses to proceed unless the tagged
+# revision has a successful CI run, and every job below needs it. The version
+# tag is the release owner's approval.
 #
-#   cargo publish -p vectr-core --locked
-#   cargo publish -p vectr-cli  --locked
-#
-# using a CARGO_REGISTRY_TOKEN secret.
+# Required repository secret: CARGO_REGISTRY_TOKEN, a crates.io API token with
+# publish scope for the vectr-* crates (NFR-025). The binaries and the skill
+# archive are checksummed and signed with build-provenance attestations.
 
 on:
   push:
@@ -25,8 +25,29 @@ permissions:
   attestations: write
 
 jobs:
+  verify:
+    name: verify the tagged revision passed CI
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    steps:
+      - name: Require a successful CI run on the tagged revision
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          runs="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${GITHUB_SHA}&status=completed" \
+            --jq '[.workflow_runs[] | select(.conclusion == "success")] | length')"
+          echo "successful CI runs for ${GITHUB_SHA}: ${runs}"
+          if [ "${runs}" -eq 0 ]; then
+            echo "::error::no successful CI run for ${GITHUB_SHA}; refusing to release"
+            exit 1
+          fi
+
   build:
     name: build (${{ matrix.target }})
+    needs: verify
     strategy:
       fail-fast: false
       matrix:
@@ -52,9 +73,9 @@ jobs:
         with:
           key: release-${{ matrix.target }}
 
-      - name: Package binary and checksum (NFR-025)
+      - name: Package binaries and checksums (NFR-025)
         shell: bash
-        run: scripts/package.sh "${{ matrix.target }}" vectr dist
+        run: scripts/package.sh "${{ matrix.target }}" dist
 
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v2
@@ -67,8 +88,30 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+  skill:
+    name: package the agent skill (FEAT-020)
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Package the skill archive and checksum (NFR-025)
+        run: scripts/package-skill.sh dist
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: skill
+          path: dist/*
+          if-no-files-found: error
+
   sbom:
     name: sbom (NFR-020)
+    needs: verify
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -85,9 +128,29 @@ jobs:
           path: dist/vectr-sbom.cdx.json
           if-no-files-found: error
 
+  crates:
+    name: publish crates.io (D-006)
+    needs: [verify, build]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned toolchain
+        run: rustup toolchain install --no-self-update
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: publish
+
+      - name: Publish the product crates in dependency order
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: scripts/publish-crates.sh
+
   release:
     name: publish release
-    needs: [build, sbom]
+    needs: [verify, build, skill, sbom]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:

@@ -5,7 +5,13 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish = false
+repository.workspace = true
+homepage.workspace = true
+# Published to crates.io because the CLI and MCP server crates depend on it
+# (D-006); it carries the bundled open-licensed fonts and the authoring guide so
+# it builds standalone. Published after vectr-core.
+keywords = ["svg", "vector-graphics", "graphics"]
+categories = ["graphics"]
 
 [lints]
 workspace = true
