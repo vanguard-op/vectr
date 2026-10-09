@@ -27,14 +27,16 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use vectr_core::compiler::FONT;
+use vectr_core::export::pdf as pdf_export;
 use vectr_core::export::png as png_export;
 use vectr_core::export::svg as svg_export;
 use vectr_core::scene::INVALID_COLOR;
 use vectr_core::{
-    compile_definition, compile_subtree, compile_with_style, export_png_reporting,
-    export_svg_reporting, parse as parse_scene_source, schema, schema_for,
+    compile_definition, compile_subtree, compile_with_style, export_pdf_reporting,
+    export_png_reporting, export_svg_reporting, parse as parse_scene_source, schema, schema_for,
     validate as validate_scene_model, validate_gradient_usage, validate_palette_usage, Diagnostic,
-    DiagnosticCode, Diagnostics, RasterOptions, RenderModel, Scene, SchemaForm, SvgOptions,
+    DiagnosticCode, Diagnostics, PdfOptions, RasterOptions, RenderModel, Scene, SchemaForm,
+    SvgOptions,
 };
 
 use crate::init;
@@ -56,13 +58,17 @@ pub const EXIT_DEPENDENCY: i32 = 4;
 /// The output path could not be written.
 pub const EXIT_OUTPUT: i32 = 5;
 
+/// The environment variable that enables PDF export, a rollout flag that is off
+/// by default (FEAT-014).
+pub const ENABLE_PDF_ENV: &str = "VECTR_ENABLE_PDF_EXPORT";
+
 /// The usage block shared by the help text and every usage error.
 const USAGE: &str = "\
 Usage:
   vectr init [dir]
   vectr validate [<scene>] [--json]
   vectr compile [<scene>] [--out <file>] [--check]
-  vectr export [<scene>] --format svg|png [--out <file>] [--width <n>] [--height <n>] [--density <n>] [--background <color|transparent>]
+  vectr export [<scene>] --format svg|png|pdf [--out <file>] [--width <n>] [--height <n>] [--density <n>] [--background <color|transparent>]
   vectr inspect [<scene>] [--out <file>] [--width <n>] [--height <n>] [--density <n>] [--background <color|transparent>]
   vectr render <part> [--out <file>] [--format svg|png] [--width <n>] [--height <n>] [--density <n>] [--background <color|transparent>]
   vectr schema [--type <name>] [--compact]
@@ -166,6 +172,8 @@ pub enum Format {
     Svg,
     /// A rasterized PNG image.
     Png,
+    /// A vector PDF document (FEAT-014); gated by `enable_pdf_export`.
+    Pdf,
 }
 
 impl Format {
@@ -174,6 +182,7 @@ impl Format {
         match self {
             Format::Svg => "svg",
             Format::Png => "png",
+            Format::Pdf => "pdf",
         }
     }
 }
@@ -216,7 +225,7 @@ pub fn help_text() -> String {
          \x20 init      Create a project scaffold in a directory.\n\
          \x20 validate  Check a scene against the language contract.\n\
          \x20 compile   Compile a scene into its render model.\n\
-         \x20 export    Export a scene as SVG or PNG.\n\
+         \x20 export    Export a scene as SVG, PNG or PDF.\n\
          \x20 inspect   Render a whole-scene preview for inspection.\n\
          \x20 render    Render one part on its own, framed to its bounds.\n\
          \x20 schema    Print the language contract.\n\n\
@@ -302,24 +311,36 @@ pub fn run_in(command: Command, cwd: &Path) -> Report {
             height,
             density,
             background,
-        } => match resolve(cwd, scene.as_deref()) {
-            Ok(scene) => {
-                let target = out
-                    .as_deref()
-                    .map(|path| absolute(cwd, path))
-                    .unwrap_or_else(|| cwd.join(default_output(scene.id(), format.extension())));
-                export_scene(
-                    &scene,
-                    format,
-                    &target,
-                    width,
-                    height,
-                    density,
-                    background.as_deref(),
-                )
+        } => {
+            // PDF is a gated capability, off by default (FEAT-014); the gate is
+            // checked before the scene is read, so a disabled export writes
+            // nothing (NFR-011).
+            if format == Format::Pdf {
+                if let Some(report) = pdf_disabled() {
+                    return report;
+                }
             }
-            Err(report) => report,
-        },
+            match resolve(cwd, scene.as_deref()) {
+                Ok(scene) => {
+                    let target = out
+                        .as_deref()
+                        .map(|path| absolute(cwd, path))
+                        .unwrap_or_else(|| {
+                            cwd.join(default_output(scene.id(), format.extension()))
+                        });
+                    export_scene(
+                        &scene,
+                        format,
+                        &target,
+                        width,
+                        height,
+                        density,
+                        background.as_deref(),
+                    )
+                }
+                Err(report) => report,
+            }
+        }
         Command::Inspect {
             scene,
             out,
@@ -649,7 +670,7 @@ fn parse_render(args: Vec<OsString>) -> Result<Command, String> {
             Some("-h") | Some("--help") => return Ok(Command::Help),
             Some(text) => {
                 if let Some(value) = text.strip_prefix("--format=") {
-                    format = parse_format(value)?;
+                    format = parse_render_format(value)?;
                 } else if let Some(value) = text.strip_prefix("--out=") {
                     out = Some(PathBuf::from(value));
                 } else if let Some(value) = text.strip_prefix("--width=") {
@@ -663,7 +684,7 @@ fn parse_render(args: Vec<OsString>) -> Result<Command, String> {
                 } else {
                     match text {
                         "--format" => {
-                            format = parse_format(
+                            format = parse_render_format(
                                 &take_value(&args, &mut i, "--format")?.to_string_lossy(),
                             )?
                         }
@@ -804,6 +825,19 @@ fn parse_format(value: &str) -> Result<Format, String> {
     match value {
         "svg" => Ok(Format::Svg),
         "png" => Ok(Format::Png),
+        "pdf" => Ok(Format::Pdf),
+        _ => Err(format!(
+            "`--format` must be `svg`, `png` or `pdf`, got `{value}`"
+        )),
+    }
+}
+
+/// Parses the `render` command's format: a part preview is a vector or raster
+/// image, so PDF is not one of its targets (C-004).
+fn parse_render_format(value: &str) -> Result<Format, String> {
+    match value {
+        "svg" => Ok(Format::Svg),
+        "png" => Ok(Format::Png),
         _ => Err(format!("`--format` must be `svg` or `png`, got `{value}`")),
     }
 }
@@ -922,7 +956,7 @@ fn export_scene(
     density: Option<f64>,
     background: Option<&str>,
 ) -> Report {
-    if format == Format::Svg && density.is_some() {
+    if format != Format::Png && density.is_some() {
         return Report::failure(
             EXIT_USAGE,
             "error: `--density` applies only to PNG output\n".to_string(),
@@ -1304,6 +1338,24 @@ fn export_bytes(
                 )),
             }
         }
+        Format::Pdf => {
+            let options = PdfOptions {
+                page_width: width,
+                page_height: height,
+                profile: None,
+                background: background.map(str::to_string),
+            };
+            match export_pdf_reporting(model, &options) {
+                Ok(export) => {
+                    warnings.push_str(&diagnostics_text(&export.diagnostics));
+                    Ok(export.pdf)
+                }
+                Err(diagnostics) => Err(Report::failure(
+                    export_exit_code(&diagnostics),
+                    diagnostics_text(&diagnostics),
+                )),
+            }
+        }
     }
 }
 
@@ -1409,11 +1461,38 @@ fn export_exit_code(diagnostics: &Diagnostics) -> i32 {
         if error.code == png_export::RASTERIZER {
             return EXIT_DEPENDENCY;
         }
-        if error.code == svg_export::OPTIONS || error.code == png_export::OPTIONS {
+        if error.code == svg_export::OPTIONS
+            || error.code == png_export::OPTIONS
+            || error.code == pdf_export::OPTIONS
+            || error.code == pdf_export::PROFILE
+        {
             code = EXIT_USAGE;
         }
     }
     code
+}
+
+/// The report for a disabled PDF export, when the rollout flag is off.
+///
+/// PDF export is off by default (FEAT-014); the flag is read from the
+/// environment so the capability can be enabled without a rebuild.
+fn pdf_disabled() -> Option<Report> {
+    if enabled_value(std::env::var(ENABLE_PDF_ENV).ok().as_deref()) {
+        None
+    } else {
+        Some(Report::failure(
+            EXIT_USAGE,
+            format!("error: PDF export is disabled; set {ENABLE_PDF_ENV}=1 to enable it\n"),
+        ))
+    }
+}
+
+/// Whether a flag value enables a gated capability.
+pub fn enabled_value(value: Option<&str>) -> bool {
+    matches!(
+        value.map(str::trim),
+        Some("1") | Some("true") | Some("TRUE") | Some("yes") | Some("on")
+    )
 }
 
 /// Classifies a project-asset loading failure: a missing font is a dependency,
@@ -1829,7 +1908,24 @@ mod tests {
     #[test]
     fn export_requires_a_known_format() {
         assert!(parse_args(&["export", "scene.json"]).is_err());
-        assert!(parse_args(&["export", "scene.json", "--format", "pdf"]).is_err());
+        assert!(parse_args(&["export", "scene.json", "--format", "tiff"]).is_err());
+        assert_eq!(
+            parse_args(&["export", "scene.json", "--format", "pdf"]).unwrap(),
+            Command::Export {
+                scene: Some("scene.json".to_string()),
+                format: Format::Pdf,
+                out: None,
+                width: None,
+                height: None,
+                density: None,
+                background: None,
+            }
+        );
+    }
+
+    #[test]
+    fn render_does_not_accept_pdf() {
+        assert!(parse_args(&["render", "badge", "--format", "pdf"]).is_err());
     }
 
     #[test]
@@ -2136,6 +2232,68 @@ mod tests {
         assert_eq!(report.code, EXIT_SUCCESS);
         let bytes = fs::read(&out).expect("reads the png");
         assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n", "PNG signature");
+    }
+
+    #[test]
+    fn pdf_export_is_gated_and_writes_a_vector_document() {
+        let dir = TempDir::new("export-pdf");
+        write_at(&dir, "vectr.project.json", "{}");
+        write_at(&dir, "palettes/brand.json", PALETTE);
+        write_at(&dir, "scenes/brand.json", PALETTE_SCENE);
+        let out = dir.path().join("out.pdf");
+
+        // Off by default: a usage error and nothing written (FEAT-014).
+        std::env::remove_var(ENABLE_PDF_ENV);
+        let disabled = run_in(
+            Command::Export {
+                scene: Some("brand".to_string()),
+                format: Format::Pdf,
+                out: Some(out.clone()),
+                width: None,
+                height: None,
+                density: None,
+                background: None,
+            },
+            dir.path(),
+        );
+        assert_eq!(disabled.code, EXIT_USAGE, "{}", disabled.stderr);
+        assert!(!out.exists(), "nothing is written while the flag is off");
+
+        // Enabled: a vector PDF is written.
+        std::env::set_var(ENABLE_PDF_ENV, "1");
+        let report = run_in(
+            Command::Export {
+                scene: Some("brand".to_string()),
+                format: Format::Pdf,
+                out: Some(out.clone()),
+                width: None,
+                height: None,
+                density: None,
+                background: None,
+            },
+            dir.path(),
+        );
+        std::env::remove_var(ENABLE_PDF_ENV);
+        assert_eq!(report.code, EXIT_SUCCESS, "{}", report.stderr);
+        let bytes = fs::read(&out).expect("reads the pdf");
+        assert!(bytes.starts_with(b"%PDF-"), "a PDF signature");
+        assert!(bytes.ends_with(b"%%EOF\n"), "a complete document");
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(!text.contains("/Subtype /Image"), "vector only: {text}");
+        assert!(text.contains(" re\n"), "vector path operators: {text}");
+        assert!(
+            text.contains("1 0 0 rg"),
+            "the resolved fill colour: {text}"
+        );
+    }
+
+    #[test]
+    fn the_pdf_flag_recognizes_the_enabling_values() {
+        assert!(enabled_value(Some("1")));
+        assert!(enabled_value(Some("true")));
+        assert!(enabled_value(Some("on")));
+        assert!(!enabled_value(Some("0")));
+        assert!(!enabled_value(None));
     }
 
     #[test]
