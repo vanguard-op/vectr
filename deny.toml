@@ -15,6 +15,10 @@ ignore = []
 
 [licenses]
 confidence-threshold = 0.9
+# The allow-list is deliberately a superset of what the graph currently needs
+# (fonts and future dependencies), so an allowance with no match is expected and
+# is not a warning.
+unused-allowed-license = "allow"
 # Permissive and notice-only licenses compatible with distribution.
 allow = [
     "MIT",
