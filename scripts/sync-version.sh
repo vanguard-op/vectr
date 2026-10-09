@@ -143,15 +143,20 @@ apply_lock() {
 # --- release version -------------------------------------------------------
 
 # The explicit version on a path dependency keeps it from registering as a `*`
-# wildcard (NFR-020) but must track the workspace version, so a published crate
-# requires the release it ships with.
+# wildcard (NFR-020) but must track the workspace version, so a crate requires
+# the release it ships with. The evaluation harness is maintainer-only and not
+# published (its manifest sets `publish = false`), but it still pins the engine
+# and the project loader it drives, so its pins track the release too: a bump
+# that missed it would leave the harness building against the previous release.
+# Every crate manifest is swept rather than a hand-kept list, so a crate added
+# later cannot fall outside the sync; a manifest that references neither crate
+# is a no-op.
 p_manifest_core='s|(vectr-core = .*version = ")[^"]*(")|\1'"$version"'\2|'
 p_manifest_project='s|(vectr-project = .*version = ")[^"]*(")|\1'"$version"'\2|'
 
-for manifest in crates/vectr-cli/Cargo.toml crates/vectr-mcp/Cargo.toml; do
+for manifest in crates/*/Cargo.toml; do
   apply "$manifest" -e "$p_manifest_core" -e "$p_manifest_project"
 done
-apply crates/vectr-project/Cargo.toml -e "$p_manifest_core"
 
 # The acceptance crate is its own workspace and names its own version.
 apply tests/acceptance/Cargo.toml -e 's|^(version = ")[^"]*(")|\1'"$version"'\2|'
