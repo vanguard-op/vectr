@@ -50,6 +50,14 @@ reports that no scene was selected rather than choosing among its scenes, and a
 default that resolves to no document names the missing scene. Both are errors —
 the tools never pick a scene by accident.
 
+An MCP tool addresses a scene by the same rules: `scene` is the identifier, and
+omitting both `scene` and `draft` uses the default. It also accepts a scene
+document sent inline as `draft` — a JSON object or JSON text — used as a draft
+instead of a project scene: it never becomes or reads the default, and its
+assets resolve against `project` or the server's project context. A call that
+names both `scene` and `draft` is malformed, since the two are mutually
+exclusive.
+
 Run the tools from inside the project so the root is found. If there is no
 project yet, scaffold one with `vectr init [dir]`; it writes the configuration,
 a starter scene at `scenes/example.json` that the project names as its default,
@@ -81,15 +89,24 @@ the project's default scene.
 | Step | MCP tool | CLI |
 |---|---|---|
 | Read the contract | `schema` `{form?, type?}` | `vectr schema [--compact] [--type <name>]` |
-| Validate | `validate` `{scene, project?}` | `vectr validate <scene> [--json]` |
-| Compile | `compile` `{scene, project?}` | `vectr compile <scene> [--check] [--out <file>]` |
-| Render | `render` `{scene, format, out?, width?, height?, density?, background?}` | `vectr export <scene> --format svg\|png [--out <file>] [--width <n>] [--height <n>] [--density <n>] [--background <color\|transparent>]` |
+| Validate | `validate` `{scene?, draft?, project?}` | `vectr validate <scene> [--json]` |
+| Compile | `compile` `{scene?, draft?, project?}` | `vectr compile <scene> [--check] [--out <file>]` |
+| Render | `render` `{scene?, draft?, project?, format, out?, width?, height?, density?, background?}` | `vectr export <scene> --format svg\|png [--out <file>] [--width <n>] [--height <n>] [--density <n>] [--background <color\|transparent>]` |
+
+An MCP tool addresses a scene by the same rules as the CLI. `scene` is the
+identifier; omitting both `scene` and `draft` uses the project's default, and a
+project that names no default is an error rather than a choice among its scenes.
+An MCP tool also accepts a scene document sent inline as `draft` — a JSON object
+or JSON text — used instead of a project scene: it never becomes or reads the
+default, and its assets resolve against `project` or the server's project
+context. Naming both `scene` and `draft` in one call is malformed. A project
+scene renders to `dist/<id>.<ext>` by default; a draft has no identifier, so it
+renders to `dist/scene.<ext>` unless `out` names a path.
 
 An MCP tool failure is a result with `isError: true` and a body
 `{code, message, location, diagnostics}`; read the whole `diagnostics` list, not
 just `message`. A CLI failure exits non-zero, prints a diagnostic with its
-location, and writes nothing. The `scene` argument to an MCP tool is either the
-scene document as JSON text or a path to one.
+location, and writes nothing.
 
 ## 3. Read the schema for the types you will write
 
@@ -443,9 +460,10 @@ machine-readable array:
 ```
 
 The MCP tools return the same diagnostics in the tool body under `diagnostics`,
-with `isError: true` on failure. Exit codes: `0` success, `1` invalid scene, `2`
-usage or unreadable input, `3` compilation failure, `4` export dependency
-missing, `5` output I/O failure.
+with `isError: true` on failure: call `validate` with `{"scene": "habit-logo"}`,
+or `{"draft": {...}}` to validate an inline document. Exit codes: `0` success,
+`1` invalid scene, `2` usage or unreadable input, `3` compilation failure, `4`
+export dependency missing, `5` output I/O failure.
 
 ## 6. Render and look at the result
 
@@ -505,6 +523,8 @@ Validation diagnostics name the problem and its location. The usual findings:
   `scenes/<id>.json`, the project names no default scene, or its
   `defaultSceneId` resolves to no document; run the command from inside the
   project and check the identifier.
+- `E_MALFORMED` — an MCP call named both a `scene` identifier and an inline
+  `draft`; the two are mutually exclusive, so name one.
 - `E_SCHEMA_TYPE` — a `schema --type` name does not exist; pick one of the
   listed similar names.
 - `E_CYCLE` — elements reference each other as parents; break the loop.

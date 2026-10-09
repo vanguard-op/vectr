@@ -112,6 +112,16 @@ def check_static(skill_dir: Path) -> list[str]:
             command in line for command in ("vectr validate", "vectr compile", "vectr export")
         ):
             raise CheckError(f"the guide passes a scene path as a command argument: {line.strip()!r}")
+
+    # An MCP tool addresses a scene the same way — by identifier, or the
+    # project's default — and also accepts an inline draft. The guide must teach
+    # the `draft` argument, that a draft is never the default, and that naming
+    # `scene` and `draft` together is malformed (FEAT-019, C-005).
+    if "draft" not in guide or "E_MALFORMED" not in guide:
+        raise CheckError(
+            "the guide does not teach the MCP inline `draft` argument and its "
+            "mutual exclusion with `scene`"
+        )
     for section in (
         "Inspect and correct",
         "Retry once",
