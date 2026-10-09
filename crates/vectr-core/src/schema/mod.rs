@@ -330,6 +330,56 @@ mod tests {
     }
 
     #[test]
+    fn the_prompt_carries_the_corpus_coverage_fields() {
+        // The harness classifies every prompt by its place in the complexity
+        // range and the hard-end qualities it exercises, so the contract a model
+        // authors against carries both fields with their allowed values.
+        let schema = parsed(&schema(SchemaForm::Full).unwrap());
+        let prompt = &schema["$defs"]["Prompt"];
+        let required: Vec<&str> = prompt["required"]
+            .as_array()
+            .expect("the prompt lists its required fields")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert!(required.contains(&"complexity"), "{required:?}");
+        assert!(required.contains(&"qualities"), "{required:?}");
+        assert_eq!(
+            prompt["properties"]["complexity"]["$ref"],
+            "#/$defs/PromptComplexity"
+        );
+        assert_eq!(
+            prompt["properties"]["qualities"]["items"]["$ref"],
+            "#/$defs/PromptQuality"
+        );
+        assert_eq!(
+            schema["$defs"]["PromptComplexity"]["enum"],
+            serde_json::json!(["simple", "moderate", "complex"])
+        );
+        assert_eq!(
+            schema["$defs"]["PromptQuality"]["enum"],
+            serde_json::json!([
+                "depth",
+                "relative_placement",
+                "shared_anchors",
+                "subject_accuracy",
+                "reusable_parts"
+            ])
+        );
+    }
+
+    #[test]
+    fn a_prompt_type_request_exposes_the_coverage_fields() {
+        let prompt = parsed(&schema_for("Prompt").unwrap());
+        assert!(prompt["$defs"]["Prompt"]["properties"]["complexity"].is_object());
+        assert_eq!(prompt["$defs"]["PromptComplexity"]["enum"][0], "simple");
+        assert_eq!(
+            prompt["$defs"]["PromptQuality"]["enum"][4],
+            "reusable_parts"
+        );
+    }
+
+    #[test]
     fn a_type_name_matches_case_insensitively() {
         assert_eq!(parsed(&schema_for("element").unwrap())["title"], "Element");
         assert_eq!(parsed(&schema_for("PALETTE").unwrap())["title"], "Palette");

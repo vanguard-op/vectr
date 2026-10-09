@@ -59,7 +59,9 @@
     "Spread",
     "AssetKind",
     "ExportFormat",
-    "ExportStatus"
+    "ExportStatus",
+    "PromptComplexity",
+    "PromptQuality"
   ],
   "$ref": "#/$defs/Scene",
   "$defs": {
@@ -556,16 +558,22 @@
     },
     "Prompt": {
       "title": "Prompt",
-      "description": "One authoring task in an evaluation corpus.",
+      "description": "One authoring task in an evaluation corpus, classified by its place in the product's complexity range and the hard-end qualities it exercises.",
       "type": "object",
       "properties": {
         "id": { "type": "string", "description": "Stable identifier for the prompt." },
         "corpusId": { "type": "string", "description": "References the EvaluationCorpus this prompt belongs to." },
         "intent": { "type": "string", "description": "The graphic the prompt asks for." },
         "text": { "type": "string", "description": "The natural-language request given to the authoring model." },
-        "order": { "type": "integer", "minimum": 0, "description": "Order of the prompt in the corpus." }
+        "order": { "type": "integer", "minimum": 0, "description": "Order of the prompt in the corpus." },
+        "complexity": { "$ref": "#/$defs/PromptComplexity" },
+        "qualities": {
+          "type": "array",
+          "description": "The hard-end qualities the prompt exercises. Depth, relative placement, shared anchors, and subject accuracy are the four the authoring guidance directs and the harness scores; reusable parts marks an illustration built up from reusable part definitions. A complex-end prompt carries at least one, and a corpus that omits a quality does not meet its coverage requirement.",
+          "items": { "$ref": "#/$defs/PromptQuality" }
+        }
       },
-      "required": ["id", "corpusId", "intent", "text", "order"],
+      "required": ["id", "corpusId", "intent", "text", "order", "complexity", "qualities"],
       "additionalProperties": false
     },
     "AuthoringModel": {
@@ -703,6 +711,18 @@
       "description": "The outcome of the export.",
       "type": "string",
       "enum": ["written", "failed", "dependency-missing"]
+    },
+    "PromptComplexity": {
+      "title": "PromptComplexity",
+      "description": "Where a prompt sits in the product's complexity range: a simple mark, a moderately detailed graphic, or the complex end. Every prompt carries one, and the harness scores the complex end against the hard-end bar.",
+      "type": "string",
+      "enum": ["simple", "moderate", "complex"]
+    },
+    "PromptQuality": {
+      "title": "PromptQuality",
+      "description": "A hard-end quality a prompt exercises: depth and perspective, relative placement, parts joined at shared anchors, subject accuracy, or an illustration built up from reusable parts.",
+      "type": "string",
+      "enum": ["depth", "relative_placement", "shared_anchors", "subject_accuracy", "reusable_parts"]
     }
   }
 }
