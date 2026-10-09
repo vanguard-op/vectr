@@ -1,7 +1,7 @@
 # Delivery
 
 ## Source of truth
-docs/Vectr/ — git submodule, remote https://github.com/vanguard-op/vectr-docs.git; working tree at 803a8ea (reusable parts, incremental authoring, and part-scoped rendering specified for Phase 4; definition elements split into the TemplateElement variant), the recorded pointer advancing with the build. The docs are authoritative for what to build; this file tracks state only and never restates the spec.
+docs/Vectr/ — git submodule, remote https://github.com/vanguard-op/vectr-docs.git; working tree at 119c038 (reusable parts settled as one element shape, one literal-or-reference form, and parameters as the only use-adjustment mechanism; part-scoped rendering and incremental authoring specified for Phase 4), the recorded pointer advancing with the build. The docs are authoritative for what to build; this file tracks state only and never restates the spec.
 
 ## Team & file ownership
 | Member | Owns |
@@ -72,7 +72,7 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | Task | Feature | Owner | Status | Contract |
 |---|---|---|---|---|
 | T-072 | FEAT-030 | backend-engineer | Done | C-001, C-002, C-003 |
-| T-073 | FEAT-031 | backend-engineer | Backlog | C-002, C-004 |
+| T-073 | FEAT-031 | backend-engineer | In Progress | C-002, C-004 |
 | T-074 | FEAT-031 | ai-engineer | Backlog | C-005 |
 | T-075 | FEAT-029 | ai-engineer | Backlog | C-002, C-004, C-005 |
 
@@ -116,6 +116,7 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | D-035 | A parameter is referenced inside a definition by the object `{param: "<name>"}` in a field whose type matches the parameter; an instance override names one element of the placed definition by identifier. | The docs left both unsettled; the tagged-object form is unambiguous across field types and matches the model's existing tagged-object idiom, and targeting an element keeps multi-colour parts overridable. | lead |
 | D-036 | A project's reusable definitions live in a `definitions/` directory, one document per definition named for its identifier (`definitions/<id>.json`), scaffolded by `vectr init`. | Definitions are project documents referenced by identifier, parallel to scenes and palettes; the docs name the directory but not its file naming. Extends D-009. | lead |
 | D-037 | A definition's element is a distinct `TemplateElement` variant whose parameter-capable fields accept a literal or a parameter reference, while a scene's `Element` fields stay literal-typed; `Binding`, `BindingValue`, and `Override` are shared entities; a scene carries an optional `constraints` array. | A single element type cannot admit a reference where a definition allows one and reject it where a scene does not, so the variant keeps validation sound. Ratifies the shape the build had already chosen. | lead |
+| D-038 | A reusable definition's element is the same `Element` shape as a scene's; a parameter-capable field holds a literal or a `ParamRef`; a reference is valid only inside a definition; and parameters are the only use-adjustment mechanism (no separate overrides). | Supersedes D-037: one element shape needs one value form, and one adjustment mechanism removes the last reason for a second element shape, so the model carries no duplicated types. | lead |
 
 ## Definition of Done
 - Every acceptance criterion in the task's FEAT file is met, including its edge cases and failure states.
