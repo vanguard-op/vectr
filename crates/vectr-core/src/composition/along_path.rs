@@ -123,7 +123,8 @@ mod tests {
     fn element() -> Element {
         Element {
             id: "p1".to_string(),
-            scene_id: "s1".to_string(),
+            scene_id: Some("s1".to_string()),
+            definition_id: None,
             parent_id: None,
             order: 0,
             name: None,
@@ -143,6 +144,9 @@ mod tests {
             font_id: None,
             opacity: 1.0,
             visible: true,
+            definition_ref: None,
+            bindings: None,
+            overrides: None,
         }
     }
 

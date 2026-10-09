@@ -47,6 +47,7 @@ fn context<'a>(
         gradients,
         fonts: &[],
         recipe,
+        definitions: &[],
     }
 }
 

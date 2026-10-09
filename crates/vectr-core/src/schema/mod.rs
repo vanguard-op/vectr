@@ -259,6 +259,9 @@ mod tests {
         for entity in [
             "Scene",
             "Element",
+            "Definition",
+            "TemplateElement",
+            "Parameter",
             "Canvas",
             "Transform",
             "Paint",
@@ -298,7 +301,8 @@ mod tests {
                 "alongPath",
                 "offset",
                 "projection",
-                "raster"
+                "raster",
+                "instance"
             ]
         );
     }

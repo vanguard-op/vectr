@@ -559,12 +559,20 @@ fn validate_scene(scene: &ProjectScene, json: bool) -> Report {
     // Validation is the gate a project's references pass: a palette token the
     // palette no longer defines, a stroke profile, or a font that does not
     // resolve is an error naming it, so a restyle that broke a scene is caught
-    // before anything is compiled (FEAT-005, FEAT-024).
+    // before anything is compiled (FEAT-005, FEAT-024). The checks run against
+    // the scene with its definition instances expanded, so a reference written
+    // inside a reusable part is checked like one written in the scene (FEAT-030).
     let mut findings = validate_scene_model(&parsed);
+    let expanded = assets.expanded_scene(&parsed);
+    let usage_scene = expanded.as_ref().unwrap_or(&parsed);
     if let Some(palette) = assets.palette() {
-        findings.extend(validate_palette_usage(&parsed, palette, assets.gradients()));
+        findings.extend(validate_palette_usage(
+            usage_scene,
+            palette,
+            assets.gradients(),
+        ));
     }
-    findings.extend(validate_gradient_usage(&parsed, assets.gradients()));
+    findings.extend(validate_gradient_usage(usage_scene, assets.gradients()));
     findings.extend(assets.check_references(&parsed));
 
     let code = if findings.has_errors() {

@@ -7,6 +7,23 @@
   "x-vectr-types": [
     "Scene",
     "Element",
+    "Definition",
+    "TemplateElement",
+    "TemplateGeometry",
+    "TemplateTransform",
+    "TemplateStroke",
+    "Parameter",
+    "ParameterType",
+    "ParameterValue",
+    "Origin",
+    "NumberValue",
+    "StringValue",
+    "BoolValue",
+    "PaintValue",
+    "ParamRef",
+    "Binding",
+    "BindingValue",
+    "Override",
     "Canvas",
     "Geometry",
     "Transform",
@@ -94,7 +111,8 @@
       "type": "object",
       "properties": {
         "id": { "type": "string", "description": "Stable identifier for the element." },
-        "sceneId": { "type": "string", "description": "References the Scene this element belongs to." },
+        "sceneId": { "type": ["string", "null"], "description": "References the Scene this element belongs to; null when the element belongs to a Definition. Exactly one of sceneId and definitionId is set." },
+        "definitionId": { "type": ["string", "null"], "description": "References the Definition this element belongs to; null when the element belongs to a Scene." },
         "parentId": { "type": ["string", "null"], "description": "References the parent Element, or null for a root element." },
         "order": { "type": "integer", "minimum": 0, "description": "Paint order among siblings; lower values paint first." },
         "name": { "type": "string", "description": "Element name, preserved in exported output." },
@@ -105,7 +123,10 @@
         "stroke": { "anyOf": [{ "$ref": "#/$defs/Stroke" }, { "type": "null" }], "description": "The element's stroke, or null for no stroke." },
         "fontId": { "type": ["string", "null"], "description": "References the Asset of kind font used to render a text element, or null to use the default open-licensed font. Applies only to a text element." },
         "opacity": { "type": "number", "minimum": 0, "maximum": 1, "description": "Element opacity." },
-        "visible": { "type": "boolean", "description": "Whether the element is rendered." }
+        "visible": { "type": "boolean", "description": "Whether the element is rendered." },
+        "definitionRef": { "type": ["string", "null"], "description": "References the Definition this element places; required when kind is instance and null otherwise." },
+        "bindings": { "type": ["array", "null"], "description": "Values bound to the placed definition's parameters; applies only to an instance.", "items": { "$ref": "#/$defs/Binding" } },
+        "overrides": { "type": ["array", "null"], "description": "Appearance overrides applied to this instance only; applies only to an instance.", "items": { "$ref": "#/$defs/Override" } }
       },
       "required": ["id", "sceneId", "order", "kind", "geometry", "transform", "opacity", "visible"],
       "additionalProperties": false,
@@ -126,6 +147,190 @@
           "then": { "not": { "required": ["fontId"] } }
         }
       ]
+    },
+    "Definition": {
+      "title": "Definition",
+      "description": "A named, project-scoped reusable part: a group of elements that any scene in the project can place by reference, one or many times. A definition is not rendered unless an instance element references it. Its elements are the Element rows whose definitionId references it. Because it is project-scoped, editing a definition changes what every scene that places it renders on the next compile.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Stable identifier for the definition, unique within its project." },
+        "projectId": { "type": "string", "description": "References the ProjectConfig this definition belongs to." },
+        "name": { "type": "string", "maxLength": 120, "description": "Human-readable definition name." },
+        "parameters": { "type": "array", "description": "The named inputs the definition accepts; an instance binds each one, or the parameter's default applies.", "items": { "$ref": "#/$defs/Parameter" } },
+        "origin": { "$ref": "#/$defs/Origin" },
+        "elements": { "type": "array", "description": "The definition's element tree; each element's definitionId references this definition.", "items": { "$ref": "#/$defs/TemplateElement" } }
+      },
+      "required": ["id", "projectId", "name", "parameters", "origin"],
+      "additionalProperties": false
+    },
+    "TemplateElement": {
+      "title": "TemplateElement",
+      "description": "One element of a definition: a template whose parameter-capable fields hold either a literal or the object { \"param\": \"<name>\" }. Expansion resolves each reference against an instance's bindings into a concrete Element.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Stable identifier for the element, unique within its definition." },
+        "definitionId": { "type": "string", "description": "References the Definition this element belongs to." },
+        "parentId": { "type": ["string", "null"], "description": "References the parent element, or null for a root element." },
+        "order": { "type": "integer", "minimum": 0, "description": "Paint order among siblings; lower values paint first." },
+        "name": { "type": "string", "description": "Element name, preserved in exported output." },
+        "kind": { "$ref": "#/$defs/ElementKind" },
+        "geometry": { "$ref": "#/$defs/TemplateGeometry" },
+        "transform": { "$ref": "#/$defs/TemplateTransform" },
+        "fill": { "anyOf": [{ "$ref": "#/$defs/PaintValue" }, { "type": "null" }], "description": "The element's fill paint, or a token parameter reference, or null for no fill." },
+        "stroke": { "anyOf": [{ "$ref": "#/$defs/TemplateStroke" }, { "type": "null" }], "description": "The element's stroke, or null for no stroke." },
+        "fontId": { "type": ["string", "null"], "description": "References the Asset of kind font used to render a text element." },
+        "opacity": { "$ref": "#/$defs/NumberValue" },
+        "visible": { "$ref": "#/$defs/BoolValue" },
+        "definitionRef": { "type": ["string", "null"], "description": "References the Definition an instance element places." },
+        "bindings": { "type": ["array", "null"], "description": "Values an instance binds to the placed definition's parameters.", "items": { "$ref": "#/$defs/Binding" } },
+        "overrides": { "type": ["array", "null"], "description": "Appearance overrides an instance applies to the placed definition.", "items": { "$ref": "#/$defs/Override" } }
+      },
+      "required": ["id", "definitionId", "order", "kind", "geometry", "transform", "opacity", "visible"],
+      "additionalProperties": false
+    },
+    "TemplateGeometry": {
+      "title": "TemplateGeometry",
+      "description": "A definition element's geometry; numeric and string fields may hold a parameter reference.",
+      "type": "object",
+      "properties": {
+        "x": { "$ref": "#/$defs/NumberValue" },
+        "y": { "$ref": "#/$defs/NumberValue" },
+        "width": { "$ref": "#/$defs/NumberValue" },
+        "height": { "$ref": "#/$defs/NumberValue" },
+        "rx": { "$ref": "#/$defs/NumberValue" },
+        "ry": { "$ref": "#/$defs/NumberValue" },
+        "points": { "type": "array", "description": "Point list for polygon and line elements.", "items": { "type": "array", "prefixItems": [{ "type": "number" }, { "type": "number" }], "minItems": 2, "maxItems": 2 } },
+        "pathData": { "$ref": "#/$defs/StringValue" },
+        "text": { "$ref": "#/$defs/StringValue" },
+        "fontSize": { "$ref": "#/$defs/NumberValue" },
+        "align": { "$ref": "#/$defs/TextAlign" },
+        "lineHeight": { "$ref": "#/$defs/NumberValue" },
+        "letterSpacing": { "$ref": "#/$defs/NumberValue" },
+        "count": { "$ref": "#/$defs/NumberValue" },
+        "spacing": { "$ref": "#/$defs/NumberValue" },
+        "operation": { "$ref": "#/$defs/BooleanOperation" },
+        "distance": { "$ref": "#/$defs/NumberValue" },
+        "axis": { "$ref": "#/$defs/ProjectionAxis" }
+      },
+      "additionalProperties": false
+    },
+    "TemplateTransform": {
+      "title": "TemplateTransform",
+      "description": "A definition element's transform; its numeric fields may hold a parameter reference.",
+      "type": "object",
+      "properties": {
+        "translateX": { "$ref": "#/$defs/NumberValue" },
+        "translateY": { "$ref": "#/$defs/NumberValue" },
+        "rotate": { "$ref": "#/$defs/NumberValue" },
+        "scaleX": { "$ref": "#/$defs/NumberValue" },
+        "scaleY": { "$ref": "#/$defs/NumberValue" },
+        "skewX": { "$ref": "#/$defs/NumberValue" },
+        "skewY": { "$ref": "#/$defs/NumberValue" }
+      },
+      "required": ["translateX", "translateY", "rotate", "scaleX", "scaleY"],
+      "additionalProperties": false
+    },
+    "TemplateStroke": {
+      "title": "TemplateStroke",
+      "description": "A definition element's stroke: a profile and a paint that may be a token parameter reference.",
+      "type": "object",
+      "properties": {
+        "profileId": { "type": "string", "description": "References the StrokeProfile supplying the stroke's width, cap, and join." },
+        "paint": { "$ref": "#/$defs/PaintValue" }
+      },
+      "required": ["profileId", "paint"],
+      "additionalProperties": false
+    },
+    "Parameter": {
+      "title": "Parameter",
+      "description": "One named input a definition accepts.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "Parameter name an instance binds." },
+        "type": { "$ref": "#/$defs/ParameterType" },
+        "default": { "type": ["number", "string", "boolean", "null"], "description": "Value used when an instance does not bind the parameter; null means the parameter has no default and a binding is required." }
+      },
+      "required": ["name", "type"],
+      "additionalProperties": false
+    },
+    "ParameterType": {
+      "title": "ParameterType",
+      "description": "The kind of value a parameter accepts.",
+      "type": "string",
+      "enum": ["number", "string", "boolean", "token"]
+    },
+    "ParameterValue": {
+      "title": "ParameterValue",
+      "description": "A literal parameter default.",
+      "oneOf": [{ "type": "number" }, { "type": "string" }, { "type": "boolean" }]
+    },
+    "Origin": {
+      "title": "Origin",
+      "description": "A definition's local coordinate frame; an instance places the definition by transforming this origin.",
+      "type": "object",
+      "properties": {
+        "x": { "type": "number", "description": "X of the definition's origin in scene units." },
+        "y": { "type": "number", "description": "Y of the definition's origin in scene units." }
+      },
+      "required": ["x", "y"],
+      "additionalProperties": false
+    },
+    "NumberValue": {
+      "title": "NumberValue",
+      "description": "A number that is either a literal or a parameter reference.",
+      "oneOf": [{ "type": "number" }, { "$ref": "#/$defs/ParamRef" }]
+    },
+    "StringValue": {
+      "title": "StringValue",
+      "description": "A string that is either a literal or a parameter reference.",
+      "oneOf": [{ "type": "string" }, { "$ref": "#/$defs/ParamRef" }]
+    },
+    "BoolValue": {
+      "title": "BoolValue",
+      "description": "A boolean that is either a literal or a parameter reference.",
+      "oneOf": [{ "type": "boolean" }, { "$ref": "#/$defs/ParamRef" }]
+    },
+    "PaintValue": {
+      "title": "PaintValue",
+      "description": "A paint that is either a literal or a token parameter reference.",
+      "oneOf": [{ "$ref": "#/$defs/Paint" }, { "$ref": "#/$defs/ParamRef" }]
+    },
+    "ParamRef": {
+      "title": "ParamRef",
+      "description": "A reference to a declared parameter, written { \"param\": \"<name>\" }.",
+      "type": "object",
+      "properties": { "param": { "type": "string", "description": "The name of the parameter being referenced." } },
+      "required": ["param"],
+      "additionalProperties": false
+    },
+    "Binding": {
+      "title": "Binding",
+      "description": "One value an instance binds to a placed definition's parameter.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "The name of the parameter being bound." },
+        "value": { "$ref": "#/$defs/BindingValue" }
+      },
+      "required": ["name", "value"],
+      "additionalProperties": false
+    },
+    "BindingValue": {
+      "title": "BindingValue",
+      "description": "The value of a binding: a literal, or a parameter reference forwarding an enclosing definition's parameter.",
+      "oneOf": [{ "type": "number" }, { "type": "string" }, { "type": "boolean" }, { "$ref": "#/$defs/ParamRef" }]
+    },
+    "Override": {
+      "title": "Override",
+      "description": "One appearance override an instance applies to a placed definition element; a field left out is inherited, and an explicit null fill or stroke clears it.",
+      "type": "object",
+      "properties": {
+        "target": { "type": "string", "description": "Identifier of the placed definition's element whose appearance changes." },
+        "fill": { "anyOf": [{ "$ref": "#/$defs/Paint" }, { "type": "null" }] },
+        "stroke": { "anyOf": [{ "$ref": "#/$defs/Stroke" }, { "type": "null" }] },
+        "opacity": { "type": "number", "minimum": 0, "maximum": 1 }
+      },
+      "required": ["target"],
+      "additionalProperties": false
     },
     "Geometry": {
       "title": "Geometry",
@@ -450,7 +655,7 @@
       "title": "ElementKind",
       "description": "The element's role.",
       "type": "string",
-      "enum": ["rect", "ellipse", "polygon", "line", "path", "text", "group", "repeat", "boolean", "alongPath", "offset", "projection", "raster"]
+      "enum": ["rect", "ellipse", "polygon", "line", "path", "text", "group", "repeat", "boolean", "alongPath", "offset", "projection", "raster", "instance"]
     },
     "PaintKind": {
       "title": "PaintKind",

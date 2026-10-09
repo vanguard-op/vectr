@@ -153,7 +153,8 @@ mod tests {
     fn element(kind: ElementKind, geometry: Geometry) -> Element {
         Element {
             id: "e".to_string(),
-            scene_id: "s".to_string(),
+            scene_id: Some("s".to_string()),
+            definition_id: None,
             parent_id: None,
             order: 0,
             name: None,
@@ -173,6 +174,9 @@ mod tests {
             font_id: None,
             opacity: 1.0,
             visible: true,
+            definition_ref: None,
+            bindings: None,
+            overrides: None,
         }
     }
 

@@ -34,6 +34,7 @@ fn compiling_the_same_scene_twice_yields_an_identical_model() {
         gradients: &[],
         fonts: &[],
         recipe: None,
+        definitions: &[],
     };
 
     let first = compile_with(&document, &style).expect("compiles");
@@ -122,6 +123,7 @@ fn a_text_element_carries_its_string_resolved_font_and_layout() {
         gradients: &[],
         fonts: &fonts,
         recipe: None,
+        definitions: &[],
     };
 
     let model = compile_with(&document, &style).expect("compiles");
@@ -170,6 +172,7 @@ fn the_render_model_round_trips_through_its_json_representation() {
         gradients: &[],
         fonts: &[],
         recipe: None,
+        definitions: &[],
     };
     let model = compile_with(&document, &style).expect("compiles");
 

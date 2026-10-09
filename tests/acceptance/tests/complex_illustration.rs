@@ -469,6 +469,7 @@ fn the_documented_large_scene_compiles_completely_and_deterministically() {
         gradients: &[],
         fonts: &[],
         recipe: None,
+        definitions: &[],
     };
 
     let first = compile_with(&document, &style).expect("a complex illustration compiles");
@@ -509,6 +510,7 @@ fn a_composition_above_the_documented_large_scene_count_is_warned_not_silent() {
         gradients: &[],
         fonts: &[],
         recipe: None,
+        definitions: &[],
     };
 
     let model = compile_with(&document, &style).expect("a dense composition compiles");

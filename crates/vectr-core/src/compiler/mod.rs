@@ -72,6 +72,8 @@
 //! into the table too, so the font manager substitutes a glyph the resolved font
 //! lacks rather than drawing a blank box (D-018, FEAT-024).
 
+pub mod expand;
+
 use std::collections::{HashMap, HashSet};
 
 use crate::composition::{
@@ -89,8 +91,8 @@ use crate::render::{
     ResolvedNode, TextRun,
 };
 use crate::scene::{
-    validate, BooleanOperation, Diagnostic, DiagnosticCode, Diagnostics, ElementKind, Location,
-    Scene, TextAlign,
+    validate, BooleanOperation, Definition, Diagnostic, DiagnosticCode, Diagnostics, ElementKind,
+    Location, Scene, TextAlign,
 };
 use crate::style::{self, Gradient, Palette, StrokeProfile, StyleRecipe, UNDEFINED_STROKE};
 
@@ -156,6 +158,9 @@ pub struct StyleContext<'a> {
     /// A flat recipe resolves to even, solid palette fills with no texture,
     /// honoring an element's explicit gradient as its one exception (FEAT-007).
     pub recipe: Option<&'a StyleRecipe>,
+    /// The project's reusable definitions, so an instance element expands
+    /// without filesystem access (C-002, FEAT-030).
+    pub definitions: &'a [Definition],
 }
 
 /// A font asset a caller supplies so the compiler can resolve a text element's
@@ -216,6 +221,19 @@ pub fn compile_with_style<'s>(
     if diagnostics.has_errors() {
         return Err(diagnostics);
     }
+
+    // Reusable-definition instances are lowered to concrete elements before the
+    // compiler walks the tree, so no emission path needs a second element
+    // universe and the model carries no unresolved reference (FEAT-030).
+    let expansion = match expand::expand(scene, style.definitions) {
+        Ok(expansion) => expansion,
+        Err(errors) => {
+            diagnostics.extend(errors);
+            return Err(diagnostics);
+        }
+    };
+    diagnostics.extend(expansion.diagnostics);
+    let scene = &expansion.scene;
 
     let resolution = match constraints::resolve(scene) {
         Ok(resolution) => resolution,
@@ -480,6 +498,9 @@ impl Compiler<'_, '_> {
 
         match kind {
             ElementKind::Raster => self.reject_unsupported(index, "raster"),
+            // An instance is lowered to concrete elements before compilation;
+            // reaching one here means a scene was compiled without expansion.
+            ElementKind::Instance => self.reject_unsupported(index, "instance"),
             ElementKind::Rect
             | ElementKind::Ellipse
             | ElementKind::Polygon
@@ -638,6 +659,10 @@ impl Compiler<'_, '_> {
         match kind {
             ElementKind::Raster => {
                 self.reject_unsupported(index, "raster");
+                None
+            }
+            ElementKind::Instance => {
+                self.reject_unsupported(index, "instance");
                 None
             }
             ElementKind::Text => {
@@ -1590,6 +1615,7 @@ impl Compiler<'_, '_> {
         let kind = self.scene.elements[index].kind;
         let value = match kind {
             ElementKind::Raster => 0,
+            ElementKind::Instance => 0,
             ElementKind::Rect
             | ElementKind::Ellipse
             | ElementKind::Polygon
@@ -2308,6 +2334,7 @@ mod tests {
             gradients: &[],
             fonts: &[],
             recipe: None,
+            definitions: &[],
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -2355,6 +2382,7 @@ mod tests {
             gradients: &gradients,
             fonts: &[],
             recipe: Some(&recipe),
+            definitions: &[],
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -2403,6 +2431,7 @@ mod tests {
             gradients: &[],
             fonts: &[],
             recipe: None,
+            definitions: &[],
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -2425,6 +2454,7 @@ mod tests {
             gradients: &[],
             fonts: &[],
             recipe: Some(&recipe),
+            definitions: &[],
         };
 
         let model = compile_with_style(&scene, &style).expect("the scene still compiles");
@@ -2459,6 +2489,7 @@ mod tests {
             gradients: &[],
             fonts: &[],
             recipe: Some(&recipe),
+            definitions: &[],
         };
 
         let model = compile_with_style(&scene, &style).expect("the shading request is not fatal");
@@ -2518,6 +2549,7 @@ mod tests {
             gradients: &[],
             fonts: &[],
             recipe: Some(&recipe),
+            definitions: &[],
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -2557,6 +2589,7 @@ mod tests {
             gradients: &[],
             fonts: &[],
             recipe: Some(&recipe),
+            definitions: &[],
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -2588,6 +2621,7 @@ mod tests {
             gradients: &[],
             fonts: &[],
             recipe: Some(&recipe),
+            definitions: &[],
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -2611,6 +2645,7 @@ mod tests {
             gradients: &[],
             fonts: &[],
             recipe: Some(&recipe),
+            definitions: &[],
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -2644,6 +2679,7 @@ mod tests {
             gradients: &[],
             fonts: &[],
             recipe: Some(&recipe),
+            definitions: &[],
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -2677,6 +2713,7 @@ mod tests {
             gradients: &[],
             fonts: &[],
             recipe: Some(&recipe),
+            definitions: &[],
         };
 
         let model =
@@ -2714,6 +2751,7 @@ mod tests {
                 gradients: &[],
                 fonts: &[],
                 recipe: None,
+                definitions: &[],
             },
         )
         .expect("compiles");
@@ -2725,6 +2763,7 @@ mod tests {
                 gradients: &[],
                 fonts: &[],
                 recipe: None,
+                definitions: &[],
             },
         )
         .expect("compiles");
@@ -2774,6 +2813,7 @@ mod tests {
             gradients: &[],
             fonts: &[],
             recipe: None,
+            definitions: &[],
         };
 
         let diagnostics =
@@ -2909,6 +2949,7 @@ mod tests {
             gradients: &[],
             fonts: &fonts,
             recipe: None,
+            definitions: &[],
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -2932,6 +2973,7 @@ mod tests {
             gradients: &[],
             fonts: &fonts,
             recipe: None,
+            definitions: &[],
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -2953,6 +2995,7 @@ mod tests {
             gradients: &[],
             fonts: &fonts,
             recipe: None,
+            definitions: &[],
         };
 
         let diagnostics =
@@ -2993,6 +3036,7 @@ mod tests {
             gradients: &[],
             fonts: &fonts,
             recipe: None,
+            definitions: &[],
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -3022,6 +3066,7 @@ mod tests {
             gradients: &[],
             fonts: &fonts,
             recipe: None,
+            definitions: &[],
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -3050,6 +3095,7 @@ mod tests {
             gradients: &[],
             fonts: &fonts,
             recipe: None,
+            definitions: &[],
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -3123,6 +3169,7 @@ mod tests {
             gradients: &[],
             fonts: &[],
             recipe: Some(&recipe),
+            definitions: &[],
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -3157,6 +3204,7 @@ mod tests {
             gradients: &[],
             fonts: &[],
             recipe: Some(&recipe),
+            definitions: &[],
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -3199,6 +3247,7 @@ mod tests {
             gradients: &[],
             fonts: &[],
             recipe: Some(&recipe),
+            definitions: &[],
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -3233,6 +3282,7 @@ mod tests {
             gradients: &[],
             fonts: &[],
             recipe: Some(&recipe),
+            definitions: &[],
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -3278,6 +3328,7 @@ mod tests {
             gradients: &[],
             fonts: &[],
             recipe: Some(&recipe),
+            definitions: &[],
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -3337,6 +3388,7 @@ mod tests {
             gradients: &[],
             fonts: &[],
             recipe: Some(&recipe),
+            definitions: &[],
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -3367,6 +3419,7 @@ mod tests {
             gradients: &[],
             fonts: &[],
             recipe: Some(&recipe),
+            definitions: &[],
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -3404,6 +3457,7 @@ mod tests {
             gradients: &[],
             fonts: &[],
             recipe: Some(&recipe),
+            definitions: &[],
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -3433,6 +3487,7 @@ mod tests {
             gradients: &[],
             fonts: &[],
             recipe: Some(&recipe),
+            definitions: &[],
         };
         assert_eq!(
             compile_with_style(&scene, &style).expect("compiles"),
@@ -3461,6 +3516,7 @@ mod tests {
             gradients: &[],
             fonts: &[],
             recipe: Some(recipe),
+            definitions: &[],
         }
     }
 

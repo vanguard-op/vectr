@@ -44,6 +44,7 @@ fn a_text_element_with_no_font_renders_with_the_open_licensed_default() {
         gradients: &[],
         fonts: &fonts,
         recipe: None,
+        definitions: &[],
     };
     let model = compile_with(&document, &style).expect("compiles");
 
@@ -82,6 +83,7 @@ fn a_text_element_naming_a_user_supplied_font_uses_that_font() {
         gradients: &[],
         fonts: &fonts,
         recipe: None,
+        definitions: &[],
     };
     let model = compile_with(&document, &style).expect("compiles");
 
@@ -112,6 +114,7 @@ fn exported_output_outlines_text_and_redistributes_no_font_file() {
         gradients: &[],
         fonts: &fonts,
         recipe: None,
+        definitions: &[],
     };
     let model = compile_with(&document, &style).expect("compiles");
     let svg = vectr_core::export_svg(&model, &Default::default()).expect("exports");
@@ -136,6 +139,7 @@ fn a_missing_font_is_an_error_naming_the_font() {
         gradients: &[],
         fonts: &fonts,
         recipe: None,
+        definitions: &[],
     };
     let diagnostics = compile_with(&document, &style).expect_err("refused");
     let error = diagnostics.errors().next().expect("an error");
@@ -154,6 +158,7 @@ fn a_glyph_the_chosen_font_lacks_is_substituted_from_the_fallback() {
         gradients: &[],
         fonts: &fonts,
         recipe: None,
+        definitions: &[],
     };
     let model = compile_with(&document, &style).expect("compiles");
     assert!(
@@ -185,6 +190,7 @@ fn a_glyph_no_available_font_covers_is_reported_rather_than_drawn_as_a_blank_box
         gradients: &[],
         fonts: &fonts,
         recipe: None,
+        definitions: &[],
     };
     let model = compile_with(&document, &style).expect("compiles");
     let export = vectr_core::export_svg_reporting(&model, &Default::default()).expect("exports");

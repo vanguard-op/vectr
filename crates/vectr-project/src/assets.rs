@@ -39,10 +39,11 @@ use std::path::{Path, PathBuf};
 use vectr_core::compiler::FONT;
 use vectr_core::style::{UNDEFINED_GRADIENT, UNDEFINED_STROKE};
 use vectr_core::{
-    parse_gradient, parse_palette, parse_stroke_profile, parse_style_recipe, validate_gradient,
-    validate_palette, validate_stroke_profile, validate_style_recipe, Diagnostic, DiagnosticCode,
-    Diagnostics, ElementKind, FontAsset, Gradient, Location, PaintKind, Palette, Scene,
-    StrokeProfile, StyleContext, StyleRecipe, DEFAULT_FONT_ID, FALLBACK_FONT_ID,
+    expand, parse_definition, parse_gradient, parse_palette, parse_stroke_profile,
+    parse_style_recipe, validate_definition, validate_gradient, validate_palette,
+    validate_stroke_profile, validate_style_recipe, Definition, Diagnostic, DiagnosticCode,
+    Diagnostics, Element, ElementKind, FontAsset, Gradient, Location, PaintKind, Palette, Scene,
+    StrokeProfile, StyleContext, StyleRecipe, TemplateElement, DEFAULT_FONT_ID, FALLBACK_FONT_ID,
 };
 
 /// The project configuration that marks a directory as a project root.
@@ -62,6 +63,9 @@ const RECIPE_DIR: &str = "recipes";
 
 /// The folder holding asset documents, including the fonts a scene may name.
 const ASSET_DIR: &str = "assets";
+
+/// The folder holding reusable definition documents (D-036, FEAT-030).
+const DEFINITION_DIR: &str = "definitions";
 
 /// The scene field that names the palette a scene selects (C-001).
 const PALETTE_FIELD: &str = "/paletteId";
@@ -104,6 +108,7 @@ pub struct ProjectAssets {
     strokes: Vec<StrokeProfile>,
     gradients: Vec<Gradient>,
     fonts: Vec<FontAsset>,
+    definitions: Vec<Definition>,
 }
 
 impl ProjectAssets {
@@ -178,10 +183,19 @@ impl ProjectAssets {
             }
         };
 
-        // The bundled fonts are only meaningful for a scene with text; carrying
-        // them into a scene with none would embed a font file nothing uses.
+        let definitions = match load_definitions(root) {
+            Ok(definitions) => definitions,
+            Err(findings) => {
+                diagnostics.extend(findings);
+                Vec::new()
+            }
+        };
+
+        // The bundled fonts are only meaningful for a scene that draws text,
+        // directly or through a placed definition; carrying them otherwise would
+        // embed a font file nothing uses.
         let mut fonts = Vec::new();
-        if has_text(scene) {
+        if has_text(scene, &definitions) {
             fonts.extend(bundled_fonts());
             match load_font_assets(root) {
                 Ok(user) => fonts.extend(user),
@@ -198,6 +212,7 @@ impl ProjectAssets {
             strokes,
             gradients,
             fonts,
+            definitions,
         })
     }
 
@@ -217,6 +232,7 @@ impl ProjectAssets {
             gradients: &self.gradients,
             fonts: &self.fonts,
             recipe: self.recipe.as_ref(),
+            definitions: &self.definitions,
         }
     }
 
@@ -230,6 +246,20 @@ impl ProjectAssets {
         &self.gradients
     }
 
+    /// The reusable definitions the project provides (FEAT-030).
+    pub fn definitions(&self) -> &[Definition] {
+        &self.definitions
+    }
+
+    /// Expands a scene's instances into concrete elements (FEAT-030).
+    ///
+    /// A front end that validates a scene runs its palette and gradient checks
+    /// against this expansion, so a reference inside a placed definition is
+    /// checked like one written directly in the scene.
+    pub fn expanded_scene(&self, scene: &Scene) -> Result<Scene, Diagnostics> {
+        expand(scene, &self.definitions).map(|expansion| expansion.scene)
+    }
+
     /// Checks a scene's stroke, gradient and font references against the loaded
     /// assets.
     ///
@@ -238,8 +268,27 @@ impl ProjectAssets {
     /// anything is compiled and never degrades to a missing stroke or a dropped
     /// run (FEAT-005, FEAT-024).
     pub fn check_references(&self, scene: &Scene) -> Diagnostics {
+        // A definition's own elements resolve through the instance that places
+        // it, so checking the expanded scene covers references written inside a
+        // definition as well as in the scene itself (FEAT-030).
         let mut diagnostics = Diagnostics::new();
-        for element in &scene.elements {
+        match expand(scene, &self.definitions) {
+            Ok(expansion) => {
+                diagnostics.extend(expansion.diagnostics);
+                diagnostics.extend(self.check_element_references(&expansion.scene.elements));
+            }
+            Err(errors) => {
+                diagnostics.extend(errors);
+                diagnostics.extend(self.check_element_references(&scene.elements));
+            }
+        }
+        diagnostics
+    }
+
+    /// Checks the stroke, gradient and font references one element list makes.
+    fn check_element_references(&self, elements: &[Element]) -> Diagnostics {
+        let mut diagnostics = Diagnostics::new();
+        for element in elements {
             if let Some(stroke) = &element.stroke {
                 if !self
                     .strokes
@@ -340,12 +389,21 @@ pub fn project_root_from(start: &Path) -> PathBuf {
     start.to_path_buf()
 }
 
-/// Whether a scene draws any text, and so needs a font at all.
-fn has_text(scene: &Scene) -> bool {
+/// Whether a scene draws any text, directly or through a definition it places,
+/// and so needs a font at all (FEAT-024, FEAT-030).
+fn has_text(scene: &Scene, definitions: &[Definition]) -> bool {
     scene
         .elements
         .iter()
         .any(|element| element.kind == ElementKind::Text)
+        || definitions
+            .iter()
+            .any(|definition| definition.elements.iter().any(is_text_template))
+}
+
+/// Whether a definition element is a text run.
+fn is_text_template(element: &TemplateElement) -> bool {
+    element.kind == ElementKind::Text
 }
 
 /// The two open-licensed fonts Vectr ships, under the default and fallback ids.
@@ -583,6 +641,24 @@ fn load_gradients(root: &Path) -> Result<Vec<Gradient>, Diagnostics> {
         Err(diagnostics)
     } else {
         Ok(gradients)
+    }
+}
+
+/// Loads every reusable definition the project defines (FEAT-030, D-036).
+fn load_definitions(root: &Path) -> Result<Vec<Definition>, Diagnostics> {
+    let dir = root.join(DEFINITION_DIR);
+    let mut definitions = Vec::new();
+    let mut diagnostics = Diagnostics::new();
+    for path in json_files(&dir) {
+        match read_document(&path, "definition", parse_definition, validate_definition) {
+            Ok(definition) => definitions.push(definition),
+            Err(findings) => diagnostics.extend(findings),
+        }
+    }
+    if diagnostics.has_errors() {
+        Err(diagnostics)
+    } else {
+        Ok(definitions)
     }
 }
 
@@ -1313,5 +1389,72 @@ mod tests {
         let diagnostics = ProjectAssets::load_for_scene(&scene_path, &scene).expect_err("refused");
         let error = diagnostics.errors().next().expect("an error");
         assert_eq!(error.code, STYLE_ASSET);
+    }
+
+    const CHIP_DEFINITION: &str = r##"{
+      "id": "chip",
+      "projectId": "p",
+      "name": "Chip",
+      "parameters": [],
+      "origin": { "x": 0, "y": 0 },
+      "elements": [
+        {
+          "id": "body", "definitionId": "chip", "order": 0, "kind": "rect",
+          "geometry": { "x": 0, "y": 0, "width": 10, "height": 10 },
+          "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
+          "opacity": 1, "visible": true
+        }
+      ]
+    }"##;
+
+    fn instance_scene(reference: &str) -> String {
+        format!(
+            r##"{{
+              "id": "s", "projectId": "p", "name": "S", "formatVersion": "0.2",
+              "canvas": {{ "width": 100, "height": 100, "background": "#ffffff" }},
+              "elements": [
+                {{
+                  "id": "i1", "sceneId": "s", "order": 0, "kind": "instance",
+                  "geometry": {{}}, "definitionRef": "{reference}",
+                  "transform": {{ "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 }},
+                  "opacity": 1, "visible": true
+                }}
+              ]
+            }}"##
+        )
+    }
+
+    #[test]
+    fn a_project_definition_resolves_for_a_scene_that_places_it() {
+        let dir = TempDir::new("definition-placed");
+        write(dir.path(), "vectr.project.json", "{}");
+        write(dir.path(), "definitions/chip.json", CHIP_DEFINITION);
+        let scene_text = instance_scene("chip");
+        let scene_path = write(dir.path(), "scenes/scene.json", &scene_text);
+        let scene = parse_scene(&scene_text).expect("a valid scene");
+
+        let assets = ProjectAssets::load_for_scene(&scene_path, &scene).expect("loads");
+        assert_eq!(assets.definitions().len(), 1);
+        let model = compile_with_style(&scene, &assets.style_context()).expect("compiles");
+        assert_eq!(model.nodes.len(), 1);
+        assert!(model.node("body~i1").is_some(), "{:?}", model.nodes);
+    }
+
+    #[test]
+    fn an_unresolved_definition_is_reported_before_compiling() {
+        let dir = TempDir::new("definition-missing");
+        write(dir.path(), "vectr.project.json", "{}");
+        let scene_text = instance_scene("ghost");
+        let scene_path = write(dir.path(), "scenes/scene.json", &scene_text);
+        let scene = parse_scene(&scene_text).expect("a valid scene");
+
+        let assets = ProjectAssets::load_for_scene(&scene_path, &scene).expect("loads");
+        let diagnostics = assets.check_references(&scene);
+        assert!(
+            diagnostics
+                .errors()
+                .any(|error| error.message.contains("ghost")),
+            "{diagnostics:?}"
+        );
     }
 }
