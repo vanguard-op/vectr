@@ -68,51 +68,7 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | Phase 2 — Style Core | 2026-10-08 | FEAT-027, FEAT-007, FEAT-008, FEAT-009, FEAT-010 shipped; the element paint model unified with linear/radial gradients; recipe selection wired through the CLI; C-001–C-003 re-implemented at revision 5. |
 | Phase 3 — Any Model Can Author | 2026-10-08 | FEAT-017, FEAT-018, FEAT-019, FEAT-020 shipped; validated alpha colour model (FEAT-005) and the shading-request warning (FEAT-007); scope extended to very complex illustrations (FEAT-003, FEAT-011) with complex-scene coverage; multi-scene projects with identifier addressing and a default scene, matched by the MCP surface (FEAT-016, FEAT-019); CLI and MCP share one project loader and one authoring guide; crates self-contained for packaging, both binaries and the skill distributed; released as 0.1.0-pre.1 on crates.io and GitHub Releases (checksummed and signed); the gate covers the acceptance crate's fmt/lints and a determinism check; C-001–C-005 implemented. |
 | Phase 4 — Reuse & Incremental Authoring | 2026-10-09 | FEAT-030, FEAT-031, FEAT-029 shipped: reusable part definitions, part-scoped rendering, and the incremental build-up method; the element model settled as one shape with a single literal-or-reference form and parameters as the only adjustment mechanism; part style resolves from the project's default palette and a part identifier resolves in one shared namespace; C-001–C-005 re-implemented at revisions 7/7/6/8/4; released as 0.1.0-pre.2. |
-
-### Active phase: Phase 5 — Quality & Reach
-| Task | Feature | Owner | Status | Contract |
-|---|---|---|---|---|
-| T-088 | FEAT-032, FEAT-020 | ai-engineer | Done | C-004 |
-| T-089 | FEAT-023 | ai-engineer | Done | C-006 |
-| T-090 | FEAT-023 | qa-engineer | Done | — |
-| T-091 | FEAT-022 | backend-engineer | Done | C-004 |
-| T-092 | FEAT-022, FEAT-014 | ai-engineer | Done | C-005 |
-| T-093 | FEAT-006 | backend-engineer | Done | C-001 |
-| T-094 | FEAT-014 | backend-engineer | Done | C-002, C-004 |
-| T-095 | FEAT-021 | backend-engineer | Done | C-002 |
-| T-096 | FEAT-026 | backend-engineer | Done | C-003 |
-| T-097 | FEAT-025 | backend-engineer | Done | C-004 |
-| T-098 | FEAT-020 | qa-engineer | Done | C-004 |
-| T-099 | FEAT-016, FEAT-020 | infra-engineer | Done | C-004 |
-| T-100 | FEAT-023 | infra-engineer | Done | C-006 |
-| T-101 | FEAT-023 | backend-engineer | Done | C-006 |
-| T-102 | FEAT-023 | qa-engineer | Done | — |
-| T-103 | FEAT-023 | ai-engineer | Done | C-006 |
-| T-104 | FEAT-023 | qa-engineer | Done | — |
-| T-105 | FEAT-023 | ai-engineer | Done | C-006 |
-| T-106 | FEAT-014 | backend-engineer | Done | C-004 |
-| T-107 | FEAT-021 | infra-engineer | Done | C-002 |
-| T-108 | FEAT-020 | ai-engineer | Done | C-004 |
-| T-109 | FEAT-020 | qa-engineer | Done | C-004 |
-| T-112 | FEAT-006, FEAT-014, FEAT-021, FEAT-022, FEAT-023, FEAT-025, FEAT-026, FEAT-032 | qa-engineer | Done | — |
-| T-113 | FEAT-020, FEAT-029 | ai-engineer | Done | C-004 |
-| T-114 | FEAT-020, FEAT-029 | ai-engineer | Done | C-004 |
-| T-115 | FEAT-020, FEAT-029 | qa-engineer | Done | C-004 |
-| T-119 | FEAT-029 | ai-engineer | Done | C-004 |
-| T-122 | FEAT-029 | ai-engineer | Done | C-004 |
-| T-123 | FEAT-006, FEAT-014, FEAT-020, FEAT-021, FEAT-022, FEAT-023, FEAT-025, FEAT-026, FEAT-029, FEAT-032 | qa-engineer | Done | — |
-| T-124 | FEAT-023 | ai-engineer | Done | C-006 |
-| T-126 | FEAT-006, FEAT-014, FEAT-020, FEAT-021, FEAT-022, FEAT-023, FEAT-025, FEAT-026, FEAT-029, FEAT-032 | qa-engineer | Done | — |
-| T-127 | FEAT-014, FEAT-021 | backend-engineer | Done | C-003 |
-| T-128 | FEAT-014 | infra-engineer | In Progress | C-003 |
-| T-125 | FEAT-016, FEAT-023 | backend-engineer | Done | C-001, C-006 |
-| T-116 | FEAT-020 | infra-engineer | Done | C-004 |
-| T-117 | FEAT-016, FEAT-020 | infra-engineer | Done | C-004 |
-| T-118 | FEAT-016, FEAT-023 | infra-engineer | Done | C-006 |
-| T-120 | FEAT-025 | backend-engineer | Done | C-004 |
-| T-121 | FEAT-025 | backend-engineer | Done | C-004 |
-| T-110 | FEAT-022, FEAT-014 | qa-engineer | Done | C-005 |
-| T-111 | FEAT-016, FEAT-020 | infra-engineer | Done | C-004 |
+| Phase 5 — Quality & Reach | 2026-10-09 | FEAT-006, FEAT-014, FEAT-021, FEAT-022, FEAT-023, FEAT-025, FEAT-026, FEAT-032 shipped, with the FEAT-020 packaging and FEAT-029 method rebuilt around the one universal authoring method; C-001–C-006 re-implemented at revisions 9/11/8/12/5/2 and marked implemented. |
 
 ## Decisions log
 | # | Decision | Rationale | By |
