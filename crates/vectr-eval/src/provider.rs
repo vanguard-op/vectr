@@ -11,10 +11,18 @@
 //! are never written to the record, the log or the repository (NFR-026). The
 //! harness makes a network call only for the model the maintainer names; Vectr
 //! never calls a model on behalf of a scene (NFR-024, C-006).
+//!
+//! The OpenCode adapter (D-049) runs the authoring call through a minimal,
+//! tool-free OpenCode agent and reads that call's token usage back from the
+//! OpenCode session, so the reported count is the authoring call's usage rather
+//! than OpenCode's own agent prompt and tool definitions. Without that, each
+//! call would process tens of thousands of tokens unrelated to Vectr and breach
+//! NFR-030's per-prompt budget.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde_json::{json, Value};
 
@@ -37,6 +45,12 @@ pub const ANTHROPIC_KEY: &str = "ANTHROPIC_API_KEY";
 pub const GOOGLE_KEYS: [&str; 2] = ["GOOGLE_API_KEY", "GEMINI_API_KEY"];
 /// The environment variable overriding the OpenCode binary.
 pub const OPENCODE_BIN: &str = "VECTR_OPENCODE_BIN";
+
+/// The name of the minimal, tool-free OpenCode agent the adapter selects. The
+/// agent is declared in a per-call scratch project and carries the call's system
+/// prompt, so the authoring call processes the Vectr system prompt rather than
+/// OpenCode's own (D-049).
+const OPENCODE_AGENT: &str = "vectr-eval";
 
 /// One of the pinned provider families.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -540,6 +554,10 @@ fn error_message(value: &Value) -> String {
 
 /// The OpenCode adapter, run as a local subprocess so it uses the user's own
 /// OpenCode authentication and reaches every model OpenCode exposes (D-005).
+///
+/// Each call runs in a throwaway OpenCode project whose configuration declares a
+/// single tool-free agent carrying the call's system prompt. The call's token
+/// usage is then read back from the session the run created (D-049).
 struct OpenCodeModel {
     model: String,
     bin: String,
@@ -547,9 +565,25 @@ struct OpenCodeModel {
 
 impl Completion for OpenCodeModel {
     fn complete(&self, system: &str, user: &str) -> Result<Authored, ProviderError> {
-        let combined = format!("{system}\n\n{user}");
+        let project = OpenCodeProject::create(system).map_err(ProviderError)?;
+        let session = self.run(&project, user)?;
+        let export = self.export(&project, &session)?;
+        parse_opencode_session(&export).map_err(ProviderError)
+    }
+}
+
+impl OpenCodeModel {
+    /// Runs one authoring call and returns the session it created.
+    ///
+    /// OpenCode resolves the project from `PWD` rather than the process working
+    /// directory, and a subprocess's `PWD` is not updated by `current_dir`, so
+    /// both are set to the scratch project; otherwise OpenCode searches the
+    /// harness's own directory for the agent and does not find it.
+    fn run(&self, project: &OpenCodeProject, user: &str) -> Result<String, ProviderError> {
         let output = Command::new(&self.bin)
-            .args(["run", "--model", &self.model, &combined])
+            .current_dir(project.path())
+            .env("PWD", project.path())
+            .args(opencode_run_args(&self.model, user))
             .output()
             .map_err(|error| {
                 ProviderError(format!(
@@ -558,18 +592,209 @@ impl Completion for OpenCodeModel {
                 ))
             })?;
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(ProviderError(format!(
                 "the OpenCode adapter failed for model `{}`: {}",
                 self.model,
-                stderr.trim()
+                String::from_utf8_lossy(&output.stderr).trim()
             )));
         }
-        Ok(Authored {
-            text: String::from_utf8_lossy(&output.stdout).into_owned(),
-            tokens: None,
-        })
+        parse_opencode_run(&String::from_utf8_lossy(&output.stdout)).map_err(ProviderError)
     }
+
+    /// Reads a session's messages, which carry the call's usage.
+    fn export(&self, project: &OpenCodeProject, session: &str) -> Result<String, ProviderError> {
+        let output = Command::new(&self.bin)
+            .current_dir(project.path())
+            .env("PWD", project.path())
+            .args(["session", "export", session])
+            .output()
+            .map_err(|error| {
+                ProviderError(format!(
+                    "the OpenCode adapter could not read session usage via `{}`: {error}",
+                    self.bin
+                ))
+            })?;
+        if !output.status.success() {
+            return Err(ProviderError(format!(
+                "the OpenCode adapter could not export session `{session}`: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+}
+
+/// The arguments for one authoring call: the JSON event stream, the minimal
+/// tool-free agent, the pinned model, a fixed title so OpenCode makes no
+/// title-generation call of its own, and the message (`--` keeps a message that
+/// begins with a dash from reading as a flag).
+pub fn opencode_run_args(model: &str, message: &str) -> Vec<String> {
+    [
+        "run",
+        "--format",
+        "json",
+        "--agent",
+        OPENCODE_AGENT,
+        "--model",
+        model,
+        "--title",
+        "vectr-eval",
+        "--",
+        message,
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
+}
+
+/// A throwaway OpenCode project holding the tool-free agent a call runs
+/// through. It is created under the system temporary directory and removed when
+/// the call ends, so it never touches the harness's own project or the user's
+/// OpenCode configuration.
+struct OpenCodeProject {
+    dir: PathBuf,
+}
+
+impl OpenCodeProject {
+    /// Creates a project whose configuration declares the tool-free agent with
+    /// `system` as its system prompt.
+    fn create(system: &str) -> Result<Self, String> {
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "vectr-eval-opencode-{}-{unique}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).map_err(|error| {
+            format!(
+                "the OpenCode adapter could not create its scratch project at `{}`: {error}",
+                dir.display()
+            )
+        })?;
+        let config = dir.join("opencode.json");
+        std::fs::write(&config, opencode_config(system)).map_err(|error| {
+            format!(
+                "the OpenCode adapter could not write its configuration at `{}`: {error}",
+                config.display()
+            )
+        })?;
+        Ok(Self { dir })
+    }
+
+    /// The project directory.
+    fn path(&self) -> &Path {
+        &self.dir
+    }
+}
+
+impl Drop for OpenCodeProject {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// The OpenCode project configuration that declares one tool-free, primary agent
+/// carrying `system` as its prompt. Denying every permission keeps tools out of
+/// the call's context.
+pub fn opencode_config(system: &str) -> String {
+    let agent = json!({
+        "description": "Vectr evaluation authoring model",
+        "mode": "primary",
+        "system": system,
+        "permissions": [{ "action": "*", "resource": "*", "effect": "deny" }],
+    });
+    let mut agents = serde_json::Map::new();
+    agents.insert(OPENCODE_AGENT.to_string(), agent);
+    serde_json::to_string_pretty(&json!({ "agents": agents }))
+        .expect("the OpenCode config is serializable")
+}
+
+/// Reads the session identifier out of `opencode run --format json` output.
+///
+/// The stream is newline-delimited JSON events, each naming the session; an
+/// error event means the call failed and is reported with its message. A run
+/// that names no session is a failure, never a silent absence (NFR-011).
+pub fn parse_opencode_run(stdout: &str) -> Result<String, String> {
+    let mut session: Option<String> = None;
+    for line in stdout.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(event) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if event.get("type").and_then(Value::as_str) == Some("error") {
+            let message = event
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown error");
+            return Err(format!("the OpenCode adapter reported an error: {message}"));
+        }
+        if session.is_none() {
+            if let Some(id) = event.get("sessionID").and_then(Value::as_str) {
+                session = Some(id.to_string());
+            }
+        }
+    }
+    session.ok_or_else(|| "the OpenCode adapter returned no session identifier".to_string())
+}
+
+/// Reads a call's reply and token usage from `opencode session export` output.
+///
+/// The reply is the text of the session's assistant messages. The usage is the
+/// sum of their reported tokens; a session whose assistant messages carry no
+/// usage reports none, so the prompt is excluded from the run's median rather
+/// than counted as zero (FEAT-023).
+pub fn parse_opencode_session(text: &str) -> Result<Authored, String> {
+    let value: Value = serde_json::from_str(text)
+        .map_err(|error| format!("the OpenCode session export is not valid JSON: {error}"))?;
+    let messages = value
+        .get("messages")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "the OpenCode session export carries no messages".to_string())?;
+
+    let mut reply = String::new();
+    let mut reported: Option<u64> = None;
+    let mut assistants = 0usize;
+    for message in messages {
+        if message.get("type").and_then(Value::as_str) != Some("assistant") {
+            continue;
+        }
+        assistants += 1;
+        if let Some(content) = message.get("content").and_then(Value::as_array) {
+            for part in content {
+                if part.get("type").and_then(Value::as_str) == Some("text") {
+                    if let Some(text) = part.get("text").and_then(Value::as_str) {
+                        reply.push_str(text);
+                    }
+                }
+            }
+        }
+        if let Some(total) = message.get("tokens").and_then(total_usage) {
+            reported = Some(reported.unwrap_or(0) + total);
+        }
+    }
+    if assistants == 0 {
+        return Err("the OpenCode session carries no assistant reply".to_string());
+    }
+    Ok(Authored {
+        text: reply,
+        tokens: reported,
+    })
+}
+
+/// The token count an OpenCode usage object reports: the input, output and
+/// reasoning tokens the provider bills. A cache read is a subset of the input
+/// and is not added again.
+fn total_usage(tokens: &Value) -> Option<u64> {
+    let count = |key: &str| tokens.get(key).and_then(Value::as_u64);
+    let (input, output, reasoning) = (count("input"), count("output"), count("reasoning"));
+    if input.is_none() && output.is_none() && reasoning.is_none() {
+        return None;
+    }
+    Some(input.unwrap_or(0) + output.unwrap_or(0) + reasoning.unwrap_or(0))
 }
 
 #[cfg(test)]
@@ -756,5 +981,95 @@ mod tests {
         let (author, _) = build(&spec).expect("builds");
         let error = author.author(&prompt("p1")).expect_err("refused");
         assert!(error.0.contains("tokens"), "{}", error.0);
+    }
+
+    #[test]
+    fn the_opencode_run_arguments_select_the_tool_free_agent_and_json_stream() {
+        let args = opencode_run_args("opencode-go/deepseek-v4-flash", "draw a dot");
+        assert_eq!(args[0], "run");
+        // `--format json` is what surfaces the session identifier.
+        let format = args
+            .iter()
+            .position(|arg| arg == "--format")
+            .expect("format");
+        assert_eq!(args[format + 1], "json");
+        let agent = args.iter().position(|arg| arg == "--agent").expect("agent");
+        assert_eq!(args[agent + 1], OPENCODE_AGENT);
+        let model = args.iter().position(|arg| arg == "--model").expect("model");
+        assert_eq!(args[model + 1], "opencode-go/deepseek-v4-flash");
+        // `--` keeps a leading dash in the message from reading as a flag.
+        let dash = args.iter().rposition(|arg| arg == "--").expect("separator");
+        assert_eq!(args[dash + 1], "draw a dot");
+    }
+
+    #[test]
+    fn the_opencode_config_declares_a_tool_free_agent_carrying_the_system() {
+        let value: Value =
+            serde_json::from_str(&opencode_config("You author scenes.")).expect("valid JSON");
+        let agent = &value["agents"][OPENCODE_AGENT];
+        assert_eq!(agent["system"], "You author scenes.");
+        assert_eq!(agent["mode"], "primary");
+        assert_eq!(agent["permissions"][0]["action"], "*");
+        assert_eq!(agent["permissions"][0]["effect"], "deny");
+    }
+
+    #[test]
+    fn reads_the_session_identifier_from_the_opencode_event_stream() {
+        let stream = concat!(
+            "{\"type\":\"step_start\",\"sessionID\":\"ses_abc\"}\n",
+            "{\"type\":\"text\",\"sessionID\":\"ses_abc\",\"part\":{\"type\":\"text\",\"text\":\"hi\"}}\n"
+        );
+        assert_eq!(parse_opencode_run(stream).expect("reads"), "ses_abc");
+    }
+
+    #[test]
+    fn an_opencode_error_event_or_a_missing_session_is_refused() {
+        let error = parse_opencode_run(
+            "{\"type\":\"error\",\"error\":{\"message\":\"model not found\"}}\n",
+        )
+        .expect_err("refused");
+        assert!(error.contains("model not found"), "{error}");
+        assert!(parse_opencode_run("not json\n").is_err());
+    }
+
+    #[test]
+    fn reads_an_opencode_sessions_reply_and_sums_its_usage() {
+        let export = json!({
+            "info": { "tokens": { "input": 9999, "output": 9999, "reasoning": 0, "cache": {} } },
+            "messages": [
+                { "type": "user", "text": "draw a dot" },
+                { "type": "assistant", "content": [
+                    { "type": "text", "text": "{\"scene\"" },
+                    { "type": "reasoning", "text": "ignored" }
+                ], "tokens": { "input": 200, "output": 3, "reasoning": 5, "cache": { "read": 40, "write": 0 } } },
+                { "type": "assistant", "content": [
+                    { "type": "text", "text": ": {\"id\":\"s\"}}" }
+                ], "tokens": { "input": 100, "output": 2, "reasoning": 0, "cache": { "read": 0, "write": 0 } } }
+            ]
+        });
+        let authored = parse_opencode_session(&export.to_string()).expect("reads");
+        assert_eq!(authored.text, "{\"scene\": {\"id\":\"s\"}}");
+        // The session aggregate (9999) is not the call's usage; only the
+        // assistant messages are. Cache reads are a subset of the input.
+        assert_eq!(authored.tokens, Some(200 + 3 + 5 + 100 + 2));
+    }
+
+    #[test]
+    fn an_opencode_session_that_reports_no_usage_reports_none() {
+        let export = json!({
+            "messages": [
+                { "type": "assistant", "content": [{ "type": "text", "text": "{}" }] }
+            ]
+        });
+        let authored = parse_opencode_session(&export.to_string()).expect("reads");
+        assert_eq!(authored.text, "{}");
+        assert_eq!(authored.tokens, None);
+    }
+
+    #[test]
+    fn an_opencode_session_without_an_assistant_reply_is_refused() {
+        let export = json!({ "messages": [{ "type": "user", "text": "hi" }] });
+        assert!(parse_opencode_session(&export.to_string()).is_err());
+        assert!(parse_opencode_session("not json").is_err());
     }
 }
