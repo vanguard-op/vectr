@@ -563,23 +563,66 @@ struct OpenCodeModel {
     bin: String,
 }
 
+/// How many times a bounded retry re-attempts an OpenCode call whose subprocess
+/// failed transiently (D-052).
+const OPENCODE_ATTEMPTS: usize = 3;
+
+/// One OpenCode run's event stream, decoded: the session it created and the
+/// reply text it streamed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenCodeRun {
+    /// The session identifier the run created, used to read its usage.
+    pub session: String,
+    /// The reply text the run streamed.
+    pub reply: String,
+}
+
 impl Completion for OpenCodeModel {
     fn complete(&self, system: &str, user: &str) -> Result<Authored, ProviderError> {
         let project = OpenCodeProject::create(system).map_err(ProviderError)?;
-        let session = self.run(&project, user)?;
-        let export = self.export(&project, &session)?;
-        parse_opencode_session(&export).map_err(ProviderError)
+        // A transient failure — a subprocess hiccup or a stream with no session
+        // — is retried a bounded number of times (D-052).
+        let run = retrying(OPENCODE_ATTEMPTS, |_attempt| self.run(&project, user))?;
+        // The reply comes from the run event stream, so an unreadable or
+        // truncated session-export usage read is no usage rather than a failed
+        // call (D-052).
+        let tokens = self
+            .export(&project, &run.session)
+            .ok()
+            .and_then(|export| parse_opencode_usage(&export));
+        Ok(Authored {
+            text: run.reply,
+            tokens,
+        })
     }
 }
 
+/// Calls `call` up to `attempts` times, returning the first success or the last
+/// failure. A bounded retry absorbs a transient provider or server hiccup
+/// without ever looping forever (D-052).
+fn retrying<T>(
+    attempts: usize,
+    mut call: impl FnMut(usize) -> Result<T, ProviderError>,
+) -> Result<T, ProviderError> {
+    let attempts = attempts.max(1);
+    let mut last = None;
+    for attempt in 1..=attempts {
+        match call(attempt) {
+            Ok(value) => return Ok(value),
+            Err(error) => last = Some(error),
+        }
+    }
+    Err(last.expect("at least one attempt was made"))
+}
+
 impl OpenCodeModel {
-    /// Runs one authoring call and returns the session it created.
+    /// Runs one authoring call and returns the event stream, decoded.
     ///
     /// OpenCode resolves the project from `PWD` rather than the process working
     /// directory, and a subprocess's `PWD` is not updated by `current_dir`, so
     /// both are set to the scratch project; otherwise OpenCode searches the
     /// harness's own directory for the agent and does not find it.
-    fn run(&self, project: &OpenCodeProject, user: &str) -> Result<String, ProviderError> {
+    fn run(&self, project: &OpenCodeProject, user: &str) -> Result<OpenCodeRun, ProviderError> {
         let output = Command::new(&self.bin)
             .current_dir(project.path())
             .env("PWD", project.path())
@@ -710,13 +753,16 @@ pub fn opencode_config(system: &str) -> String {
         .expect("the OpenCode config is serializable")
 }
 
-/// Reads the session identifier out of `opencode run --format json` output.
+/// Reads the session identifier and the streamed reply out of
+/// `opencode run --format json` output.
 ///
-/// The stream is newline-delimited JSON events, each naming the session; an
-/// error event means the call failed and is reported with its message. A run
-/// that names no session is a failure, never a silent absence (NFR-011).
-pub fn parse_opencode_run(stdout: &str) -> Result<String, String> {
+/// The stream is newline-delimited JSON events; each names the session, and the
+/// `text` events carry the reply, one full text part each. An error event means
+/// the call failed and is reported with its message. A run that names no
+/// session is a failure, never a silent absence (NFR-011, D-052).
+pub fn parse_opencode_run(stdout: &str) -> Result<OpenCodeRun, String> {
     let mut session: Option<String> = None;
+    let mut reply = String::new();
     for line in stdout.lines() {
         let line = line.trim();
         if line.is_empty() {
@@ -725,7 +771,8 @@ pub fn parse_opencode_run(stdout: &str) -> Result<String, String> {
         let Ok(event) = serde_json::from_str::<Value>(line) else {
             continue;
         };
-        if event.get("type").and_then(Value::as_str) == Some("error") {
+        let kind = event.get("type").and_then(Value::as_str);
+        if kind == Some("error") {
             let message = event
                 .pointer("/error/message")
                 .and_then(Value::as_str)
@@ -737,52 +784,38 @@ pub fn parse_opencode_run(stdout: &str) -> Result<String, String> {
                 session = Some(id.to_string());
             }
         }
+        if kind == Some("text") {
+            if let Some(text) = event.pointer("/part/text").and_then(Value::as_str) {
+                reply.push_str(text);
+            }
+        }
     }
-    session.ok_or_else(|| "the OpenCode adapter returned no session identifier".to_string())
+    let session =
+        session.ok_or_else(|| "the OpenCode adapter returned no session identifier".to_string())?;
+    Ok(OpenCodeRun { session, reply })
 }
 
-/// Reads a call's reply and token usage from `opencode session export` output.
+/// Reads a call's token usage from `opencode session export` output, or `None`
+/// when the export cannot be read.
 ///
-/// The reply is the text of the session's assistant messages. The usage is the
-/// sum of their reported tokens; a session whose assistant messages carry no
-/// usage reports none, so the prompt is excluded from the run's median rather
-/// than counted as zero (FEAT-023).
-pub fn parse_opencode_session(text: &str) -> Result<Authored, String> {
-    let value: Value = serde_json::from_str(text)
-        .map_err(|error| format!("the OpenCode session export is not valid JSON: {error}"))?;
-    let messages = value
-        .get("messages")
-        .and_then(Value::as_array)
-        .ok_or_else(|| "the OpenCode session export carries no messages".to_string())?;
-
-    let mut reply = String::new();
+/// The usage is the sum of the session's assistant messages' reported tokens.
+/// A session whose assistant messages carry no usage, and an export that is
+/// unreadable or truncated, both report no usage, so the prompt is excluded
+/// from the run's median rather than counted as zero or failing the call
+/// (FEAT-023, D-052).
+pub fn parse_opencode_usage(text: &str) -> Option<u64> {
+    let value: Value = serde_json::from_str(text).ok()?;
+    let messages = value.get("messages").and_then(Value::as_array)?;
     let mut reported: Option<u64> = None;
-    let mut assistants = 0usize;
     for message in messages {
         if message.get("type").and_then(Value::as_str) != Some("assistant") {
             continue;
-        }
-        assistants += 1;
-        if let Some(content) = message.get("content").and_then(Value::as_array) {
-            for part in content {
-                if part.get("type").and_then(Value::as_str) == Some("text") {
-                    if let Some(text) = part.get("text").and_then(Value::as_str) {
-                        reply.push_str(text);
-                    }
-                }
-            }
         }
         if let Some(total) = message.get("tokens").and_then(total_usage) {
             reported = Some(reported.unwrap_or(0) + total);
         }
     }
-    if assistants == 0 {
-        return Err("the OpenCode session carries no assistant reply".to_string());
-    }
-    Ok(Authored {
-        text: reply,
-        tokens: reported,
-    })
+    reported
 }
 
 /// The token count an OpenCode usage object reports: the input, output and
@@ -1014,12 +1047,21 @@ mod tests {
     }
 
     #[test]
-    fn reads_the_session_identifier_from_the_opencode_event_stream() {
-        let stream = concat!(
-            "{\"type\":\"step_start\",\"sessionID\":\"ses_abc\"}\n",
-            "{\"type\":\"text\",\"sessionID\":\"ses_abc\",\"part\":{\"type\":\"text\",\"text\":\"hi\"}}\n"
-        );
-        assert_eq!(parse_opencode_run(stream).expect("reads"), "ses_abc");
+    fn reads_the_session_and_streamed_reply_from_the_opencode_event_stream() {
+        let stream = [
+            json!({ "type": "step_start", "sessionID": "ses_abc" }),
+            json!({ "type": "reasoning", "sessionID": "ses_abc", "part": { "type": "reasoning", "text": "thinking" } }),
+            json!({ "type": "text", "sessionID": "ses_abc", "part": { "type": "text", "text": "{\"scene\"" } }),
+            json!({ "type": "text", "sessionID": "ses_abc", "part": { "type": "text", "text": ": {\"id\":\"s\"}}" } }),
+        ]
+        .into_iter()
+        .map(|event| event.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+        let run = parse_opencode_run(&stream).expect("reads");
+        assert_eq!(run.session, "ses_abc");
+        // The reply is the streamed text parts, joined; reasoning is not text.
+        assert_eq!(run.reply, "{\"scene\": {\"id\":\"s\"}}");
     }
 
     #[test]
@@ -1033,25 +1075,25 @@ mod tests {
     }
 
     #[test]
-    fn reads_an_opencode_sessions_reply_and_sums_its_usage() {
+    fn reads_an_opencode_sessions_reported_usage() {
         let export = json!({
             "info": { "tokens": { "input": 9999, "output": 9999, "reasoning": 0, "cache": {} } },
             "messages": [
                 { "type": "user", "text": "draw a dot" },
                 { "type": "assistant", "content": [
-                    { "type": "text", "text": "{\"scene\"" },
-                    { "type": "reasoning", "text": "ignored" }
+                    { "type": "text", "text": "{}" }
                 ], "tokens": { "input": 200, "output": 3, "reasoning": 5, "cache": { "read": 40, "write": 0 } } },
                 { "type": "assistant", "content": [
-                    { "type": "text", "text": ": {\"id\":\"s\"}}" }
+                    { "type": "text", "text": "{}" }
                 ], "tokens": { "input": 100, "output": 2, "reasoning": 0, "cache": { "read": 0, "write": 0 } } }
             ]
         });
-        let authored = parse_opencode_session(&export.to_string()).expect("reads");
-        assert_eq!(authored.text, "{\"scene\": {\"id\":\"s\"}}");
         // The session aggregate (9999) is not the call's usage; only the
         // assistant messages are. Cache reads are a subset of the input.
-        assert_eq!(authored.tokens, Some(200 + 3 + 5 + 100 + 2));
+        assert_eq!(
+            parse_opencode_usage(&export.to_string()),
+            Some(200 + 3 + 5 + 100 + 2)
+        );
     }
 
     #[test]
@@ -1061,15 +1103,46 @@ mod tests {
                 { "type": "assistant", "content": [{ "type": "text", "text": "{}" }] }
             ]
         });
-        let authored = parse_opencode_session(&export.to_string()).expect("reads");
-        assert_eq!(authored.text, "{}");
-        assert_eq!(authored.tokens, None);
+        assert_eq!(parse_opencode_usage(&export.to_string()), None);
     }
 
     #[test]
-    fn an_opencode_session_without_an_assistant_reply_is_refused() {
-        let export = json!({ "messages": [{ "type": "user", "text": "hi" }] });
-        assert!(parse_opencode_session(&export.to_string()).is_err());
-        assert!(parse_opencode_session("not json").is_err());
+    fn an_unreadable_or_truncated_usage_export_reports_no_usage() {
+        // A truncated export is not valid JSON: no usage, not a failed call.
+        assert_eq!(
+            parse_opencode_usage("{\"messages\": [{\"type\":\"assist"),
+            None
+        );
+        assert_eq!(parse_opencode_usage("not json"), None);
+        // A well-formed export with no messages carries no usage either.
+        assert_eq!(parse_opencode_usage("{}"), None);
+    }
+
+    #[test]
+    fn a_bounded_retry_absorbs_a_transient_failure() {
+        let mut attempts = 0;
+        let value = retrying(3, |attempt| {
+            attempts += 1;
+            if attempt < 3 {
+                Err(ProviderError(format!("transient {attempt}")))
+            } else {
+                Ok(attempt)
+            }
+        })
+        .expect("succeeds on the third attempt");
+        assert_eq!(value, 3);
+        assert_eq!(attempts, 3);
+    }
+
+    #[test]
+    fn a_bounded_retry_stops_after_its_bound() {
+        let mut attempts = 0;
+        let error = retrying(3, |_attempt| {
+            attempts += 1;
+            Err::<u8, _>(ProviderError("still failing".to_string()))
+        })
+        .expect_err("refused");
+        assert_eq!(attempts, 3, "the retry is bounded");
+        assert_eq!(error.0, "still failing");
     }
 }

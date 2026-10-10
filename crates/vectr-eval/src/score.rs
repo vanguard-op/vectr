@@ -35,6 +35,29 @@ pub fn summarize(
     model: ModelInfo,
     results: Vec<PromptResult>,
 ) -> RunRecord {
+    summarize_parts(
+        &corpus.manifest.id,
+        &corpus.manifest.version,
+        CoverageReport {
+            satisfied: coverage.satisfied(),
+            omissions: coverage.omissions.clone(),
+        },
+        model,
+        results,
+    )
+}
+
+/// Builds a run record from the scored prompt results and the corpus identity,
+/// without the loaded corpus. A merge recomputes a whole-corpus record from its
+/// partial records this way, so it never needs the corpus on disk (FEAT-023,
+/// D-051).
+pub fn summarize_parts(
+    corpus_id: &str,
+    corpus_version: &str,
+    coverage: CoverageReport,
+    model: ModelInfo,
+    results: Vec<PromptResult>,
+) -> RunRecord {
     let total = results.len();
     let compiled = results.iter().filter(|result| result.compiled).count();
     let compile_success_rate = ratio(compiled, total);
@@ -57,12 +80,9 @@ pub fn summarize(
 
     let model_id = model.id.clone();
     RunRecord {
-        id: format!(
-            "{}@{}#{}",
-            corpus.manifest.id, corpus.manifest.version, model_id
-        ),
-        corpus_id: corpus.manifest.id.clone(),
-        corpus_version: corpus.manifest.version.clone(),
+        id: format!("{corpus_id}@{corpus_version}#{model_id}"),
+        corpus_id: corpus_id.to_string(),
+        corpus_version: corpus_version.to_string(),
         authoring_model_id: model_id,
         model,
         compile_success_rate,
@@ -72,10 +92,8 @@ pub fn summarize(
         notes: None,
         hard_end,
         thresholds,
-        coverage: CoverageReport {
-            satisfied: coverage.satisfied(),
-            omissions: coverage.omissions.clone(),
-        },
+        coverage,
+        shard: None,
         prompts: results,
     }
 }

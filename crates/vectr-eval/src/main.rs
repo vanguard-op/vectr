@@ -11,6 +11,7 @@
 mod cli;
 mod corpus;
 mod json;
+mod merge;
 mod provider;
 mod record;
 mod run;
