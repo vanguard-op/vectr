@@ -32,7 +32,9 @@ pub use recipe::{LINE_ART_EMPTY, MIN_STROKE_WEIGHT, STROKE_WEIGHT_CLAMPED};
 pub use stroke::{ResolvedStroke, StrokeCap, StrokeJoin, StrokeProfile};
 
 pub use palette::validate_usage as validate_palette_usage;
-pub use palette::{parse as parse_palette, validate as validate_palette};
+pub use palette::{
+    parse as parse_palette, resolve_canvas_background, validate as validate_palette,
+};
 pub use recipe::{
     check_expressible as check_recipe_expressible, check_grid as check_recipe_grid,
     check_line_art as check_recipe_line_art, parse as parse_style_recipe,

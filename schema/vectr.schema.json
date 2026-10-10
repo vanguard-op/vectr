@@ -101,7 +101,7 @@
       "properties": {
         "width": { "type": "number", "minimum": 0, "description": "Canvas width in scene units." },
         "height": { "type": "number", "minimum": 0, "description": "Canvas height in scene units." },
-        "background": { "type": "string", "description": "Canvas background color in any format SVG supports, or 'transparent'." }
+        "background": { "type": "string", "description": "Canvas background: a colour in any format SVG supports, 'transparent', or the name of a token in the palette. A value that names a palette token resolves to that token's colour and takes precedence over a literal colour of the same spelling; any other value is validated as a literal colour." }
       },
       "required": ["width", "height", "background"],
       "additionalProperties": false

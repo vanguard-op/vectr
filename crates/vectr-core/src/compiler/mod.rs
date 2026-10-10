@@ -240,6 +240,21 @@ pub fn compile_with_style<'s>(
     diagnostics.extend(expansion.diagnostics);
     let scene = &expansion.scene;
 
+    // A canvas background that names a palette token resolves to the token's
+    // colour; with a palette, a value that is neither a colour nor a defined
+    // token is a located error, so no unresolved background reaches the model
+    // (FEAT-005, FEAT-018).
+    let canvas_background = match style::resolve_canvas_background(
+        &mut diagnostics,
+        &scene.canvas.background,
+        style.palette,
+        "canvas background",
+        "/canvas/background",
+    ) {
+        Some(value) => value,
+        None => return Err(diagnostics),
+    };
+
     let resolution = match constraints::resolve(scene) {
         Ok(resolution) => resolution,
         Err(errors) => {
@@ -277,6 +292,7 @@ pub fn compile_with_style<'s>(
         compositions: Vec::new(),
         yield_cache: vec![None; scene.elements.len()],
         scene_seed: scene.seed.unwrap_or(procedural::DEFAULT_SEED),
+        canvas_background,
     };
 
     compiler.prepare();
@@ -720,6 +736,9 @@ struct Compiler<'a, 's> {
     /// The seed governing generated geometry; the scene's declared seed, or the
     /// default `0` when it declares none (FEAT-006).
     scene_seed: i64,
+    /// The canvas background resolved against the palette: a token name is
+    /// replaced by its colour before the model is built (FEAT-005).
+    canvas_background: String,
 }
 
 impl Compiler<'_, '_> {
@@ -2310,7 +2329,7 @@ impl Compiler<'_, '_> {
             canvas: RenderCanvas {
                 width: self.scene.canvas.width,
                 height: self.scene.canvas.height,
-                background: self.scene.canvas.background.clone(),
+                background: self.canvas_background.clone(),
             },
             nodes: self.nodes,
             meta: RenderMeta {
@@ -2971,6 +2990,66 @@ mod tests {
         assert_eq!(color(&stroke.paint), Some("#ff0000"));
         assert_eq!(stroke.width, 3.0);
         assert_eq!(stroke.cap, crate::style::StrokeCap::Butt);
+    }
+
+    #[test]
+    fn a_canvas_background_token_resolves_against_the_palette() {
+        let mut scene = scene_of(json!([]), None);
+        scene.canvas.background = "accent".to_string();
+
+        let palette = parse_palette(
+            r##"{"id":"pal","projectId":"p","name":"P","tokens":[{"name":"accent","value":"#ff0000"}]}"##,
+        )
+        .expect("a palette");
+        let style = StyleContext {
+            palette: Some(&palette),
+            ..StyleContext::default()
+        };
+
+        let model = compile_with_style(&scene, &style).expect("compiles");
+        assert_eq!(model.canvas.background, "#ff0000");
+    }
+
+    #[test]
+    fn a_non_colour_background_with_a_palette_is_refused_at_its_field() {
+        let mut scene = scene_of(json!([]), None);
+        scene.canvas.background = "not-a-colour".to_string();
+
+        let palette = parse_palette(
+            r##"{"id":"pal","projectId":"p","name":"P","tokens":[{"name":"accent","value":"#ff0000"}]}"##,
+        )
+        .expect("a palette");
+        let style = StyleContext {
+            palette: Some(&palette),
+            ..StyleContext::default()
+        };
+
+        let diagnostics = compile_with_style(&scene, &style).expect_err("refused");
+        let error = diagnostics
+            .errors()
+            .find(|diagnostic| diagnostic.code == crate::scene::INVALID_COLOR)
+            .expect("an invalid-colour error");
+        assert!(
+            error.message.contains("canvas background"),
+            "{}",
+            error.message
+        );
+        assert_eq!(
+            error
+                .location
+                .as_ref()
+                .and_then(|location| location.json_path.as_deref()),
+            Some("/canvas/background")
+        );
+    }
+
+    #[test]
+    fn a_background_token_without_a_palette_is_carried_unresolved() {
+        let mut scene = scene_of(json!([]), None);
+        scene.canvas.background = "accent".to_string();
+
+        let model = compile(&scene).expect("compiles without style assets");
+        assert_eq!(model.canvas.background, "accent");
     }
 
     /// A flat recipe document naming the flat look with the given shading.

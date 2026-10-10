@@ -14,8 +14,8 @@ use serde::{Deserialize, Serialize};
 
 use super::{parse_document, to_json, Gradient, REDEFINED_TOKEN, UNDEFINED_TOKEN, UNUSED_TOKEN};
 use crate::scene::{
-    validate_color, Diagnostic, DiagnosticCode, Diagnostics, Element, Location, Paint, PaintKind,
-    PaintValue, Scene,
+    is_color, validate_color, Diagnostic, DiagnosticCode, Diagnostics, Element, Location, Paint,
+    PaintKind, PaintValue, Scene, INVALID_COLOR,
 };
 
 /// A named set of color tokens that scenes reference by token name.
@@ -128,12 +128,51 @@ pub fn validate(palette: &Palette) -> Diagnostics {
     diagnostics
 }
 
+/// Resolves a canvas background against a palette (FEAT-005, FEAT-018).
+///
+/// A value that names a palette token resolves to that token's colour and takes
+/// precedence over a literal colour of the same spelling; otherwise the value is
+/// validated as a literal colour. With a palette, a value that is neither a
+/// token nor a colour is a located [`INVALID_COLOR`] error and resolves to
+/// nothing, never a silent fallback; without one, a value that is not a colour
+/// is carried through unresolved, mirroring how a token paint travels when no
+/// palette is supplied (C-002). Returns the resolved colour, or `None` with a
+/// located error.
+pub fn resolve_canvas_background(
+    diagnostics: &mut Diagnostics,
+    value: &str,
+    palette: Option<&Palette>,
+    what: &str,
+    path: impl Into<String>,
+) -> Option<String> {
+    if let Some(palette) = palette {
+        if let Some(resolved) = palette.resolve(value) {
+            return Some(resolved.to_string());
+        }
+        if !is_color(value) {
+            diagnostics.push(
+                Diagnostic::error(
+                    INVALID_COLOR,
+                    format!(
+                        "{what} is not a colour SVG supports and names no palette token: `{value}`"
+                    ),
+                )
+                .at_path(path),
+            );
+            return None;
+        }
+    }
+    Some(value.to_string())
+}
+
 /// Checks a scene's references against a palette.
 ///
 /// A referenced token no definition provides is an error naming the token and
 /// the element or gradient; a token nothing references is a warning. Tokens
-/// named by a gradient's stops count as used. Redefinitions are reported as by
-/// [`validate`] (FEAT-005, FEAT-027).
+/// named by a gradient's stops or by the canvas background count as used. A
+/// canvas background that is neither a colour nor a defined token is reported at
+/// its own field. Redefinitions are reported as by [`validate`] (FEAT-005,
+/// FEAT-027).
 pub fn validate_usage(scene: &Scene, palette: &Palette, gradients: &[Gradient]) -> Diagnostics {
     let mut diagnostics = validate(palette);
 
@@ -150,6 +189,20 @@ pub fn validate_usage(scene: &Scene, palette: &Palette, gradients: &[Gradient]) 
             used.insert(stop.token.as_str());
         }
     }
+    // A canvas background that names a palette token counts as used; a value
+    // that is neither a token nor a colour is reported below, at its own field
+    // (FEAT-005, FEAT-018).
+    if palette.resolve(&scene.canvas.background).is_some() {
+        used.insert(scene.canvas.background.as_str());
+    }
+
+    resolve_canvas_background(
+        &mut diagnostics,
+        &scene.canvas.background,
+        Some(palette),
+        "canvas background",
+        "/canvas/background",
+    );
 
     for (index, token) in palette.first_definitions() {
         if !used.contains(token.name.as_str()) {
@@ -418,6 +471,136 @@ mod tests {
                 .warnings()
                 .any(|warning| warning.code == UNUSED_TOKEN),
             "gradient stop tokens are used: {diagnostics:?}"
+        );
+    }
+
+    /// A scene whose canvas background is `background` and which declares no
+    /// elements.
+    fn background_scene(background: &str) -> Scene {
+        crate::scene::parse(&format!(
+            r#"{{"id":"s","projectId":"p","name":"S","formatVersion":"0.2","canvas":{{"width":1,"height":1,"background":"{background}"}},"elements":[]}}"#
+        ))
+        .expect("a background-only scene parses")
+    }
+
+    #[test]
+    fn a_canvas_background_token_resolves_to_its_colour() {
+        let scene = background_scene("accent");
+        let palette = parse(&palette()).unwrap();
+
+        let diagnostics = validate_usage(&scene, &palette, &[]);
+        assert!(!diagnostics.has_errors(), "{diagnostics:?}");
+
+        let mut diagnostics = Diagnostics::new();
+        let resolved = resolve_canvas_background(
+            &mut diagnostics,
+            &scene.canvas.background,
+            Some(&palette),
+            "canvas background",
+            "/canvas/background",
+        );
+        assert_eq!(resolved.as_deref(), Some("#ff6600"));
+        assert!(diagnostics.is_empty());
+    }
+
+    #[test]
+    fn a_background_token_takes_precedence_over_a_literal_colour_of_the_same_name() {
+        let scene = background_scene("red");
+        let palette = parse(
+            r##"{"id":"p1","projectId":"p","name":"Brand","tokens":[{"name":"red","value":"#ff6600"}]}"##,
+        )
+        .unwrap();
+
+        let mut diagnostics = Diagnostics::new();
+        let resolved = resolve_canvas_background(
+            &mut diagnostics,
+            &scene.canvas.background,
+            Some(&palette),
+            "canvas background",
+            "/canvas/background",
+        );
+        assert_eq!(resolved.as_deref(), Some("#ff6600"));
+        assert!(diagnostics.is_empty());
+    }
+
+    #[test]
+    fn a_background_token_counts_as_used() {
+        let scene = background_scene("accent");
+        // A palette holding only the background token: if the background did not
+        // count as used it would be reported unused.
+        let palette = parse(
+            r##"{"id":"p1","projectId":"p","name":"Brand","tokens":[{"name":"accent","value":"#ff6600"}]}"##,
+        )
+        .unwrap();
+
+        let diagnostics = validate_usage(&scene, &palette, &[]);
+        assert!(
+            !diagnostics
+                .warnings()
+                .any(|warning| warning.code == UNUSED_TOKEN),
+            "a background token is used: {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn an_undefined_background_token_is_reported_at_its_field() {
+        let scene = background_scene("missing");
+        let palette = parse(&palette()).unwrap();
+
+        let diagnostics = validate_usage(&scene, &palette, &[]);
+        let error = diagnostics
+            .errors()
+            .find(|diagnostic| diagnostic.code == INVALID_COLOR)
+            .expect("an invalid-colour error");
+        assert!(
+            error.message.contains("canvas background"),
+            "{}",
+            error.message
+        );
+        assert_eq!(
+            error
+                .location
+                .as_ref()
+                .and_then(|location| location.json_path.as_deref()),
+            Some("/canvas/background")
+        );
+    }
+
+    #[test]
+    fn resolve_canvas_background_defers_a_non_colour_without_a_palette() {
+        let mut diagnostics = Diagnostics::new();
+        let resolved = resolve_canvas_background(
+            &mut diagnostics,
+            "brand-dark",
+            None,
+            "canvas background",
+            "/canvas/background",
+        );
+        assert_eq!(resolved.as_deref(), Some("brand-dark"));
+        assert!(diagnostics.is_empty(), "deferred, not reported here");
+    }
+
+    #[test]
+    fn resolve_canvas_background_reports_a_non_colour_with_a_palette() {
+        let palette = parse(&palette()).unwrap();
+        let mut diagnostics = Diagnostics::new();
+        let resolved = resolve_canvas_background(
+            &mut diagnostics,
+            "not-a-colour",
+            Some(&palette),
+            "canvas background",
+            "/canvas/background",
+        );
+        assert!(resolved.is_none());
+        let error = diagnostics.errors().next().expect("an error");
+        assert_eq!(error.code, INVALID_COLOR);
+        assert!(error.message.contains("not-a-colour"), "{}", error.message);
+        assert_eq!(
+            error
+                .location
+                .as_ref()
+                .and_then(|location| location.json_path.as_deref()),
+            Some("/canvas/background")
         );
     }
 }
