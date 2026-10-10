@@ -925,9 +925,10 @@ pub fn parse_opencode_run(stdout: &str) -> Result<OpenCodeRun, String> {
 /// Reads a call's token usage from `opencode session export` output, or `None`
 /// when the export cannot be read.
 ///
-/// The usage is the sum of the session's assistant messages' reported tokens.
-/// A session whose assistant messages carry no usage, and an export that is
-/// unreadable or truncated, both report no usage, so the prompt is excluded
+/// The usage is the sum of the session's assistant messages' reported tokens,
+/// counting the cached prompt tokens the provider reports separately from the
+/// input. A session whose assistant messages carry no usage, and an export that
+/// is unreadable or truncated, both report no usage, so the prompt is excluded
 /// from the run's median rather than counted as zero or failing the call
 /// (FEAT-023, D-052).
 pub fn parse_opencode_usage(text: &str) -> Option<u64> {
@@ -946,15 +947,34 @@ pub fn parse_opencode_usage(text: &str) -> Option<u64> {
 }
 
 /// The token count an OpenCode usage object reports: the input, output and
-/// reasoning tokens the provider bills. A cache read is a subset of the input
-/// and is not added again.
+/// reasoning tokens the provider bills, plus the prompt tokens it reports under
+/// `cache.read` and `cache.write`.
+///
+/// OpenCode reports cached prompt tokens separately from `input` — a call can
+/// report a small `input` with a large `cache.read` — so a cache read is not a
+/// subset of the input and omitting it under-counts a cached prompt. The sum
+/// here matches the `total` OpenCode records for the same usage (FEAT-023,
+/// NFR-030).
 fn total_usage(tokens: &Value) -> Option<u64> {
     let count = |key: &str| tokens.get(key).and_then(Value::as_u64);
     let (input, output, reasoning) = (count("input"), count("output"), count("reasoning"));
-    if input.is_none() && output.is_none() && reasoning.is_none() {
+    let cache_read = tokens.pointer("/cache/read").and_then(Value::as_u64);
+    let cache_write = tokens.pointer("/cache/write").and_then(Value::as_u64);
+    if input.is_none()
+        && output.is_none()
+        && reasoning.is_none()
+        && cache_read.is_none()
+        && cache_write.is_none()
+    {
         return None;
     }
-    Some(input.unwrap_or(0) + output.unwrap_or(0) + reasoning.unwrap_or(0))
+    Some(
+        input.unwrap_or(0)
+            + output.unwrap_or(0)
+            + reasoning.unwrap_or(0)
+            + cache_read.unwrap_or(0)
+            + cache_write.unwrap_or(0),
+    )
 }
 
 #[cfg(test)]
@@ -1225,7 +1245,7 @@ mod tests {
     #[test]
     fn reads_an_opencode_sessions_reported_usage() {
         let export = json!({
-            "info": { "tokens": { "input": 9999, "output": 9999, "reasoning": 0, "cache": {} } },
+            "info": { "tokens": { "input": 9999, "output": 9999, "reasoning": 0, "cache": { "read": 9999, "write": 9999 } } },
             "messages": [
                 { "type": "user", "text": "draw a dot" },
                 { "type": "assistant", "content": [
@@ -1233,14 +1253,31 @@ mod tests {
                 ], "tokens": { "input": 200, "output": 3, "reasoning": 5, "cache": { "read": 40, "write": 0 } } },
                 { "type": "assistant", "content": [
                     { "type": "text", "text": "{}" }
-                ], "tokens": { "input": 100, "output": 2, "reasoning": 0, "cache": { "read": 0, "write": 0 } } }
+                ], "tokens": { "input": 100, "output": 2, "reasoning": 0, "cache": { "read": 0, "write": 7 } } }
             ]
         });
         // The session aggregate (9999) is not the call's usage; only the
-        // assistant messages are. Cache reads are a subset of the input.
+        // assistant messages are. The cached prompt tokens are reported
+        // separately from the input and are counted, so a cached prompt is not
+        // under-counted (NFR-030).
         assert_eq!(
             parse_opencode_usage(&export.to_string()),
-            Some(200 + 3 + 5 + 100 + 2)
+            Some(200 + 3 + 5 + 40 + 100 + 2 + 7)
+        );
+    }
+
+    #[test]
+    fn a_cached_prompt_is_not_under_counted() {
+        // OpenCode reports a small input alongside a large cache read for a
+        // cached prompt; the total includes both.
+        let export = json!({
+            "messages": [
+                { "type": "assistant", "tokens": { "input": 79, "output": 12, "reasoning": 0, "cache": { "read": 30208, "write": 0 } } }
+            ]
+        });
+        assert_eq!(
+            parse_opencode_usage(&export.to_string()),
+            Some(79 + 12 + 30208)
         );
     }
 
