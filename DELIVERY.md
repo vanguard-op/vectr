@@ -10,7 +10,7 @@ docs/Vectr/ — git submodule, remote https://github.com/vanguard-op/vectr-docs.
 | infra-engineer | Cargo.toml, rust-toolchain.toml, deny.toml, .gitignore, .github/**, scripts/**, assets/fonts/** |
 | backend-engineer | crates/vectr-core/**, crates/vectr-cli/**, schema/** |
 | ai-engineer | crates/vectr-mcp/**, crates/vectr-eval/**, crates/vectr-project/**, skills/** |
-| qa-engineer | tests/**, fixtures/**, corpus/** |
+| qa-engineer | tests/**, fixtures/**, corpus/**, eval-runs/** |
 | frontend-engineer | (none — Vectr has no UI) |
 | visual-artist | (none — the docs declare no imagery) |
 
@@ -120,6 +120,9 @@ ASSETS.md — A-001 Inter, A-002 Noto Sans, A-003 SIL OFL licence texts.
 | D-045 | CDLA-Permissive-2.0 is added to the dependency licence allow-list, so the evaluation harness may depend on `webpki-root-certs` through the rustls TLS path. | The harness calls model providers over HTTPS and needs a root-cert bundle; the licence is permissive and the harness is maintainer-only. | user |
 | D-046 | The authoring method is universal: every request runs the same sketch-then-section loop, and complexity changes only the number of turns, never the method. What a section is — a group, an instance, or a scene — is deduced from the prompt, which describes the picture rather than prescribing structure. Worked examples live under the skill's assets, one file each, referenced from the guidance. | The product owner corrected the guidance's framing: there is no simple-versus-complex fork, and a reusable definition is one section kind rather than the required unit. | user |
 | D-047 | Supersedes D-046's placement: the worked examples live in the skill's `examples/` directory, one file each, kept separate from `assets/` so the model does not conflate an example with a copyable asset. | The product owner corrected the location. | user |
+| D-048 | The NFR-030/NFR-031 release evidence — the harness run records — is committed under a tracked `eval-runs/` directory, one record per evaluated model. | `release.md`'s Go-Live Checklist requires the evaluation bar as release evidence, and the docs name no location; a tracked directory keeps it durable and reviewable, unlike the gitignored `dist/`. | user |
+| D-049 | The OpenCode adapter reaches the authoring model through a minimal, tool-free OpenCode agent and reads that call's usage from the OpenCode session, so the reported per-prompt token count is Vectr-authoring usage rather than OpenCode's own agent prompt. | Reached through OpenCode's default agent, each authoring call processes ~30k tokens of OpenCode's own system prompt and tool definitions, which would breach NFR-030's 20,000-token ceiling for reasons unrelated to Vectr; a tools-denied agent cuts that overhead to a negligible baseline (measured: 239 prompt tokens against 15,685), making the median comparable to the direct-provider path. | lead |
+| D-050 | The NFR-030/NFR-031 measurement runs the versioned corpus over three OpenCode Go models: deepseek-v4.1-flash, glm-5.3-flash, and qwen3.8-flash. | NFR-030 and NFR-031 require at least three models; the three cheap OpenCode Go models satisfy that bar at the lowest spend. | user |
 
 ## Definition of Done
 - Every acceptance criterion in the task's FEAT file is met, including its edge cases and failure states.
