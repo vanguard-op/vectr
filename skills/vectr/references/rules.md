@@ -142,6 +142,21 @@ A stroke profile carries geometry only. `strokes/hairline.json`:
 
 ## The language rules
 
+- **The element list is flat.** An element never carries a nested `children` or
+  `elements` field; the parser refuses it as an unknown field. A group's members
+  are ordinary siblings in the scene's `elements`, each naming the group's `id`
+  in its own `parentId`, so nesting and draw order come from `parentId` and
+  `order` rather than from a nested array.
+- **Every element sets exactly one of `sceneId` or `definitionId`.** A scene
+  element repeats the scene's `id` in `sceneId` and leaves `definitionId` out; a
+  definition's element names its definition's `id` in `definitionId` and leaves
+  `sceneId` out. A missing owner and both owners alike are `E_SCHEMA`, so set one
+  and only one on every element.
+- **An `accessibleName` is unique within one tree.** Two elements in the same
+  scene, or two in the same definition, may not share an `accessibleName`
+  (`E_DUPLICATE_NAME`); the second is ambiguous to a screen reader. Both `name`
+  and `accessibleName` are optional, the maintenance `name` may repeat, and the
+  safe default is to omit `accessibleName` or give every element a distinct one.
 - **The parser is stricter than the published `required` lists.** Every element
   must carry a `geometry` object and a complete `transform` with all five of
   `translateX`, `translateY`, `rotate`, `scaleX`, `scaleY` — even an identity
@@ -158,7 +173,9 @@ A stroke profile carries geometry only. `strokes/hairline.json`:
   `background` and an export `background` override.
 - **A stroke pairs a profile and a paint.** `{"profileId": "...", "paint":
   {...}}`; the profile supplies width, cap, and join, the paint supplies colour.
-  Both are required, and the profile id must resolve under `strokes/`.
+  Both are required, and the profile id must resolve under `strokes/`. Never
+  invent a profile id: reference only a profile the project provides, and when it
+  provides none, draw the line work as filled shapes and leave `stroke` out.
 - **`order` is paint order among siblings**, lowest first; later elements draw on
   top. `parentId` builds the tree: a child names its parent's `id`. Group
   decorative children under a `group` element so they move together.

@@ -33,7 +33,21 @@ use crate::toolchain::PALETTE_TOKENS;
 
 /// The versioned authoring prompt artifact: the system prompt the harness
 /// sends with the published schema and the packaged guidance.
-const AUTHORING_PROMPT: &str = include_str!("../prompts/authoring.v1.txt");
+const AUTHORING_PROMPT: &str = include_str!("../prompts/authoring.v2.txt");
+
+/// The skill's always-read entry point (FEAT-020).
+///
+/// The docs promise the authoring input is the published schema and the skill's
+/// instructions, so the harness carries the skill rather than the scaffolded
+/// project guide. The entry point is the always-read surface and routes a
+/// coding agent to its on-demand references; a one-shot authoring call cannot
+/// load a reference when a step needs it, so the rules the authoring step turns
+/// on are stated in the versioned authoring prompt (`authoring.v2.txt`) rather
+/// than preloading the whole reference depth and paying for it in every prompt's
+/// context (FEAT-020, D-042). The evaluation crate is maintainer-only and
+/// unpublished, so it embeds the shipped skill from the repository rather than
+/// carrying a second copy that could drift.
+const SKILL_ENTRY: &str = include_str!("../../../skills/vectr/SKILL.md");
 
 /// The versioned judge prompt artifact.
 const JUDGE_PROMPT: &str = include_str!("../prompts/judge.v1.txt");
@@ -289,17 +303,22 @@ fn api_key(kind: ProviderKind) -> Result<String, ProviderError> {
 }
 
 /// The versioned authoring system prompt: the instructions, the published
-/// schema, the packaged guidance and the palette tokens the evaluation project
-/// supplies (FEAT-032 Model Behavior).
+/// schema, the skill's entry point, and the style assets the evaluation project
+/// supplies (FEAT-020, FEAT-032 Model Behavior).
 pub fn authoring_system() -> String {
     let schema = vectr_core::schema(vectr_core::SchemaForm::Compact).unwrap_or_default();
-    let guide = vectr_project::authoring_guide();
     let tokens: Vec<String> = PALETTE_TOKENS
         .iter()
         .map(|(name, value)| format!("- {name}: {value}"))
         .collect();
     format!(
-        "{AUTHORING_PROMPT}\n\n# Published schema (compact)\n\n{schema}\n\n# Authoring guide\n\n{guide}\n\n# Available palette tokens\n\n{}\n",
+        "{AUTHORING_PROMPT}\n\n\
+         # Skill entry point\n\n{SKILL_ENTRY}\n\n\
+         # Published schema (compact)\n\n{schema}\n\n\
+         # Available palette tokens\n\n{}\n\n\
+         # Available stroke profiles\n\n\
+         (none — draw with token fills and set no `stroke`)\n\n\
+         # Available gradients\n\n(none)\n",
         tokens.join("\n")
     )
 }
@@ -1039,11 +1058,32 @@ mod tests {
     }
 
     #[test]
-    fn the_authoring_system_prompt_carries_the_guidance_and_tokens() {
+    fn the_authoring_system_prompt_carries_the_schema_the_skill_and_the_tokens() {
         let system = authoring_system();
+        // The published schema, the request contract and the palette tokens.
         assert!(system.contains("Vectr"), "names the tool");
         assert!(system.contains("palette tokens"), "lists the tokens");
-        assert!(system.contains("vectr validate"), "carries the guide");
+        assert!(system.contains("formatVersion"), "carries the schema");
+        // The skill's instructions: the always-read entry point (FEAT-020).
+        assert!(
+            system.contains("## Version compatibility"),
+            "carries the skill entry point"
+        );
+        assert!(
+            system.contains("references/rules.md"),
+            "carries the entry point's pointer to its references"
+        );
+        // The rules the models most often violate, stated in the versioned
+        // authoring prompt where a one-shot call sees them: the flat element
+        // list, the single owner, the unique accessible name, and the style
+        // assets it may reference.
+        for rule in ["parentId", "sceneId", "definitionId", "accessibleName"] {
+            assert!(system.contains(rule), "states the `{rule}` rule");
+        }
+        assert!(
+            system.contains("stroke profiles"),
+            "names the available stroke profiles"
+        );
     }
 
     #[test]
