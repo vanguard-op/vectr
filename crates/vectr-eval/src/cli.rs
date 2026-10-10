@@ -2,12 +2,12 @@
 //!
 //! The grammar and exit codes are frozen by the contract: `run` loads a corpus
 //! and scores it against a model — over the whole corpus or one shard of it,
-//! optionally logging each prompt's artifacts — `merge` combines the partial
-//! records of one corpus and model into one record, and `compare` flags
-//! regressions between two runs, with 0 success, 1 a run that cannot be scored,
-//! and 2 usage, an unreadable corpus, a merge of mismatched or incomplete
-//! records, or a model that cannot be reached. The harness is gated by
-//! `enable_eval_harness` (off by default, maintainer-only), read from
+//! optionally logging each prompt's artifacts and resuming from them — `merge`
+//! combines the partial records of one corpus and model into one record, and
+//! `compare` flags regressions between two runs, with 0 success, 1 a run that
+//! cannot be scored, and 2 usage, an unreadable corpus, a merge of mismatched or
+//! incomplete records, or a model that cannot be reached. The harness is gated
+//! by `enable_eval_harness` (off by default, maintainer-only), read from
 //! `VECTR_ENABLE_EVAL_HARNESS`; without it the command reports the harness as
 //! disabled and exits 2 (release.md, "Rollout Phases & Feature Flags").
 
@@ -31,7 +31,7 @@ pub const ENABLE_ENV: &str = "VECTR_ENABLE_EVAL_HARNESS";
 /// The usage block shared by the help text and every usage error.
 const USAGE: &str = "\
 Usage:
-  vectr-eval run --corpus <dir> --model <provider:model> [--shard <index>/<count>] [--log-dir <dir>] [--out <file>]
+  vectr-eval run --corpus <dir> --model <provider:model> [--shard <index>/<count>] [--log-dir <dir>] [--resume] [--out <file>]
   vectr-eval merge <record...> --out <file>
   vectr-eval compare <run-a> <run-b>
 
@@ -40,6 +40,9 @@ opencode with a pinned model, or replay with a directory of recorded replies.
 `--shard <index>/<count>` runs only the prompts at corpus positions where
 `position mod count == index` and writes a partial record for that shard;
 `merge` combines the partials of one corpus and model into one record.
+`--resume` scores a prompt from the artifacts already recorded in `--log-dir`
+instead of calling the model again, so a re-run resumes a partial shard; it
+requires `--log-dir`.
 The harness is maintainer-only and off by default; set VECTR_ENABLE_EVAL_HARNESS=1
 to enable it.";
 
@@ -60,6 +63,9 @@ pub enum Command {
         shard: Option<Shard>,
         /// Where to write each prompt's artifacts, when logging is requested.
         log_dir: Option<PathBuf>,
+        /// Whether to score a prompt from its recorded artifacts instead of
+        /// calling the model again (requires `log_dir`).
+        resume: bool,
         /// Where to write the run record; stdout when absent.
         out: Option<PathBuf>,
     },
@@ -112,6 +118,7 @@ fn parse_run(args: Vec<OsString>) -> Result<Command, String> {
     let mut model = None;
     let mut shard = None;
     let mut log_dir = None;
+    let mut resume = false;
     let mut out = None;
     let mut index = 0;
     while index < args.len() {
@@ -123,6 +130,7 @@ fn parse_run(args: Vec<OsString>) -> Result<Command, String> {
             "--log-dir" => {
                 log_dir = Some(PathBuf::from(take_value(&args, &mut index, "--log-dir")?))
             }
+            "--resume" => resume = true,
             "--out" => out = Some(take_value(&args, &mut index, "--out")?),
             other => return Err(format!("unexpected argument `{other}` for `run`")),
         }
@@ -130,11 +138,15 @@ fn parse_run(args: Vec<OsString>) -> Result<Command, String> {
     }
     let corpus = corpus.ok_or("`run` needs `--corpus <dir>`")?;
     let model = model.ok_or("`run` needs `--model <provider:model>`")?;
+    if resume && log_dir.is_none() {
+        return Err("`--resume` requires `--log-dir`".to_string());
+    }
     Ok(Command::Run {
         corpus: PathBuf::from(corpus),
         model,
         shard,
         log_dir,
+        resume,
         out: out.map(PathBuf::from),
     })
 }
@@ -191,12 +203,20 @@ pub fn run(command: Command) -> Report {
             model,
             shard,
             log_dir,
+            resume,
             out,
         } => {
             if let Some(report) = disabled() {
                 return report;
             }
-            run_corpus(&corpus, &model, shard, log_dir.as_deref(), out.as_deref())
+            run_corpus(
+                &corpus,
+                &model,
+                shard,
+                log_dir.as_deref(),
+                resume,
+                out.as_deref(),
+            )
         }
         Command::Merge { records, out } => {
             if let Some(report) = disabled() {
@@ -233,13 +253,14 @@ fn run_corpus(
     model: &str,
     shard: Option<Shard>,
     log_dir: Option<&Path>,
+    resume: bool,
     out: Option<&Path>,
 ) -> Report {
     let spec = match provider::parse_model_spec(model) {
         Ok(spec) => spec,
         Err(message) => return usage_report(&message),
     };
-    let record = match run::execute(corpus, &spec, shard, log_dir) {
+    let record = match run::execute(corpus, &spec, shard, log_dir, resume) {
         Ok(record) => record,
         Err(failure) => return Report::failure(failure.code(), failure.message()),
     };
@@ -384,6 +405,7 @@ mod tests {
             "2/5",
             "--log-dir",
             "logs",
+            "--resume",
             "--out",
             "run.json",
         ]))
@@ -395,6 +417,7 @@ mod tests {
                 model: "openai:gpt".to_string(),
                 shard: Some(Shard { index: 2, count: 5 }),
                 log_dir: Some(PathBuf::from("logs")),
+                resume: true,
                 out: Some(PathBuf::from("run.json")),
             }
         );
@@ -411,9 +434,24 @@ mod tests {
                 model: "openai:gpt".to_string(),
                 shard: None,
                 log_dir: None,
+                resume: false,
                 out: None,
             }
         );
+    }
+
+    #[test]
+    fn refuses_a_resume_without_a_log_directory() {
+        let error = parse(args(&[
+            "run",
+            "--corpus",
+            "c",
+            "--model",
+            "openai:gpt",
+            "--resume",
+        ]))
+        .expect_err("refused");
+        assert!(error.contains("--log-dir"), "{error}");
     }
 
     #[test]

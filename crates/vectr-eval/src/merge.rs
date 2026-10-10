@@ -226,11 +226,23 @@ mod tests {
         write_usage(replies.path(), "p2", 3_000);
         let spec = parse_model_spec(&format!("replay:{}", replies.path().display())).expect("spec");
         let corpus = corpus_dir();
-        let whole = run::execute(&corpus, &spec, None, None).expect("whole run");
-        let first = run::execute(&corpus, &spec, Some(Shard { index: 0, count: 2 }), None)
-            .expect("shard 0");
-        let second = run::execute(&corpus, &spec, Some(Shard { index: 1, count: 2 }), None)
-            .expect("shard 1");
+        let whole = run::execute(&corpus, &spec, None, None, false).expect("whole run");
+        let first = run::execute(
+            &corpus,
+            &spec,
+            Some(Shard { index: 0, count: 2 }),
+            None,
+            false,
+        )
+        .expect("shard 0");
+        let second = run::execute(
+            &corpus,
+            &spec,
+            Some(Shard { index: 1, count: 2 }),
+            None,
+            false,
+        )
+        .expect("shard 1");
 
         let records = TempDir::new("merge");
         let a = write_record(&records, "0.json", &first);

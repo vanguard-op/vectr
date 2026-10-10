@@ -6,12 +6,17 @@
 //! that cannot be reached fails the whole run with no partial results; a
 //! prompt whose reply cannot be scored is counted as a failure, never skipped
 //! (FEAT-023, NFR-011).
+//!
+//! A run with `--log-dir` records each prompt's artifacts as it goes; `--resume`
+//! scores a prompt from those recorded artifacts rather than calling the model
+//! again, so a re-run converges on only the prompts a shard did not finish
+//! (D-053).
 
 use std::collections::BTreeMap;
 use std::path::Path;
 
 use crate::corpus::{self, Prompt, Quality};
-use crate::provider::{self, AuthoringModel, Judge, Judgement, ModelSpec};
+use crate::provider::{self, Authored, AuthoringModel, Judge, Judgement, ModelSpec};
 use crate::record::{Comparison, ModelInfo, PromptResult, RunRecord, ShardInfo};
 use crate::score;
 use crate::toolchain::{self, CompileOutcome};
@@ -93,13 +98,23 @@ impl RunFailure {
 /// record carries the shard descriptor; a merge combines the partial records
 /// into the whole-corpus record (FEAT-023, D-051). With `log_dir`, each prompt's
 /// authoring input, authored scene, judge verdict and diagnostics are written
-/// for inspection (C-006).
+/// for inspection; with `resume`, a prompt whose artifacts are already recorded
+/// there is scored from them instead of calling the model again, so a re-run
+/// resumes a partially completed shard (C-006, D-053).
 pub fn execute(
     corpus_dir: &Path,
     spec: &ModelSpec,
     shard: Option<Shard>,
     log_dir: Option<&Path>,
+    resume: bool,
 ) -> Result<RunRecord, RunFailure> {
+    if resume && log_dir.is_none() {
+        return Err(RunFailure::Usage(
+            "`--resume` requires `--log-dir` to record and read each prompt's artifacts"
+                .to_string(),
+        ));
+    }
+
     let corpus = corpus::load(corpus_dir).map_err(|error| RunFailure::Usage(error.0))?;
     let coverage = corpus::coverage(&corpus);
     if !coverage.satisfied() {
@@ -132,11 +147,16 @@ pub fn execute(
 
     let mut results = Vec::with_capacity(selected.len());
     for prompt in selected {
+        let recorded = match (resume, log_dir) {
+            (true, Some(dir)) => recorded_artifacts(dir, prompt)?,
+            _ => Recorded::default(),
+        };
         results.push(run_prompt(
             prompt,
             author.as_ref(),
             judge.as_ref(),
             log_dir,
+            recorded,
         )?);
     }
 
@@ -162,21 +182,65 @@ pub fn execute(
     Ok(record)
 }
 
+/// The artifacts a resumed run reuses for one prompt: its recorded authoring
+/// reply and, when the reply it judged is the one recorded, the recorded
+/// verdict (D-053). Empty for a fresh run.
+#[derive(Default)]
+struct Recorded {
+    authored: Option<Authored>,
+    judgement: Option<Judgement>,
+}
+
+/// Reads the artifacts a resume reuses for `prompt`: an artifact that is absent
+/// is left unrecorded so the model is called for it, while one that cannot be
+/// read is reported (NFR-011). A verdict is only reused alongside the reply it
+/// judged: a recorded verdict with no recorded reply belongs to a scene the log
+/// no longer holds, so the prompt is authored and judged anew rather than paired
+/// with a stale verdict (D-053).
+fn recorded_artifacts(log_dir: &Path, prompt: &Prompt) -> Result<Recorded, RunFailure> {
+    let authored = provider::read_recorded_authored(log_dir, &prompt.id)
+        .map_err(|error| RunFailure::Usage(error.0))?;
+    let judgement = if authored.is_some() {
+        provider::read_recorded_judgement(log_dir, &prompt.id)
+            .map_err(|error| RunFailure::Usage(error.0))?
+    } else {
+        None
+    };
+    Ok(Recorded {
+        authored,
+        judgement,
+    })
+}
+
 fn run_prompt(
     prompt: &Prompt,
     author: &dyn AuthoringModel,
     judge: &dyn Judge,
     log_dir: Option<&Path>,
+    recorded: Recorded,
 ) -> Result<PromptResult, RunFailure> {
     log(log_dir, prompt, "input.json", &input_log(prompt))?;
-    let authored = author.author(prompt).map_err(|error| {
-        RunFailure::Usage(format!(
-            "the authoring model `{}` could not be reached: {}",
-            author.label(),
-            error.0
-        ))
-    })?;
-    log(log_dir, prompt, "scene.json", &authored.text)?;
+
+    // A prompt whose reply is already recorded is scored from it; only a prompt
+    // with no recorded reply calls the model (D-053).
+    let reused_authoring = recorded.authored.is_some();
+    let authored = match recorded.authored {
+        Some(authored) => authored,
+        None => author.author(prompt).map_err(|error| {
+            RunFailure::Usage(format!(
+                "the authoring model `{}` could not be reached: {}",
+                author.label(),
+                error.0
+            ))
+        })?,
+    };
+    if !reused_authoring {
+        log(log_dir, prompt, "scene.json", &authored.text)?;
+        if let Some(tokens) = authored.tokens {
+            log(log_dir, prompt, "usage.json", &usage_log(tokens))?;
+        }
+    }
+
     let outcome = toolchain::evaluate(&authored);
     log(
         log_dir,
@@ -184,24 +248,30 @@ fn run_prompt(
         "diagnostics.json",
         &diagnostics_log(&outcome),
     )?;
-    if let Some(tokens) = authored.tokens {
-        log(log_dir, prompt, "usage.json", &usage_log(tokens))?;
+
+    // A recorded verdict is reused; only a prompt with no usable verdict is
+    // judged again (D-053).
+    let reused_judgement = recorded.judgement.is_some();
+    let judged = match recorded.judgement {
+        Some(judgement) => Ok(judgement),
+        None => judge.judge(prompt, &authored),
+    };
+    if !reused_judgement {
+        log(
+            log_dir,
+            prompt,
+            "judge.json",
+            &match &judged {
+                Ok(judgement) => verdict_log(judgement),
+                Err(error) => error_log(&error.0),
+            },
+        )?;
     }
 
     // A judge that returns a verdict scores the prompt even when the scene did
     // not compile; the fidelity it gives reflects the authored output. Only a
     // judge that cannot return a verdict makes the prompt unscorable, and an
     // unscorable prompt is counted as a failure (FEAT-023).
-    let judged = judge.judge(prompt, &authored);
-    log(
-        log_dir,
-        prompt,
-        "judge.json",
-        &match &judged {
-            Ok(judgement) => verdict_log(judgement),
-            Err(error) => error_log(&error.0),
-        },
-    )?;
     let (scored, fidelity, qualities, failure) = match judged {
         Ok(judgement) => {
             // Only the hard-end qualities the prompt declares are applicable;
@@ -357,8 +427,8 @@ mod tests {
         let corpus = corpus_dir();
         let spec = parse_model_spec(&format!("replay:{}", dir.path().display())).expect("spec");
 
-        let first = execute(&corpus, &spec, None, None).expect("runs");
-        let second = execute(&corpus, &spec, None, None).expect("runs again");
+        let first = execute(&corpus, &spec, None, None, false).expect("runs");
+        let second = execute(&corpus, &spec, None, None, false).expect("runs again");
         assert_eq!(first, second, "repeated runs are reproducible");
         assert_eq!(first.prompts.len(), 2);
         assert!(first.prompts.iter().all(|result| result.compiled));
@@ -371,7 +441,7 @@ mod tests {
     fn a_replay_run_reports_a_missing_recording_as_unreachable() {
         let dir = replay_dir(&[]);
         let spec = parse_model_spec(&format!("replay:{}", dir.path().display())).expect("spec");
-        let failure = execute(&corpus_dir(), &spec, None, None).expect_err("fails");
+        let failure = execute(&corpus_dir(), &spec, None, None, false).expect_err("fails");
         assert_eq!(failure.code(), 2, "{}", failure.message());
     }
 
@@ -390,7 +460,7 @@ mod tests {
             ),
         ]);
         let spec = parse_model_spec(&format!("replay:{}", dir.path().display())).expect("spec");
-        let record = execute(&corpus_dir(), &spec, None, None).expect("runs");
+        let record = execute(&corpus_dir(), &spec, None, None, false).expect("runs");
         assert!(!record.prompts[0].compiled);
         assert!(record.prompts[0].scored);
         assert_eq!(record.compile_success_rate, 0.5);
@@ -412,7 +482,7 @@ mod tests {
         .expect("writes");
 
         let spec = parse_model_spec("replay:/does/not/exist").expect("spec");
-        let failure = execute(dir.path(), &spec, None, None).expect_err("fails");
+        let failure = execute(dir.path(), &spec, None, None, false).expect_err("fails");
         assert_eq!(failure.code(), 1);
         assert!(
             failure.message().contains("coverage"),
@@ -436,7 +506,7 @@ mod tests {
             ),
         ]);
         let spec = parse_model_spec(&format!("replay:{}", dir.path().display())).expect("spec");
-        let record = execute(&corpus_dir(), &spec, None, None).expect("runs");
+        let record = execute(&corpus_dir(), &spec, None, None, false).expect("runs");
         let value = serde_json::to_value(&record).expect("serializes");
 
         // The schema's EvaluationRun required fields (schema.md).
@@ -482,7 +552,7 @@ mod tests {
         write_usage(dir.path(), "p2", 3_000);
         let spec = parse_model_spec(&format!("replay:{}", dir.path().display())).expect("spec");
 
-        let record = execute(&corpus_dir(), &spec, None, None).expect("runs");
+        let record = execute(&corpus_dir(), &spec, None, None, false).expect("runs");
         assert_eq!(record.median_tokens, Some(2_000));
         assert!(record.thresholds.tokens);
         let value = serde_json::to_value(&record).expect("serializes");
@@ -494,7 +564,7 @@ mod tests {
         let dir = two_prompt_replies();
         let spec = parse_model_spec(&format!("replay:{}", dir.path().display())).expect("spec");
 
-        let record = execute(&corpus_dir(), &spec, None, None).expect("runs");
+        let record = execute(&corpus_dir(), &spec, None, None, false).expect("runs");
         assert_eq!(record.median_tokens, None);
         let value = serde_json::to_value(&record).expect("serializes");
         assert!(
@@ -524,8 +594,14 @@ mod tests {
         let corpus = corpus_dir();
         let spec = parse_model_spec(&format!("replay:{}", dir.path().display())).expect("spec");
 
-        let first =
-            execute(&corpus, &spec, Some(Shard { index: 0, count: 2 }), None).expect("runs");
+        let first = execute(
+            &corpus,
+            &spec,
+            Some(Shard { index: 0, count: 2 }),
+            None,
+            false,
+        )
+        .expect("runs");
         assert_eq!(
             first
                 .prompts
@@ -543,8 +619,14 @@ mod tests {
             })
         );
 
-        let second =
-            execute(&corpus, &spec, Some(Shard { index: 1, count: 2 }), None).expect("runs");
+        let second = execute(
+            &corpus,
+            &spec,
+            Some(Shard { index: 1, count: 2 }),
+            None,
+            false,
+        )
+        .expect("runs");
         assert_eq!(
             second
                 .prompts
@@ -571,7 +653,7 @@ mod tests {
         let logs = crate::testing::TempDir::new("logs");
         let log_dir = logs.path().join("run");
 
-        execute(&corpus_dir(), &spec, None, Some(&log_dir)).expect("runs");
+        execute(&corpus_dir(), &spec, None, Some(&log_dir), false).expect("runs");
 
         for id in ["p1", "p2"] {
             for suffix in ["input.json", "scene.json", "judge.json", "diagnostics.json"] {
@@ -599,14 +681,100 @@ mod tests {
         let spec = parse_model_spec(&format!("replay:{}", dir.path().display())).expect("spec");
         let logs = crate::testing::TempDir::new("logs-replay");
         let log_dir = logs.path().join("run");
-        let original = execute(&corpus_dir(), &spec, None, Some(&log_dir)).expect("runs");
+        let original = execute(&corpus_dir(), &spec, None, Some(&log_dir), false).expect("runs");
 
         let replay_spec = parse_model_spec(&format!("replay:{}", log_dir.display())).expect("spec");
-        let replayed = execute(&corpus_dir(), &replay_spec, None, None).expect("replays");
+        let replayed = execute(&corpus_dir(), &replay_spec, None, None, false).expect("replays");
         assert_eq!(
             replayed.prompts, original.prompts,
             "the log directory records the run"
         );
         assert_eq!(replayed.median_tokens, original.median_tokens);
+    }
+
+    /// A minimal authored scene the evaluation project compiles.
+    const SCENE: &str = r##"{"scene": {"id":"s","projectId":"eval","name":"S","formatVersion":"0.2","canvas":{"width":100,"height":100,"background":"#ffffff"},"elements":[]}}"##;
+
+    #[test]
+    fn a_resume_run_scores_recorded_prompts_without_calling_the_model() {
+        let source = two_prompt_replies();
+        write_usage(source.path(), "p1", 1_000);
+        let spec = parse_model_spec(&format!("replay:{}", source.path().display())).expect("spec");
+        let logs = crate::testing::TempDir::new("resume");
+        let log_dir = logs.path().join("run");
+        let original = execute(&corpus_dir(), &spec, None, Some(&log_dir), false).expect("runs");
+
+        // The resumed run reads only the log directory: the provider would fail
+        // on every prompt if it were called, so a success proves it was not.
+        let empty = crate::testing::TempDir::new("resume-empty");
+        let resume_spec =
+            parse_model_spec(&format!("replay:{}", empty.path().display())).expect("spec");
+        let resumed =
+            execute(&corpus_dir(), &resume_spec, None, Some(&log_dir), true).expect("resumes");
+        assert_eq!(resumed.prompts, original.prompts);
+        assert_eq!(resumed.median_tokens, original.median_tokens);
+    }
+
+    #[test]
+    fn a_resume_run_authors_only_the_prompts_without_a_recorded_reply() {
+        // The provider holds p2 only; the log directory holds p1's artifacts.
+        let provider = replay_dir(&[("p2", SCENE, r#"{"fidelity": 0.9, "qualities": {}}"#)]);
+        let logs = crate::testing::TempDir::new("resume-partial");
+        let log_dir = logs.path().join("run");
+        std::fs::create_dir_all(&log_dir).expect("creates");
+        std::fs::write(log_dir.join("p1.scene.json"), SCENE).expect("writes");
+        std::fs::write(
+            log_dir.join("p1.judge.json"),
+            r#"{"fidelity": 0.5, "qualities": {}}"#,
+        )
+        .expect("writes");
+
+        let spec =
+            parse_model_spec(&format!("replay:{}", provider.path().display())).expect("spec");
+        let record = execute(&corpus_dir(), &spec, None, Some(&log_dir), true).expect("resumes");
+        assert_eq!(record.prompts.len(), 2);
+        assert_eq!(
+            record.prompts[0].fidelity, 0.5,
+            "p1 is scored from its recording"
+        );
+        assert_eq!(record.prompts[1].fidelity, 0.9, "p2 is authored and judged");
+    }
+
+    #[test]
+    fn a_resume_run_rejudges_a_prompt_whose_recorded_verdict_was_not_a_verdict() {
+        // The log holds p1's reply and the harness's record of a judge that
+        // returned no verdict; the provider holds a real verdict, so a resume
+        // judges the prompt again rather than treating the error as a score.
+        let provider = replay_dir(&[("p1", SCENE, r#"{"fidelity": 0.3, "qualities": {}}"#)]);
+        let logs = crate::testing::TempDir::new("resume-rejudge");
+        let log_dir = logs.path().join("run");
+        std::fs::create_dir_all(&log_dir).expect("creates");
+        std::fs::write(log_dir.join("p1.scene.json"), SCENE).expect("writes");
+        std::fs::write(log_dir.join("p1.judge.json"), r#"{"error":"no verdict"}"#).expect("writes");
+
+        let spec =
+            parse_model_spec(&format!("replay:{}", provider.path().display())).expect("spec");
+        let record = execute(
+            &corpus_dir(),
+            &spec,
+            Some(Shard { index: 0, count: 2 }),
+            Some(&log_dir),
+            true,
+        )
+        .expect("resumes");
+        assert!(record.prompts[0].scored);
+        assert_eq!(record.prompts[0].fidelity, 0.3);
+    }
+
+    #[test]
+    fn resume_requires_a_log_directory() {
+        let spec = parse_model_spec("replay:/does/not/exist").expect("spec");
+        let failure = execute(&corpus_dir(), &spec, None, None, true).expect_err("refused");
+        assert_eq!(failure.code(), 2);
+        assert!(
+            failure.message().contains("--log-dir"),
+            "{}",
+            failure.message()
+        );
     }
 }

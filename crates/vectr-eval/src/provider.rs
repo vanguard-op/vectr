@@ -23,6 +23,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 use serde_json::{json, Value};
 
@@ -205,10 +206,10 @@ pub fn build(spec: &ModelSpec) -> Result<ModelPair, ProviderError> {
     Ok((
         Box::new(LlmAuthor {
             label: spec.id(),
-            client: author_client,
+            client: Box::new(RetryingClient::new(author_client)),
         }),
         Box::new(LlmJudge {
-            client: judge_client,
+            client: Box::new(RetryingClient::new(judge_client)),
         }),
     ))
 }
@@ -231,6 +232,39 @@ fn build_client(spec: &ModelSpec) -> Result<Box<dyn Completion>, ProviderError> 
         ProviderKind::Replay => Err(ProviderError(
             "the replay provider is not an HTTP client".to_string(),
         )),
+    }
+}
+
+/// Wraps a provider client so a transiently failed call is retried with growing
+/// backoff before the caller sees the failure (D-052, D-053).
+///
+/// It wraps the authoring call and the judge call alike, so a hiccup on either
+/// no longer discards the prompt: an authoring call that exhausts its retries
+/// abandons the run, while a judge call that does leaves its prompt unscorable.
+/// The offline `replay` provider is not wrapped, so a missing recording stays
+/// an immediate, deterministic failure.
+struct RetryingClient {
+    inner: Box<dyn Completion>,
+    attempts: usize,
+    backoff: Duration,
+}
+
+impl RetryingClient {
+    /// Wraps `inner` with the harness's bounded, growing-backoff retry.
+    fn new(inner: Box<dyn Completion>) -> Self {
+        Self {
+            inner,
+            attempts: RETRY_ATTEMPTS,
+            backoff: RETRY_BACKOFF,
+        }
+    }
+}
+
+impl Completion for RetryingClient {
+    fn complete(&self, system: &str, user: &str) -> Result<Authored, ProviderError> {
+        retrying(self.attempts, self.backoff, |_attempt| {
+            self.inner.complete(system, user)
+        })
     }
 }
 
@@ -382,6 +416,54 @@ impl Judge for ReplayJudge {
         })?;
         parse_judgement(&text).map_err(ProviderError)
     }
+}
+
+/// Reads a prompt's recorded authoring reply from a run's log directory, when a
+/// resumed run reuses it instead of calling the model again (D-053).
+///
+/// The artifacts are the ones a logging run writes and the `replay` provider
+/// reads — `<id>.scene.json`, with an optional `<id>.usage.json`. `Ok(None)`
+/// means the prompt has no recorded reply, so the model is called; a recording
+/// that exists but cannot be read or parsed is reported, never silently skipped
+/// (NFR-011).
+pub fn read_recorded_authored(dir: &Path, id: &str) -> Result<Option<Authored>, ProviderError> {
+    let path = dir.join(format!("{id}.scene.json"));
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(ProviderError(format!(
+                "cannot read the recorded authoring output for prompt `{id}` at `{}`: {error}",
+                path.display()
+            )))
+        }
+    };
+    Ok(Some(Authored {
+        text,
+        tokens: recorded_tokens(dir, id)?,
+    }))
+}
+
+/// Reads a prompt's recorded judge verdict from a run's log directory, when a
+/// resumed run reuses it instead of judging again (D-053).
+///
+/// `Ok(None)` means the prompt has no usable verdict recorded — the artifact is
+/// absent, or it is the harness's own record of a judge that returned no
+/// verdict — so the prompt is judged again. A recording that exists but cannot
+/// be read is reported, never silently skipped (NFR-011).
+pub fn read_recorded_judgement(dir: &Path, id: &str) -> Result<Option<Judgement>, ProviderError> {
+    let path = dir.join(format!("{id}.judge.json"));
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(ProviderError(format!(
+                "cannot read the recorded verdict for prompt `{id}` at `{}`: {error}",
+                path.display()
+            )))
+        }
+    };
+    Ok(parse_judgement(&text).ok())
 }
 
 /// Parses a judge's verdict from its reply text.
@@ -563,9 +645,15 @@ struct OpenCodeModel {
     bin: String,
 }
 
-/// How many times a bounded retry re-attempts an OpenCode call whose subprocess
-/// failed transiently (D-052).
-const OPENCODE_ATTEMPTS: usize = 3;
+/// How many times a transiently failed provider call is attempted — the first
+/// attempt plus two retries — before the caller sees the failure (D-052,
+/// D-053).
+const RETRY_ATTEMPTS: usize = 3;
+
+/// The wait before the first retry of a provider call. Each later retry waits
+/// twice as long as the one before, so a transient outage is absorbed without a
+/// tight retry loop (D-053).
+const RETRY_BACKOFF: Duration = Duration::from_millis(500);
 
 /// One OpenCode run's event stream, decoded: the session it created and the
 /// reply text it streamed.
@@ -580,9 +668,7 @@ pub struct OpenCodeRun {
 impl Completion for OpenCodeModel {
     fn complete(&self, system: &str, user: &str) -> Result<Authored, ProviderError> {
         let project = OpenCodeProject::create(system).map_err(ProviderError)?;
-        // A transient failure — a subprocess hiccup or a stream with no session
-        // — is retried a bounded number of times (D-052).
-        let run = retrying(OPENCODE_ATTEMPTS, |_attempt| self.run(&project, user))?;
+        let run = self.run(&project, user)?;
         // The reply comes from the run event stream, so an unreadable or
         // truncated session-export usage read is no usage rather than a failed
         // call (D-052).
@@ -598,10 +684,13 @@ impl Completion for OpenCodeModel {
 }
 
 /// Calls `call` up to `attempts` times, returning the first success or the last
-/// failure. A bounded retry absorbs a transient provider or server hiccup
-/// without ever looping forever (D-052).
+/// failure. A failed attempt waits `backoff` doubled once for each earlier
+/// attempt before the next, so a transient provider or server hiccup is
+/// absorbed with growing backoff and never an unbounded retry loop (D-052,
+/// D-053).
 fn retrying<T>(
     attempts: usize,
+    backoff: Duration,
     mut call: impl FnMut(usize) -> Result<T, ProviderError>,
 ) -> Result<T, ProviderError> {
     let attempts = attempts.max(1);
@@ -609,10 +698,29 @@ fn retrying<T>(
     for attempt in 1..=attempts {
         match call(attempt) {
             Ok(value) => return Ok(value),
-            Err(error) => last = Some(error),
+            Err(error) => {
+                last = Some(error);
+                if attempt < attempts {
+                    let wait = retry_delay(backoff, attempt);
+                    if !wait.is_zero() {
+                        std::thread::sleep(wait);
+                    }
+                }
+            }
         }
     }
     Err(last.expect("at least one attempt was made"))
+}
+
+/// The wait before the attempt that follows `number` failed attempts: the base
+/// delay doubled once for each attempt already made, so the waits grow
+/// geometrically and saturate rather than overflow (D-053).
+fn retry_delay(backoff: Duration, number: usize) -> Duration {
+    let mut delay = backoff;
+    for _ in 1..number {
+        delay = delay.saturating_mul(2);
+    }
+    delay
 }
 
 impl OpenCodeModel {
@@ -1121,7 +1229,7 @@ mod tests {
     #[test]
     fn a_bounded_retry_absorbs_a_transient_failure() {
         let mut attempts = 0;
-        let value = retrying(3, |attempt| {
+        let value = retrying(3, Duration::ZERO, |attempt| {
             attempts += 1;
             if attempt < 3 {
                 Err(ProviderError(format!("transient {attempt}")))
@@ -1137,12 +1245,141 @@ mod tests {
     #[test]
     fn a_bounded_retry_stops_after_its_bound() {
         let mut attempts = 0;
-        let error = retrying(3, |_attempt| {
+        let error = retrying(3, Duration::ZERO, |_attempt| {
             attempts += 1;
             Err::<u8, _>(ProviderError("still failing".to_string()))
         })
         .expect_err("refused");
         assert_eq!(attempts, 3, "the retry is bounded");
         assert_eq!(error.0, "still failing");
+    }
+
+    #[test]
+    fn the_retry_backoff_grows_with_each_attempt() {
+        let base = Duration::from_millis(500);
+        assert_eq!(retry_delay(base, 1), Duration::from_millis(500));
+        assert_eq!(retry_delay(base, 2), Duration::from_millis(1_000));
+        assert_eq!(retry_delay(base, 3), Duration::from_millis(2_000));
+    }
+
+    /// A completion that fails its first `failures` calls and then succeeds, so
+    /// a retry's attempts can be counted.
+    struct Flaky {
+        failures: usize,
+        calls: std::sync::Arc<AtomicUsize>,
+    }
+
+    impl Completion for Flaky {
+        fn complete(&self, _system: &str, _user: &str) -> Result<Authored, ProviderError> {
+            let call = self.calls.fetch_add(1, Ordering::Relaxed) + 1;
+            if call <= self.failures {
+                Err(ProviderError(format!("transient {call}")))
+            } else {
+                Ok(Authored {
+                    text: "{}".to_string(),
+                    tokens: None,
+                })
+            }
+        }
+    }
+
+    fn retrying_client(failures: usize, calls: &std::sync::Arc<AtomicUsize>) -> RetryingClient {
+        RetryingClient {
+            inner: Box::new(Flaky {
+                failures,
+                calls: calls.clone(),
+            }),
+            attempts: RETRY_ATTEMPTS,
+            backoff: Duration::ZERO,
+        }
+    }
+
+    #[test]
+    fn a_provider_call_is_retried_before_it_gives_up() {
+        let calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let client = retrying_client(1, &calls);
+        let authored = client.complete("sys", "usr").expect("the retry succeeds");
+        assert_eq!(authored.text, "{}");
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            2,
+            "the transient provider failure was retried"
+        );
+    }
+
+    #[test]
+    fn a_provider_call_that_keeps_failing_gives_up_at_the_bound() {
+        let calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let client = retrying_client(usize::MAX, &calls);
+        client.complete("sys", "usr").expect_err("refused");
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            RETRY_ATTEMPTS,
+            "the provider retry is bounded"
+        );
+    }
+
+    #[test]
+    fn the_wrapped_client_uses_the_harness_retry_settings() {
+        let client = RetryingClient::new(Box::new(Flaky {
+            failures: 0,
+            calls: std::sync::Arc::new(AtomicUsize::new(0)),
+        }));
+        assert_eq!(client.attempts, RETRY_ATTEMPTS);
+        assert_eq!(client.backoff, RETRY_BACKOFF);
+    }
+
+    #[test]
+    fn reads_recorded_artifacts_for_a_resume_and_reports_a_missing_one() {
+        let dir = crate::testing::TempDir::new("recorded");
+        assert!(read_recorded_authored(dir.path(), "p1")
+            .expect("reads")
+            .is_none());
+        assert!(read_recorded_judgement(dir.path(), "p1")
+            .expect("reads")
+            .is_none());
+
+        std::fs::write(dir.path().join("p1.scene.json"), r#"{"scene":{}}"#).expect("writes");
+        std::fs::write(
+            dir.path().join("p1.judge.json"),
+            r#"{"fidelity":0.4,"qualities":{"depth":true}}"#,
+        )
+        .expect("writes");
+        let authored = read_recorded_authored(dir.path(), "p1")
+            .expect("reads")
+            .expect("the reply is recorded");
+        assert!(authored.text.contains("scene"), "{}", authored.text);
+        assert_eq!(authored.tokens, None);
+        let judgement = read_recorded_judgement(dir.path(), "p1")
+            .expect("reads")
+            .expect("the verdict is recorded");
+        assert_eq!(judgement.fidelity, 0.4);
+        assert!(judgement.qualities["depth"]);
+    }
+
+    #[test]
+    fn a_recorded_usage_is_carried_into_a_resumed_authoring_reply() {
+        let dir = crate::testing::TempDir::new("recorded-usage");
+        std::fs::write(dir.path().join("p1.scene.json"), r#"{"scene":{}}"#).expect("writes");
+        crate::testing::write_usage(dir.path(), "p1", 7_000);
+        let authored = read_recorded_authored(dir.path(), "p1")
+            .expect("reads")
+            .expect("the reply is recorded");
+        assert_eq!(authored.tokens, Some(7_000));
+    }
+
+    #[test]
+    fn a_recorded_verdict_that_is_not_a_verdict_is_left_for_the_judge() {
+        let dir = crate::testing::TempDir::new("recorded-error");
+        // The harness records a judge that returned no verdict as an error
+        // document; on resume that is no verdict, so the judge is asked again.
+        std::fs::write(
+            dir.path().join("p1.judge.json"),
+            r#"{"error":"the judge returned no verdict"}"#,
+        )
+        .expect("writes");
+        assert!(read_recorded_judgement(dir.path(), "p1")
+            .expect("reads")
+            .is_none());
     }
 }
