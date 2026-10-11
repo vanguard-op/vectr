@@ -60,6 +60,15 @@ pub fn combine(paths: &[PathBuf]) -> Result<RunRecord, RunFailure> {
                 first.authoring_model_id
             )));
         }
+        if record.judge_model_id != first.judge_model_id {
+            return Err(RunFailure::Usage(format!(
+                "cannot merge `{}`: it was judged by `{}` while `{}` was judged by `{}`",
+                path.display(),
+                record.judge_model_id,
+                paths[0].display(),
+                first.judge_model_id
+            )));
+        }
         if record.coverage != first.coverage {
             return Err(RunFailure::Usage(format!(
                 "cannot merge `{}`: its coverage findings differ from `{}`",
@@ -155,6 +164,7 @@ pub fn combine(paths: &[PathBuf]) -> Result<RunRecord, RunFailure> {
         &first.corpus_version,
         first.coverage.clone(),
         first.model.clone(),
+        &first.judge_model_id,
         results,
     ))
 }
@@ -226,9 +236,10 @@ mod tests {
         write_usage(replies.path(), "p2", 3_000);
         let spec = parse_model_spec(&format!("replay:{}", replies.path().display())).expect("spec");
         let corpus = corpus_dir();
-        let whole = run::execute(&corpus, &spec, None, None, false).expect("whole run");
+        let whole = run::execute(&corpus, &spec, &spec, None, None, false).expect("whole run");
         let first = run::execute(
             &corpus,
+            &spec,
             &spec,
             Some(Shard { index: 0, count: 2 }),
             None,
@@ -237,6 +248,7 @@ mod tests {
         .expect("shard 0");
         let second = run::execute(
             &corpus,
+            &spec,
             &spec,
             Some(Shard { index: 1, count: 2 }),
             None,
@@ -302,6 +314,21 @@ mod tests {
             "{}",
             error.message()
         );
+    }
+
+    #[test]
+    fn refuses_a_mismatched_judge() {
+        // A run's partials must share one fixed judge; a merge that would pool
+        // verdicts from different judges is refused (FEAT-023, C-006).
+        let fixture = fixture();
+        mutate(
+            &fixture.b,
+            "judgeModelId",
+            serde_json::json!("replay:other-judge"),
+        );
+        let error = combine(&[fixture.a, fixture.b]).expect_err("refused");
+        assert_eq!(error.code(), 2);
+        assert!(error.message().contains("judged by"), "{}", error.message());
     }
 
     #[test]

@@ -194,38 +194,53 @@ trait Completion {
 /// The authoring model and judge a run uses.
 pub type ModelPair = (Box<dyn AuthoringModel>, Box<dyn Judge>);
 
-/// Builds the authoring model and the judge a run uses.
+/// Builds the authoring model and the judge a run uses, each from its own
+/// `provider:model` reference.
 ///
-/// For `replay`, both read recorded replies from the directory the model string
-/// names. For every other provider, both wrap the same provider client: the
-/// authoring model uses the versioned authoring prompt, the judge the versioned
-/// judge prompt.
-pub fn build(spec: &ModelSpec) -> Result<ModelPair, ProviderError> {
-    if spec.provider == ProviderKind::Replay {
-        let dir = PathBuf::from(&spec.model);
-        if !dir.is_dir() {
-            return Err(ProviderError(format!(
-                "the replay provider expects a directory of recorded replies, but `{}` is not a directory",
-                dir.display()
-            )));
-        }
-        return Ok((
-            Box::new(ReplayAuthor { dir: dir.clone() }),
-            Box::new(ReplayJudge { dir }),
-        ));
-    }
+/// A run names its authoring model and its judge separately, so the judge is a
+/// fixed model independent of the model under test: it scores every prompt of
+/// the run and the record names it (FEAT-023, C-006). For `replay`, each side
+/// reads recorded replies from the directory its own reference names. For every
+/// other provider, each side wraps its own provider client: the authoring model
+/// uses the versioned authoring prompt, the judge the versioned judge prompt.
+pub fn build(author: &ModelSpec, judge: &ModelSpec) -> Result<ModelPair, ProviderError> {
+    Ok((build_author(author)?, build_judge(judge)?))
+}
 
-    let author_client = build_client(spec)?;
-    let judge_client = build_client(spec)?;
-    Ok((
-        Box::new(LlmAuthor {
+fn build_author(spec: &ModelSpec) -> Result<Box<dyn AuthoringModel>, ProviderError> {
+    match spec.provider {
+        ProviderKind::Replay => Ok(Box::new(ReplayAuthor {
+            dir: replay_dir(&spec.model)?,
+        })),
+        _ => Ok(Box::new(LlmAuthor {
             label: spec.id(),
-            client: Box::new(RetryingClient::new(author_client)),
-        }),
-        Box::new(LlmJudge {
-            client: Box::new(RetryingClient::new(judge_client)),
-        }),
-    ))
+            client: Box::new(RetryingClient::new(build_client(spec)?)),
+        })),
+    }
+}
+
+fn build_judge(spec: &ModelSpec) -> Result<Box<dyn Judge>, ProviderError> {
+    match spec.provider {
+        ProviderKind::Replay => Ok(Box::new(ReplayJudge {
+            dir: replay_dir(&spec.model)?,
+        })),
+        _ => Ok(Box::new(LlmJudge {
+            client: Box::new(RetryingClient::new(build_client(spec)?)),
+        })),
+    }
+}
+
+/// The directory a `replay` reference names, refusing one that is not a
+/// directory of recorded replies.
+fn replay_dir(model: &str) -> Result<PathBuf, ProviderError> {
+    let dir = PathBuf::from(model);
+    if !dir.is_dir() {
+        return Err(ProviderError(format!(
+            "the replay provider expects a directory of recorded replies, but `{}` is not a directory",
+            dir.display()
+        )));
+    }
+    Ok(dir)
 }
 
 fn build_client(spec: &ModelSpec) -> Result<Box<dyn Completion>, ProviderError> {
@@ -1124,7 +1139,7 @@ mod tests {
             provider: ProviderKind::Replay,
             model: dir.path().display().to_string(),
         };
-        let (author, judge) = build(&spec).expect("builds");
+        let (author, judge) = build(&spec, &spec).expect("builds");
         let authored = author.author(&prompt("p1")).expect("authors");
         assert!(authored.text.contains("\"scene\""));
         let judgement = judge.judge(&prompt("p1"), &authored).expect("judges");
@@ -1139,7 +1154,7 @@ mod tests {
             provider: ProviderKind::Replay,
             model: dir.path().display().to_string(),
         };
-        let (author, _) = build(&spec).expect("builds");
+        let (author, _) = build(&spec, &spec).expect("builds");
         let error = author.author(&prompt("absent")).expect_err("refused");
         assert!(error.0.contains("absent"), "{}", error.0);
     }
@@ -1156,7 +1171,7 @@ mod tests {
             provider: ProviderKind::Replay,
             model: dir.path().display().to_string(),
         };
-        let (author, _) = build(&spec).expect("builds");
+        let (author, _) = build(&spec, &spec).expect("builds");
 
         assert_eq!(author.author(&prompt("p1")).expect("authors").tokens, None);
         crate::testing::write_usage(dir.path(), "p1", 12_345);
@@ -1179,7 +1194,7 @@ mod tests {
             provider: ProviderKind::Replay,
             model: dir.path().display().to_string(),
         };
-        let (author, _) = build(&spec).expect("builds");
+        let (author, _) = build(&spec, &spec).expect("builds");
         let error = author.author(&prompt("p1")).expect_err("refused");
         assert!(error.0.contains("tokens"), "{}", error.0);
     }

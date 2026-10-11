@@ -94,16 +94,20 @@ impl RunFailure {
 ///
 /// The whole corpus is loaded and its coverage checked even when only one shard
 /// runs, so a shard is always a slice of a corpus that meets its coverage
-/// requirement. With `shard`, only the prompts the shard selects run and the
-/// record carries the shard descriptor; a merge combines the partial records
-/// into the whole-corpus record (FEAT-023, D-051). With `log_dir`, each prompt's
+/// requirement. The run names its authoring model and its judge separately: the
+/// judge is a fixed model independent of the model under test, it scores every
+/// prompt of the run, and the record names it (`judgeModelId`) (FEAT-023,
+/// C-006). With `shard`, only the prompts the shard selects run and the record
+/// carries the shard descriptor; a merge combines the partial records into the
+/// whole-corpus record (FEAT-023, D-051). With `log_dir`, each prompt's
 /// authoring input, authored scene, judge verdict and diagnostics are written
 /// for inspection; with `resume`, a prompt whose artifacts are already recorded
 /// there is scored from them instead of calling the model again, so a re-run
 /// resumes a partially completed shard (C-006, D-053).
 pub fn execute(
     corpus_dir: &Path,
-    spec: &ModelSpec,
+    author_spec: &ModelSpec,
+    judge_spec: &ModelSpec,
     shard: Option<Shard>,
     log_dir: Option<&Path>,
     resume: bool,
@@ -133,7 +137,8 @@ pub fn execute(
         })?;
     }
 
-    let (author, judge) = provider::build(spec).map_err(|error| RunFailure::Usage(error.0))?;
+    let (author, judge) =
+        provider::build(author_spec, judge_spec).map_err(|error| RunFailure::Usage(error.0))?;
     let selected: Vec<&Prompt> = match shard {
         Some(shard) => corpus
             .prompts
@@ -169,11 +174,11 @@ pub fn execute(
     }
 
     let model = ModelInfo {
-        id: spec.id(),
-        name: spec.model.clone(),
-        version: spec.model.clone(),
+        id: author_spec.id(),
+        name: author_spec.model.clone(),
+        version: author_spec.model.clone(),
     };
-    let mut record = score::summarize(&corpus, &coverage, model, results);
+    let mut record = score::summarize(&corpus, &coverage, model, &judge_spec.id(), results);
     record.shard = shard.map(|shard| ShardInfo {
         index: shard.index,
         count: shard.count,
@@ -427,8 +432,8 @@ mod tests {
         let corpus = corpus_dir();
         let spec = parse_model_spec(&format!("replay:{}", dir.path().display())).expect("spec");
 
-        let first = execute(&corpus, &spec, None, None, false).expect("runs");
-        let second = execute(&corpus, &spec, None, None, false).expect("runs again");
+        let first = execute(&corpus, &spec, &spec, None, None, false).expect("runs");
+        let second = execute(&corpus, &spec, &spec, None, None, false).expect("runs again");
         assert_eq!(first, second, "repeated runs are reproducible");
         assert_eq!(first.prompts.len(), 2);
         assert!(first.prompts.iter().all(|result| result.compiled));
@@ -438,10 +443,46 @@ mod tests {
     }
 
     #[test]
+    fn a_run_scores_every_prompt_with_the_named_judge_not_the_author() {
+        // The authoring model's directory also holds a verdict of its own; the
+        // run must score with the fixed judge's verdict instead, and name it in
+        // the record (FEAT-023, C-006).
+        let scene = r##"{"scene": {"id":"s","projectId":"eval","name":"S","formatVersion":"0.2","canvas":{"width":100,"height":100,"background":"#ffffff"},"elements":[]}}"##;
+        let author = replay_dir(&[
+            ("p1", scene, r#"{"fidelity": 0.9, "qualities": {}}"#),
+            ("p2", scene, r#"{"fidelity": 0.9, "qualities": {}}"#),
+        ]);
+        let judge = replay_dir(&[
+            ("p1", scene, r#"{"fidelity": 0.2, "qualities": {}}"#),
+            ("p2", scene, r#"{"fidelity": 0.2, "qualities": {}}"#),
+        ]);
+        let author_spec =
+            parse_model_spec(&format!("replay:{}", author.path().display())).expect("spec");
+        let judge_spec =
+            parse_model_spec(&format!("replay:{}", judge.path().display())).expect("spec");
+
+        let record =
+            execute(&corpus_dir(), &author_spec, &judge_spec, None, None, false).expect("runs");
+        assert_eq!(record.authoring_model_id, author_spec.id());
+        assert_eq!(record.judge_model_id, judge_spec.id());
+        assert_ne!(record.judge_model_id, record.authoring_model_id);
+        assert_eq!(
+            record.fidelity_score, 0.2,
+            "the judge's verdict scores every prompt, not the author's"
+        );
+        let value = serde_json::to_value(&record).expect("serializes");
+        assert_eq!(
+            value["judgeModelId"],
+            serde_json::json!(judge_spec.id()),
+            "the record names the judge"
+        );
+    }
+
+    #[test]
     fn a_replay_run_reports_a_missing_recording_as_unreachable() {
         let dir = replay_dir(&[]);
         let spec = parse_model_spec(&format!("replay:{}", dir.path().display())).expect("spec");
-        let failure = execute(&corpus_dir(), &spec, None, None, false).expect_err("fails");
+        let failure = execute(&corpus_dir(), &spec, &spec, None, None, false).expect_err("fails");
         assert_eq!(failure.code(), 2, "{}", failure.message());
     }
 
@@ -460,7 +501,7 @@ mod tests {
             ),
         ]);
         let spec = parse_model_spec(&format!("replay:{}", dir.path().display())).expect("spec");
-        let record = execute(&corpus_dir(), &spec, None, None, false).expect("runs");
+        let record = execute(&corpus_dir(), &spec, &spec, None, None, false).expect("runs");
         assert!(!record.prompts[0].compiled);
         assert!(record.prompts[0].scored);
         assert_eq!(record.compile_success_rate, 0.5);
@@ -482,7 +523,7 @@ mod tests {
         .expect("writes");
 
         let spec = parse_model_spec("replay:/does/not/exist").expect("spec");
-        let failure = execute(dir.path(), &spec, None, None, false).expect_err("fails");
+        let failure = execute(dir.path(), &spec, &spec, None, None, false).expect_err("fails");
         assert_eq!(failure.code(), 1);
         assert!(
             failure.message().contains("coverage"),
@@ -506,7 +547,7 @@ mod tests {
             ),
         ]);
         let spec = parse_model_spec(&format!("replay:{}", dir.path().display())).expect("spec");
-        let record = execute(&corpus_dir(), &spec, None, None, false).expect("runs");
+        let record = execute(&corpus_dir(), &spec, &spec, None, None, false).expect("runs");
         let value = serde_json::to_value(&record).expect("serializes");
 
         // The schema's EvaluationRun required fields (schema.md).
@@ -514,6 +555,7 @@ mod tests {
             "id",
             "corpusId",
             "authoringModelId",
+            "judgeModelId",
             "compileSuccessRate",
             "fidelityScore",
             "regression",
@@ -552,7 +594,7 @@ mod tests {
         write_usage(dir.path(), "p2", 3_000);
         let spec = parse_model_spec(&format!("replay:{}", dir.path().display())).expect("spec");
 
-        let record = execute(&corpus_dir(), &spec, None, None, false).expect("runs");
+        let record = execute(&corpus_dir(), &spec, &spec, None, None, false).expect("runs");
         assert_eq!(record.median_tokens, Some(2_000));
         assert!(record.thresholds.tokens);
         let value = serde_json::to_value(&record).expect("serializes");
@@ -564,7 +606,7 @@ mod tests {
         let dir = two_prompt_replies();
         let spec = parse_model_spec(&format!("replay:{}", dir.path().display())).expect("spec");
 
-        let record = execute(&corpus_dir(), &spec, None, None, false).expect("runs");
+        let record = execute(&corpus_dir(), &spec, &spec, None, None, false).expect("runs");
         assert_eq!(record.median_tokens, None);
         let value = serde_json::to_value(&record).expect("serializes");
         assert!(
@@ -597,6 +639,7 @@ mod tests {
         let first = execute(
             &corpus,
             &spec,
+            &spec,
             Some(Shard { index: 0, count: 2 }),
             None,
             false,
@@ -621,6 +664,7 @@ mod tests {
 
         let second = execute(
             &corpus,
+            &spec,
             &spec,
             Some(Shard { index: 1, count: 2 }),
             None,
@@ -653,7 +697,7 @@ mod tests {
         let logs = crate::testing::TempDir::new("logs");
         let log_dir = logs.path().join("run");
 
-        execute(&corpus_dir(), &spec, None, Some(&log_dir), false).expect("runs");
+        execute(&corpus_dir(), &spec, &spec, None, Some(&log_dir), false).expect("runs");
 
         for id in ["p1", "p2"] {
             for suffix in ["input.json", "scene.json", "judge.json", "diagnostics.json"] {
@@ -681,10 +725,12 @@ mod tests {
         let spec = parse_model_spec(&format!("replay:{}", dir.path().display())).expect("spec");
         let logs = crate::testing::TempDir::new("logs-replay");
         let log_dir = logs.path().join("run");
-        let original = execute(&corpus_dir(), &spec, None, Some(&log_dir), false).expect("runs");
+        let original =
+            execute(&corpus_dir(), &spec, &spec, None, Some(&log_dir), false).expect("runs");
 
         let replay_spec = parse_model_spec(&format!("replay:{}", log_dir.display())).expect("spec");
-        let replayed = execute(&corpus_dir(), &replay_spec, None, None, false).expect("replays");
+        let replayed =
+            execute(&corpus_dir(), &replay_spec, &replay_spec, None, None, false).expect("replays");
         assert_eq!(
             replayed.prompts, original.prompts,
             "the log directory records the run"
@@ -702,15 +748,23 @@ mod tests {
         let spec = parse_model_spec(&format!("replay:{}", source.path().display())).expect("spec");
         let logs = crate::testing::TempDir::new("resume");
         let log_dir = logs.path().join("run");
-        let original = execute(&corpus_dir(), &spec, None, Some(&log_dir), false).expect("runs");
+        let original =
+            execute(&corpus_dir(), &spec, &spec, None, Some(&log_dir), false).expect("runs");
 
         // The resumed run reads only the log directory: the provider would fail
         // on every prompt if it were called, so a success proves it was not.
         let empty = crate::testing::TempDir::new("resume-empty");
         let resume_spec =
             parse_model_spec(&format!("replay:{}", empty.path().display())).expect("spec");
-        let resumed =
-            execute(&corpus_dir(), &resume_spec, None, Some(&log_dir), true).expect("resumes");
+        let resumed = execute(
+            &corpus_dir(),
+            &resume_spec,
+            &resume_spec,
+            None,
+            Some(&log_dir),
+            true,
+        )
+        .expect("resumes");
         assert_eq!(resumed.prompts, original.prompts);
         assert_eq!(resumed.median_tokens, original.median_tokens);
     }
@@ -731,7 +785,8 @@ mod tests {
 
         let spec =
             parse_model_spec(&format!("replay:{}", provider.path().display())).expect("spec");
-        let record = execute(&corpus_dir(), &spec, None, Some(&log_dir), true).expect("resumes");
+        let record =
+            execute(&corpus_dir(), &spec, &spec, None, Some(&log_dir), true).expect("resumes");
         assert_eq!(record.prompts.len(), 2);
         assert_eq!(
             record.prompts[0].fidelity, 0.5,
@@ -757,6 +812,7 @@ mod tests {
         let record = execute(
             &corpus_dir(),
             &spec,
+            &spec,
             Some(Shard { index: 0, count: 2 }),
             Some(&log_dir),
             true,
@@ -769,7 +825,7 @@ mod tests {
     #[test]
     fn resume_requires_a_log_directory() {
         let spec = parse_model_spec("replay:/does/not/exist").expect("spec");
-        let failure = execute(&corpus_dir(), &spec, None, None, true).expect_err("refused");
+        let failure = execute(&corpus_dir(), &spec, &spec, None, None, true).expect_err("refused");
         assert_eq!(failure.code(), 2);
         assert!(
             failure.message().contains("--log-dir"),

@@ -7,9 +7,9 @@
 //! comparison is meaningful (FEAT-023, NFR-010). No wall-clock time or random
 //! identifier enters the record.
 //!
-//! `compileSuccessRate` and `fidelityScore` are the schema's fields; the rest
-//! are the harness's own. `regression` is false on a fresh run and is decided
-//! by [`crate::score::compare`].
+//! `compileSuccessRate`, `fidelityScore` and `judgeModelId` are the schema's
+//! fields; the rest are the harness's own. `regression` is false on a fresh run
+//! and is decided by [`crate::score::compare`].
 
 use std::collections::BTreeMap;
 
@@ -30,6 +30,10 @@ pub struct RunRecord {
     pub corpus_version: String,
     /// The authoring model, as `provider:model`.
     pub authoring_model_id: String,
+    /// The fixed judge that scored the run, as `provider:model`; it is
+    /// independent of the authoring model and scores every prompt of the run
+    /// (schema.md "EvaluationRun", FEAT-023).
+    pub judge_model_id: String,
     /// The model's name and pinned version.
     pub model: ModelInfo,
     /// Share of authored scenes that compiled without error.
