@@ -155,8 +155,9 @@ A stroke profile carries geometry only. `strokes/hairline.json`:
 - **An `accessibleName` is unique within one tree.** Two elements in the same
   scene, or two in the same definition, may not share an `accessibleName`
   (`E_DUPLICATE_NAME`); the second is ambiguous to a screen reader. Both `name`
-  and `accessibleName` are optional, the maintenance `name` may repeat, and the
-  safe default is to omit `accessibleName` or give every element a distinct one.
+  and `accessibleName` are optional and the maintenance `name` may repeat; an
+  `accessibleName` is carried through to the exported output, so give every
+  element that carries one a distinct name.
 - **The parser is stricter than the published `required` lists.** Every element
   must carry a `geometry` object and a complete `transform` with all five of
   `translateX`, `translateY`, `rotate`, `scaleX`, `scaleY` — even an identity
@@ -174,8 +175,7 @@ A stroke profile carries geometry only. `strokes/hairline.json`:
 - **A stroke pairs a profile and a paint.** `{"profileId": "...", "paint":
   {...}}`; the profile supplies width, cap, and join, the paint supplies colour.
   Both are required, and the profile id must resolve under `strokes/`. Never
-  invent a profile id: reference only a profile the project provides, and when it
-  provides none, draw the line work as filled shapes and leave `stroke` out.
+  invent a profile id: reference only a profile the project provides.
 - **`order` is paint order among siblings**, lowest first; later elements draw on
   top. `parentId` builds the tree: a child names its parent's `id`. Group
   decorative children under a `group` element so they move together.

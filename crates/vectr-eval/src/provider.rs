@@ -29,25 +29,31 @@ use serde_json::{json, Value};
 
 use crate::corpus::{Prompt, Quality};
 use crate::json::extract_json;
-use crate::toolchain::PALETTE_TOKENS;
+use crate::toolchain::{PALETTE_TOKENS, STROKE_PROFILE_ID, STROKE_PROFILE_WIDTH};
 
 /// The versioned authoring prompt artifact: the system prompt the harness
 /// sends with the published schema and the packaged guidance.
-const AUTHORING_PROMPT: &str = include_str!("../prompts/authoring.v2.txt");
+const AUTHORING_PROMPT: &str = include_str!("../prompts/authoring.v3.txt");
 
 /// The skill's always-read entry point (FEAT-020).
 ///
 /// The docs promise the authoring input is the published schema and the skill's
 /// instructions, so the harness carries the skill rather than the scaffolded
 /// project guide. The entry point is the always-read surface and routes a
-/// coding agent to its on-demand references; a one-shot authoring call cannot
-/// load a reference when a step needs it, so the rules the authoring step turns
-/// on are stated in the versioned authoring prompt (`authoring.v2.txt`) rather
-/// than preloading the whole reference depth and paying for it in every prompt's
-/// context (FEAT-020, D-042). The evaluation crate is maintainer-only and
-/// unpublished, so it embeds the shipped skill from the repository rather than
-/// carrying a second copy that could drift.
+/// coding agent to its on-demand references.
 const SKILL_ENTRY: &str = include_str!("../../../skills/vectr/SKILL.md");
+
+/// The skill's canonical rules reference (FEAT-020).
+///
+/// A one-shot authoring call cannot load a reference when a step needs it, so
+/// the harness carries the reference the authoring step turns on — the rules the
+/// schema does not state — in full. The rules live here, single-sourced with the
+/// reference an interactive agent reads on demand, rather than being restated in
+/// the versioned authoring prompt where they could drift from the skill
+/// (FEAT-020, D-042). The evaluation crate is maintainer-only and unpublished,
+/// so it embeds the shipped skill from the repository rather than carrying a
+/// second copy.
+const SKILL_RULES: &str = include_str!("../../../skills/vectr/references/rules.md");
 
 /// The versioned judge prompt artifact.
 const JUDGE_PROMPT: &str = include_str!("../prompts/judge.v1.txt");
@@ -317,9 +323,13 @@ fn api_key(kind: ProviderKind) -> Result<String, ProviderError> {
     )))
 }
 
-/// The versioned authoring system prompt: the instructions, the published
-/// schema, the skill's entry point, and the style assets the evaluation project
-/// supplies (FEAT-020, FEAT-032 Model Behavior).
+/// The versioned authoring system prompt: the instructions, the skill's entry
+/// point and canonical rules reference, the published schema, and the style
+/// assets the evaluation project supplies (FEAT-020, FEAT-032 Model Behavior).
+///
+/// The rules are not restated here: they are carried from the skill's
+/// `references/rules.md`, so the authoring input and the reference an
+/// interactive agent reads cannot drift apart.
 pub fn authoring_system() -> String {
     let schema = vectr_core::schema(vectr_core::SchemaForm::Compact).unwrap_or_default();
     let tokens: Vec<String> = PALETTE_TOKENS
@@ -329,10 +339,11 @@ pub fn authoring_system() -> String {
     format!(
         "{AUTHORING_PROMPT}\n\n\
          # Skill entry point\n\n{SKILL_ENTRY}\n\n\
+         # Skill rules reference\n\n{SKILL_RULES}\n\n\
          # Published schema (compact)\n\n{schema}\n\n\
          # Available palette tokens\n\n{}\n\n\
          # Available stroke profiles\n\n\
-         (none — draw with token fills and set no `stroke`)\n\n\
+         - {STROKE_PROFILE_ID}: width {STROKE_PROFILE_WIDTH}, round cap, round join\n\n\
          # Available gradients\n\n(none)\n",
         tokens.join("\n")
     )
@@ -1108,16 +1119,52 @@ mod tests {
             system.contains("references/rules.md"),
             "carries the entry point's pointer to its references"
         );
-        // The rules the models most often violate, stated in the versioned
-        // authoring prompt where a one-shot call sees them: the flat element
-        // list, the single owner, the unique accessible name, and the style
-        // assets it may reference.
+        // The skill's canonical rules reference, single-sourced: a one-shot call
+        // cannot load it on demand, so the harness carries it in full rather
+        // than restating the rules in the prompt (FEAT-020, D-042).
+        assert!(
+            system.contains("Rules the schema does not state"),
+            "carries the rules reference"
+        );
+        // The rules are carried exactly once — from the reference — so the
+        // prompt and the skill cannot drift apart (FEAT-020).
+        assert_eq!(
+            system.matches("Rules the schema does not state").count(),
+            1,
+            "the rules reference is carried exactly once"
+        );
         for rule in ["parentId", "sceneId", "definitionId", "accessibleName"] {
             assert!(system.contains(rule), "states the `{rule}` rule");
         }
+        // The style assets the evaluation project supplies, including the stroke
+        // profile that makes a stroke expressible (FEAT-008).
         assert!(
             system.contains("stroke profiles"),
             "names the available stroke profiles"
+        );
+        assert!(
+            system.contains(STROKE_PROFILE_ID),
+            "lists the project's stroke profile"
+        );
+    }
+
+    #[test]
+    fn the_authoring_prompt_does_not_restate_the_rules_reference() {
+        // The language rules are single-sourced in the skill's rules reference
+        // the harness carries, so the versioned prompt neither duplicates the
+        // structure-rules list nor steers a model away from a stroke or an
+        // accessible name (FEAT-008, FEAT-026).
+        assert!(
+            !AUTHORING_PROMPT.contains("Structure rules"),
+            "the prompt carries no bespoke structure-rules list"
+        );
+        assert!(
+            !AUTHORING_PROMPT.contains("accessibleName"),
+            "the prompt does not restate the rules reference"
+        );
+        assert!(
+            !AUTHORING_PROMPT.contains("filled shapes"),
+            "the prompt does not steer a model away from a stroke"
         );
     }
 

@@ -10,9 +10,8 @@ The object has two fields:
 Rules:
 - Draw every colour from the palette tokens listed below. Write a fill or stroke
   paint as {"kind": "token", "ref": "<token name>"}. Do not invent token names.
-- Reference only the style assets listed below. Do not invent a stroke profile or
-  a gradient: name one only if it is listed, and when none are listed draw with
-  token fills and set no "stroke".
+- Reference only the style assets listed below. Do not invent a token name, a
+  stroke profile id, or a gradient id.
 - Do not set "paletteId" or "recipeId" on the scene: the evaluation project
   supplies the palette and the flat recipe as the project defaults.
 - Author the whole requested graphic. A complex request is composed in full from
@@ -27,19 +26,7 @@ Rules:
   reserve absolute coordinates for the canvas and the root placement.
 - Join decomposed parts at shared anchors so the composed result has no visible
   seam.
-
-Structure rules — the schema enforces these and a scene that breaks one does not
-compile:
-- The element list is flat. An element never carries a "children" or "elements"
-  field. A group's members are ordinary siblings in the same list, each naming the
-  group's "id" in its own "parentId"; nesting and draw order come from "parentId"
-  and "order", never from a nested array.
-- Every element sets exactly one of "sceneId" (a scene element, repeating the
-  scene's "id") or "definitionId" (a definition's element, naming that
-  definition's "id"). Never neither and never both.
-- An "accessibleName" is unique within one scene and within one definition. Omit
-  it, or give every element a distinct one; two elements may not share it. The
-  maintenance "name" may repeat.
-- A "stroke" is {"profileId": "<id>", "paint": {...}} and its profileId must name a
-  profile the project provides. Never invent a profile id.
 - Return JSON only: no prose, no markdown fence, no comments.
+
+The skill's rules reference below states the language's rules the schema does
+not. Follow it; it is the same reference an interactive agent reads on demand.
