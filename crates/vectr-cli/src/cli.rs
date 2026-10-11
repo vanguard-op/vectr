@@ -34,9 +34,9 @@ use vectr_core::scene::INVALID_COLOR;
 use vectr_core::{
     compile_definition, compile_subtree, compile_with_style, export_pdf_reporting,
     export_png_reporting, export_svg_reporting, parse as parse_scene_source, schema, schema_for,
-    validate as validate_scene_model, validate_gradient_usage, validate_palette_usage, Diagnostic,
-    DiagnosticCode, Diagnostics, PdfOptions, RasterOptions, RenderModel, Scene, SchemaForm,
-    SvgOptions,
+    validate as validate_scene_model, validate_color, validate_gradient_usage,
+    validate_palette_usage, Diagnostic, DiagnosticCode, Diagnostics, PdfOptions, RasterOptions,
+    RenderModel, Scene, SchemaForm, SvgOptions,
 };
 
 use crate::icon_set;
@@ -1057,12 +1057,24 @@ fn structural_findings(scene: &Scene, assets: &ProjectAssets) -> Diagnostics {
     let mut findings = validate_scene_model(scene);
     let expanded = assets.expanded_scene(scene);
     let usage_scene = expanded.as_ref().unwrap_or(scene);
-    if let Some(palette) = assets.palette() {
-        findings.extend(validate_palette_usage(
+    match assets.palette() {
+        // With a palette, a background token resolves and a value that is
+        // neither a token nor a colour is reported by the palette checks
+        // (FEAT-005).
+        Some(palette) => findings.extend(validate_palette_usage(
             usage_scene,
             palette,
             assets.gradients(),
-        ));
+        )),
+        // Without one, a token cannot resolve, so the background must be a
+        // literal colour and is reported at its own field when it is not
+        // (FEAT-005, FEAT-018).
+        None => validate_color(
+            &mut findings,
+            &usage_scene.canvas.background,
+            "canvas background",
+            "/canvas/background",
+        ),
     }
     findings.extend(validate_gradient_usage(usage_scene, assets.gradients()));
     findings.extend(assets.check_references(scene));
@@ -2926,6 +2938,72 @@ mod tests {
         );
         assert!(report.stderr.contains("accent"), "{}", report.stderr);
         assert!(report.stderr.contains("not-a-colour"), "{}", report.stderr);
+    }
+
+    #[test]
+    fn validate_reports_a_non_colour_background_when_no_palette_resolves() {
+        // The project names no palette and the scene names none, so a background
+        // token cannot resolve and the value must be a literal colour
+        // (FEAT-005, FEAT-018).
+        let dir = TempDir::new("project-background-no-palette");
+        write_at(&dir, "vectr.project.json", "{}");
+        let scene =
+            VALID_SCENE.replace(r##""background": "#ffffff""##, r##""background": "nope""##);
+        write_at(&dir, "scenes/scene-1.json", &scene);
+
+        let report = run_in(
+            Command::Validate {
+                scene: Some("scene-1".to_string()),
+                json: false,
+            },
+            dir.path(),
+        );
+        assert_eq!(report.code, EXIT_INVALID_SCENE);
+        assert!(
+            report.stderr.contains("E_INVALID_COLOR"),
+            "{}",
+            report.stderr
+        );
+        assert!(
+            report.stderr.contains("/canvas/background"),
+            "{}",
+            report.stderr
+        );
+    }
+
+    #[test]
+    fn a_canvas_background_token_resolves_and_compiles() {
+        let dir = TempDir::new("project-background-token");
+        write_at(&dir, "vectr.project.json", "{}");
+        write_at(&dir, "palettes/brand.json", PALETTE);
+        let scene = PALETTE_SCENE.replace(
+            r##""background": "#ffffff""##,
+            r##""background": "accent""##,
+        );
+        write_at(&dir, "scenes/brand.json", &scene);
+
+        let validate = run_in(
+            Command::Validate {
+                scene: Some("brand".to_string()),
+                json: false,
+            },
+            dir.path(),
+        );
+        assert_eq!(validate.code, EXIT_SUCCESS, "{}", validate.stderr);
+
+        let out = dir.path().join("brand.json");
+        let report = run_in(
+            Command::Compile {
+                scene: Some("brand".to_string()),
+                out: Some(out.clone()),
+                check: false,
+            },
+            dir.path(),
+        );
+        assert_eq!(report.code, EXIT_SUCCESS, "{}", report.stderr);
+        let text = fs::read_to_string(&out).expect("reads the model");
+        let model = vectr_core::render::parse(&text).expect("a render model");
+        assert_eq!(model.canvas.background, "#ff0000");
     }
 
     #[test]

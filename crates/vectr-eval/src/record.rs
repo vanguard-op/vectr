@@ -7,9 +7,9 @@
 //! comparison is meaningful (FEAT-023, NFR-010). No wall-clock time or random
 //! identifier enters the record.
 //!
-//! `compileSuccessRate` and `fidelityScore` are the schema's fields; the rest
-//! are the harness's own. `regression` is false on a fresh run and is decided
-//! by [`crate::score::compare`].
+//! `compileSuccessRate`, `fidelityScore` and `judgeModelId` are the schema's
+//! fields; the rest are the harness's own. `regression` is false on a fresh run
+//! and is decided by [`crate::score::compare`].
 
 use std::collections::BTreeMap;
 
@@ -30,6 +30,10 @@ pub struct RunRecord {
     pub corpus_version: String,
     /// The authoring model, as `provider:model`.
     pub authoring_model_id: String,
+    /// The fixed judge that scored the run, as `provider:model`; it is
+    /// independent of the authoring model and scores every prompt of the run
+    /// (schema.md "EvaluationRun", FEAT-023).
+    pub judge_model_id: String,
     /// The model's name and pinned version.
     pub model: ModelInfo,
     /// Share of authored scenes that compiled without error.
@@ -53,8 +57,30 @@ pub struct RunRecord {
     pub thresholds: Thresholds,
     /// Whether the corpus met its coverage requirements.
     pub coverage: CoverageReport,
+    /// The shard this record covers, when the run was sharded. Absent for a
+    /// whole-corpus run and for a record a merge produced over the whole corpus
+    /// (FEAT-023, D-051).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shard: Option<ShardInfo>,
     /// One result per prompt, in corpus order.
     pub prompts: Vec<PromptResult>,
+}
+
+/// The slice of a corpus a sharded run covered.
+///
+/// A whole-corpus run is partitioned deterministically: the prompt at corpus
+/// position `p` is run by the shard with index `p mod count`. `total` lets a
+/// merge verify that its records cover every prompt exactly once without
+/// reloading the corpus (FEAT-023, D-051).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShardInfo {
+    /// Zero-based index of this shard.
+    pub index: usize,
+    /// How many shards the corpus was split into.
+    pub count: usize,
+    /// How many prompts the whole corpus holds.
+    pub total: usize,
 }
 
 /// The model a run used, with the pinned version the score applies to.

@@ -33,6 +33,32 @@ pub fn summarize(
     corpus: &Corpus,
     coverage: &Coverage,
     model: ModelInfo,
+    judge_model_id: &str,
+    results: Vec<PromptResult>,
+) -> RunRecord {
+    summarize_parts(
+        &corpus.manifest.id,
+        &corpus.manifest.version,
+        CoverageReport {
+            satisfied: coverage.satisfied(),
+            omissions: coverage.omissions.clone(),
+        },
+        model,
+        judge_model_id,
+        results,
+    )
+}
+
+/// Builds a run record from the scored prompt results and the corpus identity,
+/// without the loaded corpus. A merge recomputes a whole-corpus record from its
+/// partial records this way, so it never needs the corpus on disk (FEAT-023,
+/// D-051).
+pub fn summarize_parts(
+    corpus_id: &str,
+    corpus_version: &str,
+    coverage: CoverageReport,
+    model: ModelInfo,
+    judge_model_id: &str,
     results: Vec<PromptResult>,
 ) -> RunRecord {
     let total = results.len();
@@ -57,13 +83,11 @@ pub fn summarize(
 
     let model_id = model.id.clone();
     RunRecord {
-        id: format!(
-            "{}@{}#{}",
-            corpus.manifest.id, corpus.manifest.version, model_id
-        ),
-        corpus_id: corpus.manifest.id.clone(),
-        corpus_version: corpus.manifest.version.clone(),
+        id: format!("{corpus_id}@{corpus_version}#{model_id}"),
+        corpus_id: corpus_id.to_string(),
+        corpus_version: corpus_version.to_string(),
         authoring_model_id: model_id,
+        judge_model_id: judge_model_id.to_string(),
         model,
         compile_success_rate,
         fidelity_score,
@@ -72,10 +96,8 @@ pub fn summarize(
         notes: None,
         hard_end,
         thresholds,
-        coverage: CoverageReport {
-            satisfied: coverage.satisfied(),
-            omissions: coverage.omissions.clone(),
-        },
+        coverage,
+        shard: None,
         prompts: results,
     }
 }
@@ -230,6 +252,9 @@ mod tests {
     use super::*;
     use crate::corpus::{CorpusManifest, Prompt};
 
+    /// The judge identifier the records under test name.
+    const JUDGE: &str = "replay:judge";
+
     fn result(id: &str, compiled: bool, fidelity: f64, qualities: &[Quality]) -> PromptResult {
         let mut map = BTreeMap::new();
         for quality in qualities {
@@ -286,7 +311,7 @@ mod tests {
             name: "x".to_string(),
             version: "x".to_string(),
         };
-        let record = summarize(&corpus(), &coverage, model, results);
+        let record = summarize(&corpus(), &coverage, model, JUDGE, results);
         assert_eq!(record.compile_success_rate, 19.0 / 20.0);
         assert!(record.thresholds.compile_success);
         assert!(record.thresholds.fidelity);
@@ -306,6 +331,7 @@ mod tests {
                 name: "x".to_string(),
                 version: "x".to_string(),
             },
+            JUDGE,
             vec![unscorable],
         );
         assert_eq!(record.compile_success_rate, 0.0);
@@ -332,7 +358,7 @@ mod tests {
             with_tokens(result("b", true, 1.0, &[]), Some(1_000)),
             with_tokens(result("c", true, 1.0, &[]), Some(2_000)),
         ];
-        let record = summarize(&corpus(), &Coverage::default(), model(), results);
+        let record = summarize(&corpus(), &Coverage::default(), model(), JUDGE, results);
         assert_eq!(record.median_tokens, Some(2_000));
         assert!(record.thresholds.tokens, "within the NFR-030 budget");
     }
@@ -343,7 +369,7 @@ mod tests {
             with_tokens(result("a", true, 1.0, &[]), Some(1_000)),
             with_tokens(result("b", true, 1.0, &[]), Some(2_001)),
         ];
-        let record = summarize(&corpus(), &Coverage::default(), model(), results);
+        let record = summarize(&corpus(), &Coverage::default(), model(), JUDGE, results);
         assert_eq!(record.median_tokens, Some(1_501));
     }
 
@@ -353,14 +379,14 @@ mod tests {
             with_tokens(result("a", true, 1.0, &[]), Some(5_000)),
             with_tokens(result("b", true, 1.0, &[]), None),
         ];
-        let record = summarize(&corpus(), &Coverage::default(), model(), results);
+        let record = summarize(&corpus(), &Coverage::default(), model(), JUDGE, results);
         assert_eq!(record.median_tokens, Some(5_000));
     }
 
     #[test]
     fn a_run_that_reports_no_usage_reports_no_median() {
         let results = vec![with_tokens(result("a", true, 1.0, &[]), None)];
-        let record = summarize(&corpus(), &Coverage::default(), model(), results);
+        let record = summarize(&corpus(), &Coverage::default(), model(), JUDGE, results);
         assert_eq!(record.median_tokens, None);
         let value = serde_json::to_value(&record).expect("serializes");
         assert!(
@@ -379,7 +405,7 @@ mod tests {
             result("a", true, 1.0, &[]),
             Some(TOKEN_BUDGET + 1),
         )];
-        let record = summarize(&corpus(), &Coverage::default(), model(), results);
+        let record = summarize(&corpus(), &Coverage::default(), model(), JUDGE, results);
         assert_eq!(record.median_tokens, Some(TOKEN_BUDGET + 1));
         assert!(!record.thresholds.tokens);
     }
@@ -394,6 +420,7 @@ mod tests {
                 name: "x".to_string(),
                 version: "x".to_string(),
             },
+            JUDGE,
             vec![result("a", true, 0.9, &[Quality::Depth])],
         );
         baseline.id = "run-a".to_string();
@@ -435,6 +462,7 @@ mod tests {
                 name: "x".to_string(),
                 version: "x".to_string(),
             },
+            JUDGE,
             vec![result("a", true, 1.0, &[])],
         );
         let mut b = a.clone();

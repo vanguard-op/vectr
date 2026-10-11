@@ -75,9 +75,19 @@ report `E_SCENE` and exit `2`, naming the scene or the missing default.
   project; check the id and run the command from inside the project.
 - `W_UNUSED_DEFINITION` — a definition no scene places renders nothing; place it
   or remove it. It is a warning, not an error.
+- `E_DUPLICATE_NAME` — two elements in one scene, or two in one definition, share
+  an `accessibleName`; the location points at the second. Give one a different
+  `accessibleName`; the maintenance `name` may repeat.
+- An `E_SCHEMA` "unknown field `children`" (or `elements`) — an element carried a
+  nested tree. The list is flat: make each child a sibling of its parent and point
+  its `parentId` at the parent's `id`, then re-validate.
+- An `E_SCHEMA` "sets neither sceneId nor definitionId" (or "sets both") — every
+  element names exactly one owner. A scene element repeats the scene's `id` in
+  `sceneId`; a definition's element names its definition in `definitionId`.
 - An undefined-token, undefined-stroke, undefined-gradient, or missing-font
-  error — the element names something the project does not provide; add it or
-  fix the reference.
+  error — the element names something the project does not provide. Reference
+  only a token, profile, gradient, or font the project actually ships; never
+  invent a stroke profile.
 
 ## When the whole fails
 

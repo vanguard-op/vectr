@@ -415,6 +415,51 @@ mod tests {
     }
 
     #[test]
+    fn the_run_record_names_its_fixed_judge() {
+        // NFR-030 scores every model with one fixed judge independent of the
+        // authoring model, and C-006 fixes the run's reference to it as
+        // `judgeModelId` (schema.md "EvaluationRun", "JudgeModel"). The
+        // published contract must carry both the field and the entity it
+        // references, or a run authored from it cannot name its judge.
+        let schema = parsed(&schema(SchemaForm::Full).unwrap());
+        let run = &schema["$defs"]["EvaluationRun"];
+        assert_eq!(
+            run["properties"]["judgeModelId"]["type"], "string",
+            "the run declares judgeModelId"
+        );
+        let required: Vec<&str> = run["required"]
+            .as_array()
+            .expect("the run lists its required fields")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert!(required.contains(&"judgeModelId"), "{required:?}");
+        assert!(
+            run["description"]
+                .as_str()
+                .is_some_and(|text| text.contains("fixed judge")),
+            "the run's description names the fixed judge"
+        );
+
+        let judge = &schema["$defs"]["JudgeModel"];
+        let judge_required: Vec<&str> = judge["required"]
+            .as_array()
+            .expect("the judge lists its required fields")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        for field in ["id", "name", "version"] {
+            assert!(judge_required.contains(&field), "missing `{field}`");
+        }
+        assert!(
+            judge["description"]
+                .as_str()
+                .is_some_and(|text| text.contains("independent of the authoring model")),
+            "the judge is described as independent of the authoring model"
+        );
+    }
+
+    #[test]
     fn a_type_name_matches_case_insensitively() {
         assert_eq!(parsed(&schema_for("element").unwrap())["title"], "Element");
         assert_eq!(parsed(&schema_for("PALETTE").unwrap())["title"], "Palette");

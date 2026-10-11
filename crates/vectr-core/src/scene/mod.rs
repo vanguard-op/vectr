@@ -234,12 +234,10 @@ pub fn validate_icon_set(set: &IconSet) -> Diagnostics {
         "/canvas/height",
         "height",
     );
-    validate_color(
-        &mut diagnostics,
-        &set.canvas.background,
-        "canvas background",
-        "/canvas/background",
-    );
+
+    // As with a scene, the shared canvas background may name a palette token,
+    // so its colour check is deferred to the palette-aware layer (FEAT-005,
+    // FEAT-018).
 
     if set.stroke_profile_id.is_empty() {
         diagnostics.push(
@@ -644,12 +642,12 @@ pub fn validate(scene: &Scene) -> Diagnostics {
         "/canvas/height",
         "height",
     );
-    validate_color(
-        &mut diagnostics,
-        &scene.canvas.background,
-        "canvas background",
-        "/canvas/background",
-    );
+
+    // The canvas background may name a palette token, which cannot be resolved
+    // without the scene's palette, so the colour check is deferred to the
+    // palette-aware layer ([`crate::style::resolve_canvas_background`]); a value
+    // that resolves to neither a token nor a colour is reported there, with this
+    // same location (FEAT-005, FEAT-018).
 
     validate_elements(&mut diagnostics, &scene.elements);
     validate_element_identity(&mut diagnostics, &scene.elements);
@@ -1774,28 +1772,26 @@ mod tests {
     }
 
     #[test]
-    fn a_canvas_background_that_is_not_a_colour_is_reported_with_its_location() {
+    fn a_canvas_background_that_is_not_a_colour_is_deferred_to_the_palette_layer() {
+        // The background may name a palette token, which cannot be resolved
+        // without the scene's palette, so parsing accepts the value and the
+        // palette-aware layer reports it (FEAT-005, FEAT-018).
         let source = full_scene().replace(
             r##""background": "#ffffff""##,
-            r##""background": "not-a-colour""##,
+            r##""background": "brand-dark""##,
         );
-        let diagnostics = parse_error(&source);
-        let error = diagnostics
-            .errors()
-            .find(|diagnostic| diagnostic.code == INVALID_COLOR)
-            .expect("an invalid-colour error");
+        let scene = parse(&source).expect("a token background parses");
+        assert_eq!(scene.canvas.background, "brand-dark");
+    }
+
+    #[test]
+    fn a_non_colour_background_survives_validate_so_the_palette_can_resolve_it() {
+        let mut scene = parse(&full_scene()).unwrap();
+        scene.canvas.background = "brand-dark".to_string();
+        let diagnostics = validate(&scene);
         assert!(
-            error.message.contains("canvas background"),
-            "{}",
-            error.message
-        );
-        assert!(error.message.contains("not-a-colour"), "{}", error.message);
-        assert_eq!(
-            error
-                .location
-                .as_ref()
-                .and_then(|location| location.json_path.as_deref()),
-            Some("/canvas/background")
+            !diagnostics.errors().any(|d| d.code == INVALID_COLOR),
+            "the colour check is deferred: {diagnostics:?}"
         );
     }
 
@@ -1822,14 +1818,6 @@ mod tests {
             });
             assert_eq!(scene.canvas.background, background);
         }
-    }
-
-    #[test]
-    fn the_canvas_background_is_checked_by_validate_alone() {
-        let mut scene = parse(&full_scene()).unwrap();
-        scene.canvas.background = "#12345".to_string();
-        let diagnostics = validate(&scene);
-        assert!(diagnostics.errors().any(|d| d.code == INVALID_COLOR));
     }
 
     fn text_scene(geometry: &str, extra: &str) -> String {

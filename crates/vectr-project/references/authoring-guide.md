@@ -45,4 +45,4 @@ and follow their pointers to the reference for the step you are on:
 `defaults.md`, and `licensing.md`. If the Vectr skill is not available to you,
 author from the published schema (`vectr schema`); the skill is not required.
 
-This guide targets `vectr` 0.1.0-pre.2 and scene `formatVersion` `0.2`.
+This guide targets `vectr` 0.1.0 and scene `formatVersion` `0.2`.

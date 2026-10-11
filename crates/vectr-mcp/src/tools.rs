@@ -36,7 +36,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{json, Map, Value};
 
-use vectr_core::scene::{is_color, INVALID_COLOR};
+use vectr_core::scene::{is_color, validate_color, INVALID_COLOR};
 use vectr_core::{
     compile_definition as compile_part_definition, compile_subtree, compile_with_style,
     export_pdf_reporting, export_png_reporting, export_svg_reporting, parse as parse_scene, schema,
@@ -193,12 +193,29 @@ fn validate_tool(scope: &Scope, arguments: &Map<String, Value>) -> Result<Value,
 /// A palette token the palette no longer defines, a stroke profile, a gradient,
 /// or a font that does not resolve is an error naming it, so a scene that will
 /// not render is caught before anything is compiled or written (FEAT-005,
-/// FEAT-024, FEAT-027). Shared by `validate` and `inspect`, so both gate on the
-/// same findings (FEAT-022).
+/// FEAT-024, FEAT-027). When no palette resolves, the canvas background cannot
+/// name a token, so it is checked as a literal colour and reported at its own
+/// field when it is not one (FEAT-005, FEAT-018); this mirrors `vectr validate`,
+/// so both front ends report a non-colour background in the same case. Shared by
+/// `validate` and `inspect`, so both gate on the same findings (FEAT-022).
 fn structural_findings(scene: &Scene, assets: &ProjectAssets) -> Diagnostics {
     let mut findings = validate_scene(scene);
-    if let Some(palette) = assets.palette() {
-        findings.extend(validate_palette_usage(scene, palette, assets.gradients()));
+    match assets.palette() {
+        // With a palette, a background token resolves and a value that is
+        // neither a token nor a colour is reported by the palette checks
+        // (FEAT-005).
+        Some(palette) => {
+            findings.extend(validate_palette_usage(scene, palette, assets.gradients()))
+        }
+        // Without one, a token cannot resolve, so the background must be a
+        // literal colour and is reported at its own field when it is not
+        // (FEAT-005, FEAT-018).
+        None => validate_color(
+            &mut findings,
+            &scene.canvas.background,
+            "canvas background",
+            "/canvas/background",
+        ),
     }
     findings.extend(validate_gradient_usage(scene, assets.gradients()));
     findings.extend(assets.check_references(scene));
@@ -1468,6 +1485,31 @@ mod tests {
         ));
         assert_eq!(error.code, "E_SCHEMA");
         assert!(!error.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn validate_reports_a_non_colour_background_when_no_palette_resolves() {
+        // Neither the project nor the scene names a palette, so the background
+        // cannot resolve as a token and must be a literal colour; a value that
+        // is neither is reported at its own field, mirroring `vectr validate`
+        // (FEAT-005, FEAT-018).
+        let dir = tempdir("validate-background-no-palette");
+        let scene = RECT_SCENE.replace(r##""background": "#ffffff""##, r##""background": "nope""##);
+        write_project(&dir, "{}", &[("logo", scene.as_str())]);
+
+        let error = assert_exec(call(
+            &scope(&dir),
+            "validate",
+            &args(json!({ "scene": "logo" })),
+        ));
+        assert_eq!(error.code, INVALID_COLOR.to_string());
+        assert!(
+            error.message.contains("canvas background"),
+            "{}",
+            error.message
+        );
+        let location = error.location.expect("the background is located");
+        assert_eq!(location.json_path.as_deref(), Some("/canvas/background"));
     }
 
     #[test]

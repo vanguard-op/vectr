@@ -1,18 +1,23 @@
 //! `vectr-eval` command parsing and dispatch (C-006).
 //!
 //! The grammar and exit codes are frozen by the contract: `run` loads a corpus
-//! and scores it against a model, `compare` flags regressions between two runs,
-//! with 0 success, 1 a run that cannot be scored, and 2 usage, an unreadable
-//! corpus, or a model that cannot be reached. The harness is gated by
-//! `enable_eval_harness` (off by default, maintainer-only), read from
-//! `VECTR_ENABLE_EVAL_HARNESS`; without it the command reports the harness as
-//! disabled and exits 2 (release.md, "Rollout Phases & Feature Flags").
+//! and scores it against an authoring model with a fixed, independent judge —
+//! over the whole corpus or one shard of it, optionally logging each prompt's
+//! artifacts and resuming from them — `merge` combines the partial records of
+//! one corpus, model and judge into one record, and `compare` flags regressions
+//! between two runs, with 0 success, 1 a run that cannot be scored, and 2 usage,
+//! an unreadable corpus, a merge of mismatched or incomplete records, or a model
+//! that cannot be reached. The harness is gated by `enable_eval_harness` (off by
+//! default, maintainer-only), read from `VECTR_ENABLE_EVAL_HARNESS`; without it
+//! the command reports the harness as disabled and exits 2 (release.md,
+//! "Rollout Phases & Feature Flags").
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
+use crate::merge;
 use crate::provider;
-use crate::run;
+use crate::run::{self, Shard};
 
 /// The command succeeded.
 pub const EXIT_SUCCESS: i32 = 0;
@@ -27,11 +32,20 @@ pub const ENABLE_ENV: &str = "VECTR_ENABLE_EVAL_HARNESS";
 /// The usage block shared by the help text and every usage error.
 const USAGE: &str = "\
 Usage:
-  vectr-eval run --corpus <dir> --model <provider:model> [--out <file>]
+  vectr-eval run --corpus <dir> --model <provider:model> --judge <provider:model> [--shard <index>/<count>] [--log-dir <dir>] [--resume] [--out <file>]
+  vectr-eval merge <record...> --out <file>
   vectr-eval compare <run-a> <run-b>
 
-<provider:model> names the authoring model: openai, anthropic, google or
-opencode with a pinned model, or replay with a directory of recorded replies.
+<provider:model> names a model: openai, anthropic, google or opencode with a
+pinned model, or replay with a directory of recorded replies. `--model` names
+the authoring model and `--judge` the fixed judge that scores every prompt of
+the run; the judge is independent of the authoring model and the record names it.
+`--shard <index>/<count>` runs only the prompts at corpus positions where
+`position mod count == index` and writes a partial record for that shard;
+`merge` combines the partials of one corpus, model and judge into one record.
+`--resume` scores a prompt from the artifacts already recorded in `--log-dir`
+instead of calling the model again, so a re-run resumes a partial shard; it
+requires `--log-dir`.
 The harness is maintainer-only and off by default; set VECTR_ENABLE_EVAL_HARNESS=1
 to enable it.";
 
@@ -46,10 +60,27 @@ pub enum Command {
     Run {
         /// The corpus directory.
         corpus: PathBuf,
-        /// The `provider:model` reference.
+        /// The authoring model's `provider:model` reference.
         model: String,
+        /// The fixed judge's `provider:model` reference; it scores every prompt
+        /// of the run and is independent of the authoring model (FEAT-023).
+        judge: String,
+        /// The shard to run, when the run is sharded.
+        shard: Option<Shard>,
+        /// Where to write each prompt's artifacts, when logging is requested.
+        log_dir: Option<PathBuf>,
+        /// Whether to score a prompt from its recorded artifacts instead of
+        /// calling the model again (requires `log_dir`).
+        resume: bool,
         /// Where to write the run record; stdout when absent.
         out: Option<PathBuf>,
+    },
+    /// Combine partial shard records into one whole-corpus record.
+    Merge {
+        /// The partial run records.
+        records: Vec<PathBuf>,
+        /// Where to write the merged record.
+        out: PathBuf,
     },
     /// Compare two run records of the same corpus.
     Compare {
@@ -82,6 +113,7 @@ pub fn parse(args: Vec<OsString>) -> Result<Command, String> {
         "help" | "--help" | "-h" => Ok(Command::Help),
         "version" | "--version" | "-V" => Ok(Command::Version),
         "run" => parse_run(iter.collect()),
+        "merge" => parse_merge(iter.collect()),
         "compare" => parse_compare(iter.collect()),
         other => Err(format!("unknown command `{other}`")),
     }
@@ -90,6 +122,10 @@ pub fn parse(args: Vec<OsString>) -> Result<Command, String> {
 fn parse_run(args: Vec<OsString>) -> Result<Command, String> {
     let mut corpus = None;
     let mut model = None;
+    let mut judge = None;
+    let mut shard = None;
+    let mut log_dir = None;
+    let mut resume = false;
     let mut out = None;
     let mut index = 0;
     while index < args.len() {
@@ -97,6 +133,12 @@ fn parse_run(args: Vec<OsString>) -> Result<Command, String> {
         match flag.as_str() {
             "--corpus" => corpus = Some(take_value(&args, &mut index, "--corpus")?),
             "--model" => model = Some(take_value(&args, &mut index, "--model")?),
+            "--judge" => judge = Some(take_value(&args, &mut index, "--judge")?),
+            "--shard" => shard = Some(Shard::parse(&take_value(&args, &mut index, "--shard")?)?),
+            "--log-dir" => {
+                log_dir = Some(PathBuf::from(take_value(&args, &mut index, "--log-dir")?))
+            }
+            "--resume" => resume = true,
             "--out" => out = Some(take_value(&args, &mut index, "--out")?),
             other => return Err(format!("unexpected argument `{other}` for `run`")),
         }
@@ -104,11 +146,41 @@ fn parse_run(args: Vec<OsString>) -> Result<Command, String> {
     }
     let corpus = corpus.ok_or("`run` needs `--corpus <dir>`")?;
     let model = model.ok_or("`run` needs `--model <provider:model>`")?;
+    let judge = judge.ok_or("`run` needs `--judge <provider:model>`")?;
+    if resume && log_dir.is_none() {
+        return Err("`--resume` requires `--log-dir`".to_string());
+    }
     Ok(Command::Run {
         corpus: PathBuf::from(corpus),
         model,
+        judge,
+        shard,
+        log_dir,
+        resume,
         out: out.map(PathBuf::from),
     })
+}
+
+fn parse_merge(args: Vec<OsString>) -> Result<Command, String> {
+    let mut records = Vec::new();
+    let mut out = None;
+    let mut index = 0;
+    while index < args.len() {
+        let flag = args[index].to_string_lossy().into_owned();
+        if flag == "--out" {
+            out = Some(PathBuf::from(take_value(&args, &mut index, "--out")?));
+        } else if flag.starts_with("--") {
+            return Err(format!("unexpected argument `{flag}` for `merge`"));
+        } else {
+            records.push(PathBuf::from(flag));
+        }
+        index += 1;
+    }
+    if records.is_empty() {
+        return Err("`merge` needs at least one partial run record".to_string());
+    }
+    let out = out.ok_or("`merge` needs `--out <file>`")?;
+    Ok(Command::Merge { records, out })
 }
 
 fn parse_compare(args: Vec<OsString>) -> Result<Command, String> {
@@ -136,11 +208,36 @@ pub fn run(command: Command) -> Report {
     match command {
         Command::Help => Report::ok(USAGE),
         Command::Version => Report::ok(concat!("vectr-eval ", env!("CARGO_PKG_VERSION"))),
-        Command::Run { corpus, model, out } => {
+        Command::Run {
+            corpus,
+            model,
+            judge,
+            shard,
+            log_dir,
+            resume,
+            out,
+        } => {
             if let Some(report) = disabled() {
                 return report;
             }
-            run_corpus(&corpus, &model, out.as_deref())
+            run_corpus(
+                &corpus,
+                &model,
+                &judge,
+                shard,
+                log_dir.as_deref(),
+                resume,
+                out.as_deref(),
+            )
+        }
+        Command::Merge { records, out } => {
+            if let Some(report) = disabled() {
+                return report;
+            }
+            match merge::combine(&records) {
+                Ok(record) => write_record(&record, &out, "merged"),
+                Err(failure) => Report::failure(failure.code(), failure.message()),
+            }
         }
         Command::Compare {
             baseline,
@@ -163,16 +260,44 @@ pub fn run(command: Command) -> Report {
     }
 }
 
-fn run_corpus(corpus: &Path, model: &str, out: Option<&Path>) -> Report {
+fn run_corpus(
+    corpus: &Path,
+    model: &str,
+    judge: &str,
+    shard: Option<Shard>,
+    log_dir: Option<&Path>,
+    resume: bool,
+    out: Option<&Path>,
+) -> Report {
     let spec = match provider::parse_model_spec(model) {
         Ok(spec) => spec,
         Err(message) => return usage_report(&message),
     };
-    let record = match run::execute(corpus, &spec) {
+    let judge_spec = match provider::parse_model_spec(judge) {
+        Ok(spec) => spec,
+        Err(message) => return usage_report(&message),
+    };
+    let record = match run::execute(corpus, &spec, &judge_spec, shard, log_dir, resume) {
         Ok(record) => record,
         Err(failure) => return Report::failure(failure.code(), failure.message()),
     };
-    let json = match serde_json::to_string_pretty(&record) {
+    match out {
+        Some(path) => write_record(&record, path, "run"),
+        None => match serde_json::to_string_pretty(&record) {
+            Ok(json) => Report::ok(&json),
+            Err(error) => Report::failure(
+                EXIT_USAGE,
+                format!("cannot serialize the run record: {error}"),
+            ),
+        },
+    }
+}
+
+/// Writes a record to `path`, or prints it when `path` is absent, and prints
+/// the summary line for it. `kind` names the record in the confirmation
+/// ("run" or "merged") (NFR-011, no partial output).
+fn write_record(record: &crate::record::RunRecord, path: &Path, kind: &str) -> Report {
+    let json = match serde_json::to_string_pretty(record) {
         Ok(json) => json,
         Err(error) => {
             return Report::failure(
@@ -181,23 +306,18 @@ fn run_corpus(corpus: &Path, model: &str, out: Option<&Path>) -> Report {
             )
         }
     };
-    match out {
-        Some(path) => {
-            if let Err(error) = write_atomic(path, json.as_bytes()) {
-                return Report::failure(
-                    EXIT_USAGE,
-                    format!("cannot write run record `{}`: {error}", path.display()),
-                );
-            }
-            let mut stdout = summary(&record);
-            stdout.push_str(&format!("\nwrote run record to {}\n", path.display()));
-            Report {
-                code: EXIT_SUCCESS,
-                stdout,
-                stderr: String::new(),
-            }
-        }
-        None => Report::ok(&json),
+    if let Err(error) = write_atomic(path, json.as_bytes()) {
+        return Report::failure(
+            EXIT_USAGE,
+            format!("cannot write run record `{}`: {error}", path.display()),
+        );
+    }
+    let mut stdout = summary(record);
+    stdout.push_str(&format!("\nwrote {kind} record to {}\n", path.display()));
+    Report {
+        code: EXIT_SUCCESS,
+        stdout,
+        stderr: String::new(),
     }
 }
 
@@ -298,6 +418,13 @@ mod tests {
             "corpus",
             "--model",
             "openai:gpt",
+            "--judge",
+            "anthropic:claude",
+            "--shard",
+            "2/5",
+            "--log-dir",
+            "logs",
+            "--resume",
             "--out",
             "run.json",
         ]))
@@ -307,9 +434,81 @@ mod tests {
             Command::Run {
                 corpus: PathBuf::from("corpus"),
                 model: "openai:gpt".to_string(),
+                judge: "anthropic:claude".to_string(),
+                shard: Some(Shard { index: 2, count: 5 }),
+                log_dir: Some(PathBuf::from("logs")),
+                resume: true,
                 out: Some(PathBuf::from("run.json")),
             }
         );
+    }
+
+    #[test]
+    fn parses_a_run_command_without_a_shard_or_log_directory() {
+        let command = parse(args(&[
+            "run",
+            "--corpus",
+            "c",
+            "--model",
+            "openai:gpt",
+            "--judge",
+            "anthropic:claude",
+        ]))
+        .expect("parses");
+        assert_eq!(
+            command,
+            Command::Run {
+                corpus: PathBuf::from("c"),
+                model: "openai:gpt".to_string(),
+                judge: "anthropic:claude".to_string(),
+                shard: None,
+                log_dir: None,
+                resume: false,
+                out: None,
+            }
+        );
+    }
+
+    #[test]
+    fn refuses_a_resume_without_a_log_directory() {
+        let error = parse(args(&[
+            "run",
+            "--corpus",
+            "c",
+            "--model",
+            "openai:gpt",
+            "--judge",
+            "anthropic:claude",
+            "--resume",
+        ]))
+        .expect_err("refused");
+        assert!(error.contains("--log-dir"), "{error}");
+    }
+
+    #[test]
+    fn parses_a_merge_command() {
+        assert_eq!(
+            parse(args(&["merge", "0.json", "1.json", "--out", "all.json"])).expect("parses"),
+            Command::Merge {
+                records: vec![PathBuf::from("0.json"), PathBuf::from("1.json")],
+                out: PathBuf::from("all.json"),
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_a_malformed_shard_or_merge() {
+        let shard = parse(args(&[
+            "run", "--corpus", "c", "--model", "m", "--shard", "3/2",
+        ]))
+        .expect_err("refused");
+        assert!(shard.contains("shard"), "{shard}");
+        assert!(parse(args(&["merge", "a.json"])).is_err(), "needs --out");
+        assert!(
+            parse(args(&["merge", "--out", "a.json"])).is_err(),
+            "needs a record"
+        );
+        assert!(parse(args(&["merge", "a.json", "--nope"])).is_err());
     }
 
     #[test]
@@ -329,6 +528,11 @@ mod tests {
         assert!(parse(args(&["run", "--model", "openai:gpt"])).is_err());
         assert!(parse(args(&["run", "--corpus", "c"])).is_err());
         assert!(parse(args(&["run", "--corpus"])).is_err());
+        // The judge is required: a run cannot fall back to judging with the
+        // authoring model (FEAT-023).
+        let missing_judge =
+            parse(args(&["run", "--corpus", "c", "--model", "openai:gpt"])).expect_err("refused");
+        assert!(missing_judge.contains("--judge"), "{missing_judge}");
     }
 
     #[test]
@@ -365,6 +569,7 @@ mod tests {
             corpus_id: "c".to_string(),
             corpus_version: "1.0.0".to_string(),
             authoring_model_id: "replay:x".to_string(),
+            judge_model_id: "replay:judge".to_string(),
             model: crate::record::ModelInfo {
                 id: "replay:x".to_string(),
                 name: "x".to_string(),
@@ -390,6 +595,7 @@ mod tests {
                 satisfied: true,
                 omissions: Vec::new(),
             },
+            shard: None,
             prompts: Vec::new(),
         }
     }

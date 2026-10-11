@@ -10,6 +10,8 @@ The object has two fields:
 Rules:
 - Draw every colour from the palette tokens listed below. Write a fill or stroke
   paint as {"kind": "token", "ref": "<token name>"}. Do not invent token names.
+- Reference only the style assets listed below. Do not invent a token name, a
+  stroke profile id, or a gradient id.
 - Do not set "paletteId" or "recipeId" on the scene: the evaluation project
   supplies the palette and the flat recipe as the project defaults.
 - Author the whole requested graphic. A complex request is composed in full from
@@ -25,3 +27,6 @@ Rules:
 - Join decomposed parts at shared anchors so the composed result has no visible
   seam.
 - Return JSON only: no prose, no markdown fence, no comments.
+
+The skill's rules reference below states the language's rules the schema does
+not. Follow it; it is the same reference an interactive agent reads on demand.

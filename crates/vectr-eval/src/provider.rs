@@ -11,20 +11,49 @@
 //! are never written to the record, the log or the repository (NFR-026). The
 //! harness makes a network call only for the model the maintainer names; Vectr
 //! never calls a model on behalf of a scene (NFR-024, C-006).
+//!
+//! The OpenCode adapter (D-049) runs the authoring call through a minimal,
+//! tool-free OpenCode agent and reads that call's token usage back from the
+//! OpenCode session, so the reported count is the authoring call's usage rather
+//! than OpenCode's own agent prompt and tool definitions. Without that, each
+//! call would process tens of thousands of tokens unrelated to Vectr and breach
+//! NFR-030's per-prompt budget.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 use serde_json::{json, Value};
 
 use crate::corpus::{Prompt, Quality};
 use crate::json::extract_json;
-use crate::toolchain::PALETTE_TOKENS;
+use crate::toolchain::{PALETTE_TOKENS, STROKE_PROFILE_ID, STROKE_PROFILE_WIDTH};
 
 /// The versioned authoring prompt artifact: the system prompt the harness
 /// sends with the published schema and the packaged guidance.
-const AUTHORING_PROMPT: &str = include_str!("../prompts/authoring.v1.txt");
+const AUTHORING_PROMPT: &str = include_str!("../prompts/authoring.v3.txt");
+
+/// The skill's always-read entry point (FEAT-020).
+///
+/// The docs promise the authoring input is the published schema and the skill's
+/// instructions, so the harness carries the skill rather than the scaffolded
+/// project guide. The entry point is the always-read surface and routes a
+/// coding agent to its on-demand references.
+const SKILL_ENTRY: &str = include_str!("../../../skills/vectr/SKILL.md");
+
+/// The skill's canonical rules reference (FEAT-020).
+///
+/// A one-shot authoring call cannot load a reference when a step needs it, so
+/// the harness carries the reference the authoring step turns on — the rules the
+/// schema does not state — in full. The rules live here, single-sourced with the
+/// reference an interactive agent reads on demand, rather than being restated in
+/// the versioned authoring prompt where they could drift from the skill
+/// (FEAT-020, D-042). The evaluation crate is maintainer-only and unpublished,
+/// so it embeds the shipped skill from the repository rather than carrying a
+/// second copy.
+const SKILL_RULES: &str = include_str!("../../../skills/vectr/references/rules.md");
 
 /// The versioned judge prompt artifact.
 const JUDGE_PROMPT: &str = include_str!("../prompts/judge.v1.txt");
@@ -37,6 +66,12 @@ pub const ANTHROPIC_KEY: &str = "ANTHROPIC_API_KEY";
 pub const GOOGLE_KEYS: [&str; 2] = ["GOOGLE_API_KEY", "GEMINI_API_KEY"];
 /// The environment variable overriding the OpenCode binary.
 pub const OPENCODE_BIN: &str = "VECTR_OPENCODE_BIN";
+
+/// The name of the minimal, tool-free OpenCode agent the adapter selects. The
+/// agent is declared in a per-call scratch project and carries the call's system
+/// prompt, so the authoring call processes the Vectr system prompt rather than
+/// OpenCode's own (D-049).
+const OPENCODE_AGENT: &str = "vectr-eval";
 
 /// One of the pinned provider families.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -165,38 +200,53 @@ trait Completion {
 /// The authoring model and judge a run uses.
 pub type ModelPair = (Box<dyn AuthoringModel>, Box<dyn Judge>);
 
-/// Builds the authoring model and the judge a run uses.
+/// Builds the authoring model and the judge a run uses, each from its own
+/// `provider:model` reference.
 ///
-/// For `replay`, both read recorded replies from the directory the model string
-/// names. For every other provider, both wrap the same provider client: the
-/// authoring model uses the versioned authoring prompt, the judge the versioned
-/// judge prompt.
-pub fn build(spec: &ModelSpec) -> Result<ModelPair, ProviderError> {
-    if spec.provider == ProviderKind::Replay {
-        let dir = PathBuf::from(&spec.model);
-        if !dir.is_dir() {
-            return Err(ProviderError(format!(
-                "the replay provider expects a directory of recorded replies, but `{}` is not a directory",
-                dir.display()
-            )));
-        }
-        return Ok((
-            Box::new(ReplayAuthor { dir: dir.clone() }),
-            Box::new(ReplayJudge { dir }),
-        ));
-    }
+/// A run names its authoring model and its judge separately, so the judge is a
+/// fixed model independent of the model under test: it scores every prompt of
+/// the run and the record names it (FEAT-023, C-006). For `replay`, each side
+/// reads recorded replies from the directory its own reference names. For every
+/// other provider, each side wraps its own provider client: the authoring model
+/// uses the versioned authoring prompt, the judge the versioned judge prompt.
+pub fn build(author: &ModelSpec, judge: &ModelSpec) -> Result<ModelPair, ProviderError> {
+    Ok((build_author(author)?, build_judge(judge)?))
+}
 
-    let author_client = build_client(spec)?;
-    let judge_client = build_client(spec)?;
-    Ok((
-        Box::new(LlmAuthor {
+fn build_author(spec: &ModelSpec) -> Result<Box<dyn AuthoringModel>, ProviderError> {
+    match spec.provider {
+        ProviderKind::Replay => Ok(Box::new(ReplayAuthor {
+            dir: replay_dir(&spec.model)?,
+        })),
+        _ => Ok(Box::new(LlmAuthor {
             label: spec.id(),
-            client: author_client,
-        }),
-        Box::new(LlmJudge {
-            client: judge_client,
-        }),
-    ))
+            client: Box::new(RetryingClient::new(build_client(spec)?)),
+        })),
+    }
+}
+
+fn build_judge(spec: &ModelSpec) -> Result<Box<dyn Judge>, ProviderError> {
+    match spec.provider {
+        ProviderKind::Replay => Ok(Box::new(ReplayJudge {
+            dir: replay_dir(&spec.model)?,
+        })),
+        _ => Ok(Box::new(LlmJudge {
+            client: Box::new(RetryingClient::new(build_client(spec)?)),
+        })),
+    }
+}
+
+/// The directory a `replay` reference names, refusing one that is not a
+/// directory of recorded replies.
+fn replay_dir(model: &str) -> Result<PathBuf, ProviderError> {
+    let dir = PathBuf::from(model);
+    if !dir.is_dir() {
+        return Err(ProviderError(format!(
+            "the replay provider expects a directory of recorded replies, but `{}` is not a directory",
+            dir.display()
+        )));
+    }
+    Ok(dir)
 }
 
 fn build_client(spec: &ModelSpec) -> Result<Box<dyn Completion>, ProviderError> {
@@ -220,6 +270,39 @@ fn build_client(spec: &ModelSpec) -> Result<Box<dyn Completion>, ProviderError> 
     }
 }
 
+/// Wraps a provider client so a transiently failed call is retried with growing
+/// backoff before the caller sees the failure (D-052, D-053).
+///
+/// It wraps the authoring call and the judge call alike, so a hiccup on either
+/// no longer discards the prompt: an authoring call that exhausts its retries
+/// abandons the run, while a judge call that does leaves its prompt unscorable.
+/// The offline `replay` provider is not wrapped, so a missing recording stays
+/// an immediate, deterministic failure.
+struct RetryingClient {
+    inner: Box<dyn Completion>,
+    attempts: usize,
+    backoff: Duration,
+}
+
+impl RetryingClient {
+    /// Wraps `inner` with the harness's bounded, growing-backoff retry.
+    fn new(inner: Box<dyn Completion>) -> Self {
+        Self {
+            inner,
+            attempts: RETRY_ATTEMPTS,
+            backoff: RETRY_BACKOFF,
+        }
+    }
+}
+
+impl Completion for RetryingClient {
+    fn complete(&self, system: &str, user: &str) -> Result<Authored, ProviderError> {
+        retrying(self.attempts, self.backoff, |_attempt| {
+            self.inner.complete(system, user)
+        })
+    }
+}
+
 fn api_key(kind: ProviderKind) -> Result<String, ProviderError> {
     let (names, hint) = match kind {
         ProviderKind::OpenAi => (vec![OPENAI_KEY], OPENAI_KEY),
@@ -240,18 +323,28 @@ fn api_key(kind: ProviderKind) -> Result<String, ProviderError> {
     )))
 }
 
-/// The versioned authoring system prompt: the instructions, the published
-/// schema, the packaged guidance and the palette tokens the evaluation project
-/// supplies (FEAT-032 Model Behavior).
+/// The versioned authoring system prompt: the instructions, the skill's entry
+/// point and canonical rules reference, the published schema, and the style
+/// assets the evaluation project supplies (FEAT-020, FEAT-032 Model Behavior).
+///
+/// The rules are not restated here: they are carried from the skill's
+/// `references/rules.md`, so the authoring input and the reference an
+/// interactive agent reads cannot drift apart.
 pub fn authoring_system() -> String {
     let schema = vectr_core::schema(vectr_core::SchemaForm::Compact).unwrap_or_default();
-    let guide = vectr_project::authoring_guide();
     let tokens: Vec<String> = PALETTE_TOKENS
         .iter()
         .map(|(name, value)| format!("- {name}: {value}"))
         .collect();
     format!(
-        "{AUTHORING_PROMPT}\n\n# Published schema (compact)\n\n{schema}\n\n# Authoring guide\n\n{guide}\n\n# Available palette tokens\n\n{}\n",
+        "{AUTHORING_PROMPT}\n\n\
+         # Skill entry point\n\n{SKILL_ENTRY}\n\n\
+         # Skill rules reference\n\n{SKILL_RULES}\n\n\
+         # Published schema (compact)\n\n{schema}\n\n\
+         # Available palette tokens\n\n{}\n\n\
+         # Available stroke profiles\n\n\
+         - {STROKE_PROFILE_ID}: width {STROKE_PROFILE_WIDTH}, round cap, round join\n\n\
+         # Available gradients\n\n(none)\n",
         tokens.join("\n")
     )
 }
@@ -368,6 +461,54 @@ impl Judge for ReplayJudge {
         })?;
         parse_judgement(&text).map_err(ProviderError)
     }
+}
+
+/// Reads a prompt's recorded authoring reply from a run's log directory, when a
+/// resumed run reuses it instead of calling the model again (D-053).
+///
+/// The artifacts are the ones a logging run writes and the `replay` provider
+/// reads — `<id>.scene.json`, with an optional `<id>.usage.json`. `Ok(None)`
+/// means the prompt has no recorded reply, so the model is called; a recording
+/// that exists but cannot be read or parsed is reported, never silently skipped
+/// (NFR-011).
+pub fn read_recorded_authored(dir: &Path, id: &str) -> Result<Option<Authored>, ProviderError> {
+    let path = dir.join(format!("{id}.scene.json"));
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(ProviderError(format!(
+                "cannot read the recorded authoring output for prompt `{id}` at `{}`: {error}",
+                path.display()
+            )))
+        }
+    };
+    Ok(Some(Authored {
+        text,
+        tokens: recorded_tokens(dir, id)?,
+    }))
+}
+
+/// Reads a prompt's recorded judge verdict from a run's log directory, when a
+/// resumed run reuses it instead of judging again (D-053).
+///
+/// `Ok(None)` means the prompt has no usable verdict recorded — the artifact is
+/// absent, or it is the harness's own record of a judge that returned no
+/// verdict — so the prompt is judged again. A recording that exists but cannot
+/// be read is reported, never silently skipped (NFR-011).
+pub fn read_recorded_judgement(dir: &Path, id: &str) -> Result<Option<Judgement>, ProviderError> {
+    let path = dir.join(format!("{id}.judge.json"));
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(ProviderError(format!(
+                "cannot read the recorded verdict for prompt `{id}` at `{}`: {error}",
+                path.display()
+            )))
+        }
+    };
+    Ok(parse_judgement(&text).ok())
 }
 
 /// Parses a judge's verdict from its reply text.
@@ -540,16 +681,105 @@ fn error_message(value: &Value) -> String {
 
 /// The OpenCode adapter, run as a local subprocess so it uses the user's own
 /// OpenCode authentication and reaches every model OpenCode exposes (D-005).
+///
+/// Each call runs in a throwaway OpenCode project whose configuration declares a
+/// single tool-free agent carrying the call's system prompt. The call's token
+/// usage is then read back from the session the run created (D-049).
 struct OpenCodeModel {
     model: String,
     bin: String,
 }
 
+/// How many times a transiently failed provider call is attempted — the first
+/// attempt plus two retries — before the caller sees the failure (D-052,
+/// D-053).
+const RETRY_ATTEMPTS: usize = 3;
+
+/// The wait before the first retry of a provider call. Each later retry waits
+/// twice as long as the one before, so a transient outage is absorbed without a
+/// tight retry loop (D-053).
+const RETRY_BACKOFF: Duration = Duration::from_millis(500);
+
+/// One OpenCode run's event stream, decoded: the session it created and the
+/// reply text it streamed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenCodeRun {
+    /// The session identifier the run created, used to read its usage.
+    pub session: String,
+    /// The reply text the run streamed.
+    pub reply: String,
+}
+
 impl Completion for OpenCodeModel {
     fn complete(&self, system: &str, user: &str) -> Result<Authored, ProviderError> {
-        let combined = format!("{system}\n\n{user}");
+        let project = OpenCodeProject::create(system).map_err(ProviderError)?;
+        let run = self.run(&project, user)?;
+        // The reply comes from the run event stream, so an unreadable or
+        // truncated session-export usage read is no usage rather than a failed
+        // call (D-052).
+        let tokens = self
+            .export(&project, &run.session)
+            .ok()
+            .and_then(|export| parse_opencode_usage(&export));
+        Ok(Authored {
+            text: run.reply,
+            tokens,
+        })
+    }
+}
+
+/// Calls `call` up to `attempts` times, returning the first success or the last
+/// failure. A failed attempt waits `backoff` doubled once for each earlier
+/// attempt before the next, so a transient provider or server hiccup is
+/// absorbed with growing backoff and never an unbounded retry loop (D-052,
+/// D-053).
+fn retrying<T>(
+    attempts: usize,
+    backoff: Duration,
+    mut call: impl FnMut(usize) -> Result<T, ProviderError>,
+) -> Result<T, ProviderError> {
+    let attempts = attempts.max(1);
+    let mut last = None;
+    for attempt in 1..=attempts {
+        match call(attempt) {
+            Ok(value) => return Ok(value),
+            Err(error) => {
+                last = Some(error);
+                if attempt < attempts {
+                    let wait = retry_delay(backoff, attempt);
+                    if !wait.is_zero() {
+                        std::thread::sleep(wait);
+                    }
+                }
+            }
+        }
+    }
+    Err(last.expect("at least one attempt was made"))
+}
+
+/// The wait before the attempt that follows `number` failed attempts: the base
+/// delay doubled once for each attempt already made, so the waits grow
+/// geometrically and saturate rather than overflow (D-053).
+fn retry_delay(backoff: Duration, number: usize) -> Duration {
+    let mut delay = backoff;
+    for _ in 1..number {
+        delay = delay.saturating_mul(2);
+    }
+    delay
+}
+
+impl OpenCodeModel {
+    /// Runs one authoring call and returns the event stream, decoded.
+    ///
+    /// OpenCode resolves the project from `PWD` rather than the process working
+    /// directory, and a subprocess's `PWD` is not updated by `current_dir`, so
+    /// both are set to the scratch project; otherwise OpenCode searches the
+    /// harness's own directory for the agent and does not find it.
+    fn run(&self, project: &OpenCodeProject, user: &str) -> Result<OpenCodeRun, ProviderError> {
         let output = Command::new(&self.bin)
-            .args(["run", "--model", &self.model, &combined])
+            .current_dir(project.path())
+            .env("PWD", project.path())
+            .args(opencode_run_args(&self.model, user))
             .output()
             .map_err(|error| {
                 ProviderError(format!(
@@ -558,18 +788,219 @@ impl Completion for OpenCodeModel {
                 ))
             })?;
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(ProviderError(format!(
                 "the OpenCode adapter failed for model `{}`: {}",
                 self.model,
-                stderr.trim()
+                String::from_utf8_lossy(&output.stderr).trim()
             )));
         }
-        Ok(Authored {
-            text: String::from_utf8_lossy(&output.stdout).into_owned(),
-            tokens: None,
-        })
+        parse_opencode_run(&String::from_utf8_lossy(&output.stdout)).map_err(ProviderError)
     }
+
+    /// Reads a session's messages, which carry the call's usage.
+    fn export(&self, project: &OpenCodeProject, session: &str) -> Result<String, ProviderError> {
+        let output = Command::new(&self.bin)
+            .current_dir(project.path())
+            .env("PWD", project.path())
+            .args(["session", "export", session])
+            .output()
+            .map_err(|error| {
+                ProviderError(format!(
+                    "the OpenCode adapter could not read session usage via `{}`: {error}",
+                    self.bin
+                ))
+            })?;
+        if !output.status.success() {
+            return Err(ProviderError(format!(
+                "the OpenCode adapter could not export session `{session}`: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+}
+
+/// The arguments for one authoring call: the JSON event stream, the minimal
+/// tool-free agent, the pinned model, a fixed title so OpenCode makes no
+/// title-generation call of its own, and the message (`--` keeps a message that
+/// begins with a dash from reading as a flag).
+pub fn opencode_run_args(model: &str, message: &str) -> Vec<String> {
+    [
+        "run",
+        "--format",
+        "json",
+        "--agent",
+        OPENCODE_AGENT,
+        "--model",
+        model,
+        "--title",
+        "vectr-eval",
+        "--",
+        message,
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
+}
+
+/// A throwaway OpenCode project holding the tool-free agent a call runs
+/// through. It is created under the system temporary directory and removed when
+/// the call ends, so it never touches the harness's own project or the user's
+/// OpenCode configuration.
+struct OpenCodeProject {
+    dir: PathBuf,
+}
+
+impl OpenCodeProject {
+    /// Creates a project whose configuration declares the tool-free agent with
+    /// `system` as its system prompt.
+    fn create(system: &str) -> Result<Self, String> {
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "vectr-eval-opencode-{}-{unique}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).map_err(|error| {
+            format!(
+                "the OpenCode adapter could not create its scratch project at `{}`: {error}",
+                dir.display()
+            )
+        })?;
+        let config = dir.join("opencode.json");
+        std::fs::write(&config, opencode_config(system)).map_err(|error| {
+            format!(
+                "the OpenCode adapter could not write its configuration at `{}`: {error}",
+                config.display()
+            )
+        })?;
+        Ok(Self { dir })
+    }
+
+    /// The project directory.
+    fn path(&self) -> &Path {
+        &self.dir
+    }
+}
+
+impl Drop for OpenCodeProject {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// The OpenCode project configuration that declares one tool-free, primary agent
+/// carrying `system` as its prompt. Denying every permission keeps tools out of
+/// the call's context.
+pub fn opencode_config(system: &str) -> String {
+    let agent = json!({
+        "description": "Vectr evaluation authoring model",
+        "mode": "primary",
+        "system": system,
+        "permissions": [{ "action": "*", "resource": "*", "effect": "deny" }],
+    });
+    let mut agents = serde_json::Map::new();
+    agents.insert(OPENCODE_AGENT.to_string(), agent);
+    serde_json::to_string_pretty(&json!({ "agents": agents }))
+        .expect("the OpenCode config is serializable")
+}
+
+/// Reads the session identifier and the streamed reply out of
+/// `opencode run --format json` output.
+///
+/// The stream is newline-delimited JSON events; each names the session, and the
+/// `text` events carry the reply, one full text part each. An error event means
+/// the call failed and is reported with its message. A run that names no
+/// session is a failure, never a silent absence (NFR-011, D-052).
+pub fn parse_opencode_run(stdout: &str) -> Result<OpenCodeRun, String> {
+    let mut session: Option<String> = None;
+    let mut reply = String::new();
+    for line in stdout.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(event) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let kind = event.get("type").and_then(Value::as_str);
+        if kind == Some("error") {
+            let message = event
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown error");
+            return Err(format!("the OpenCode adapter reported an error: {message}"));
+        }
+        if session.is_none() {
+            if let Some(id) = event.get("sessionID").and_then(Value::as_str) {
+                session = Some(id.to_string());
+            }
+        }
+        if kind == Some("text") {
+            if let Some(text) = event.pointer("/part/text").and_then(Value::as_str) {
+                reply.push_str(text);
+            }
+        }
+    }
+    let session =
+        session.ok_or_else(|| "the OpenCode adapter returned no session identifier".to_string())?;
+    Ok(OpenCodeRun { session, reply })
+}
+
+/// Reads a call's token usage from `opencode session export` output, or `None`
+/// when the export cannot be read.
+///
+/// The usage is the sum of the session's assistant messages' reported tokens,
+/// counting the cached prompt tokens the provider reports separately from the
+/// input. A session whose assistant messages carry no usage, and an export that
+/// is unreadable or truncated, both report no usage, so the prompt is excluded
+/// from the run's median rather than counted as zero or failing the call
+/// (FEAT-023, D-052).
+pub fn parse_opencode_usage(text: &str) -> Option<u64> {
+    let value: Value = serde_json::from_str(text).ok()?;
+    let messages = value.get("messages").and_then(Value::as_array)?;
+    let mut reported: Option<u64> = None;
+    for message in messages {
+        if message.get("type").and_then(Value::as_str) != Some("assistant") {
+            continue;
+        }
+        if let Some(total) = message.get("tokens").and_then(total_usage) {
+            reported = Some(reported.unwrap_or(0) + total);
+        }
+    }
+    reported
+}
+
+/// The token count an OpenCode usage object reports: the input, output and
+/// reasoning tokens the provider bills, plus the prompt tokens it reports under
+/// `cache.read` and `cache.write`.
+///
+/// OpenCode reports cached prompt tokens separately from `input` — a call can
+/// report a small `input` with a large `cache.read` — so a cache read is not a
+/// subset of the input and omitting it under-counts a cached prompt. The sum
+/// here matches the `total` OpenCode records for the same usage (FEAT-023,
+/// NFR-030).
+fn total_usage(tokens: &Value) -> Option<u64> {
+    let count = |key: &str| tokens.get(key).and_then(Value::as_u64);
+    let (input, output, reasoning) = (count("input"), count("output"), count("reasoning"));
+    let cache_read = tokens.pointer("/cache/read").and_then(Value::as_u64);
+    let cache_write = tokens.pointer("/cache/write").and_then(Value::as_u64);
+    if input.is_none()
+        && output.is_none()
+        && reasoning.is_none()
+        && cache_read.is_none()
+        && cache_write.is_none()
+    {
+        return None;
+    }
+    Some(
+        input.unwrap_or(0)
+            + output.unwrap_or(0)
+            + reasoning.unwrap_or(0)
+            + cache_read.unwrap_or(0)
+            + cache_write.unwrap_or(0),
+    )
 }
 
 #[cfg(test)]
@@ -673,11 +1104,68 @@ mod tests {
     }
 
     #[test]
-    fn the_authoring_system_prompt_carries_the_guidance_and_tokens() {
+    fn the_authoring_system_prompt_carries_the_schema_the_skill_and_the_tokens() {
         let system = authoring_system();
+        // The published schema, the request contract and the palette tokens.
         assert!(system.contains("Vectr"), "names the tool");
         assert!(system.contains("palette tokens"), "lists the tokens");
-        assert!(system.contains("vectr validate"), "carries the guide");
+        assert!(system.contains("formatVersion"), "carries the schema");
+        // The skill's instructions: the always-read entry point (FEAT-020).
+        assert!(
+            system.contains("## Version compatibility"),
+            "carries the skill entry point"
+        );
+        assert!(
+            system.contains("references/rules.md"),
+            "carries the entry point's pointer to its references"
+        );
+        // The skill's canonical rules reference, single-sourced: a one-shot call
+        // cannot load it on demand, so the harness carries it in full rather
+        // than restating the rules in the prompt (FEAT-020, D-042).
+        assert!(
+            system.contains("Rules the schema does not state"),
+            "carries the rules reference"
+        );
+        // The rules are carried exactly once — from the reference — so the
+        // prompt and the skill cannot drift apart (FEAT-020).
+        assert_eq!(
+            system.matches("Rules the schema does not state").count(),
+            1,
+            "the rules reference is carried exactly once"
+        );
+        for rule in ["parentId", "sceneId", "definitionId", "accessibleName"] {
+            assert!(system.contains(rule), "states the `{rule}` rule");
+        }
+        // The style assets the evaluation project supplies, including the stroke
+        // profile that makes a stroke expressible (FEAT-008).
+        assert!(
+            system.contains("stroke profiles"),
+            "names the available stroke profiles"
+        );
+        assert!(
+            system.contains(STROKE_PROFILE_ID),
+            "lists the project's stroke profile"
+        );
+    }
+
+    #[test]
+    fn the_authoring_prompt_does_not_restate_the_rules_reference() {
+        // The language rules are single-sourced in the skill's rules reference
+        // the harness carries, so the versioned prompt neither duplicates the
+        // structure-rules list nor steers a model away from a stroke or an
+        // accessible name (FEAT-008, FEAT-026).
+        assert!(
+            !AUTHORING_PROMPT.contains("Structure rules"),
+            "the prompt carries no bespoke structure-rules list"
+        );
+        assert!(
+            !AUTHORING_PROMPT.contains("accessibleName"),
+            "the prompt does not restate the rules reference"
+        );
+        assert!(
+            !AUTHORING_PROMPT.contains("filled shapes"),
+            "the prompt does not steer a model away from a stroke"
+        );
     }
 
     #[test]
@@ -698,7 +1186,7 @@ mod tests {
             provider: ProviderKind::Replay,
             model: dir.path().display().to_string(),
         };
-        let (author, judge) = build(&spec).expect("builds");
+        let (author, judge) = build(&spec, &spec).expect("builds");
         let authored = author.author(&prompt("p1")).expect("authors");
         assert!(authored.text.contains("\"scene\""));
         let judgement = judge.judge(&prompt("p1"), &authored).expect("judges");
@@ -713,7 +1201,7 @@ mod tests {
             provider: ProviderKind::Replay,
             model: dir.path().display().to_string(),
         };
-        let (author, _) = build(&spec).expect("builds");
+        let (author, _) = build(&spec, &spec).expect("builds");
         let error = author.author(&prompt("absent")).expect_err("refused");
         assert!(error.0.contains("absent"), "{}", error.0);
     }
@@ -730,7 +1218,7 @@ mod tests {
             provider: ProviderKind::Replay,
             model: dir.path().display().to_string(),
         };
-        let (author, _) = build(&spec).expect("builds");
+        let (author, _) = build(&spec, &spec).expect("builds");
 
         assert_eq!(author.author(&prompt("p1")).expect("authors").tokens, None);
         crate::testing::write_usage(dir.path(), "p1", 12_345);
@@ -753,8 +1241,284 @@ mod tests {
             provider: ProviderKind::Replay,
             model: dir.path().display().to_string(),
         };
-        let (author, _) = build(&spec).expect("builds");
+        let (author, _) = build(&spec, &spec).expect("builds");
         let error = author.author(&prompt("p1")).expect_err("refused");
         assert!(error.0.contains("tokens"), "{}", error.0);
+    }
+
+    #[test]
+    fn the_opencode_run_arguments_select_the_tool_free_agent_and_json_stream() {
+        let args = opencode_run_args("opencode-go/deepseek-v4-flash", "draw a dot");
+        assert_eq!(args[0], "run");
+        // `--format json` is what surfaces the session identifier.
+        let format = args
+            .iter()
+            .position(|arg| arg == "--format")
+            .expect("format");
+        assert_eq!(args[format + 1], "json");
+        let agent = args.iter().position(|arg| arg == "--agent").expect("agent");
+        assert_eq!(args[agent + 1], OPENCODE_AGENT);
+        let model = args.iter().position(|arg| arg == "--model").expect("model");
+        assert_eq!(args[model + 1], "opencode-go/deepseek-v4-flash");
+        // `--` keeps a leading dash in the message from reading as a flag.
+        let dash = args.iter().rposition(|arg| arg == "--").expect("separator");
+        assert_eq!(args[dash + 1], "draw a dot");
+    }
+
+    #[test]
+    fn the_opencode_config_declares_a_tool_free_agent_carrying_the_system() {
+        let value: Value =
+            serde_json::from_str(&opencode_config("You author scenes.")).expect("valid JSON");
+        let agent = &value["agents"][OPENCODE_AGENT];
+        assert_eq!(agent["system"], "You author scenes.");
+        assert_eq!(agent["mode"], "primary");
+        assert_eq!(agent["permissions"][0]["action"], "*");
+        assert_eq!(agent["permissions"][0]["effect"], "deny");
+    }
+
+    #[test]
+    fn reads_the_session_and_streamed_reply_from_the_opencode_event_stream() {
+        let stream = [
+            json!({ "type": "step_start", "sessionID": "ses_abc" }),
+            json!({ "type": "reasoning", "sessionID": "ses_abc", "part": { "type": "reasoning", "text": "thinking" } }),
+            json!({ "type": "text", "sessionID": "ses_abc", "part": { "type": "text", "text": "{\"scene\"" } }),
+            json!({ "type": "text", "sessionID": "ses_abc", "part": { "type": "text", "text": ": {\"id\":\"s\"}}" } }),
+        ]
+        .into_iter()
+        .map(|event| event.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+        let run = parse_opencode_run(&stream).expect("reads");
+        assert_eq!(run.session, "ses_abc");
+        // The reply is the streamed text parts, joined; reasoning is not text.
+        assert_eq!(run.reply, "{\"scene\": {\"id\":\"s\"}}");
+    }
+
+    #[test]
+    fn an_opencode_error_event_or_a_missing_session_is_refused() {
+        let error = parse_opencode_run(
+            "{\"type\":\"error\",\"error\":{\"message\":\"model not found\"}}\n",
+        )
+        .expect_err("refused");
+        assert!(error.contains("model not found"), "{error}");
+        assert!(parse_opencode_run("not json\n").is_err());
+    }
+
+    #[test]
+    fn reads_an_opencode_sessions_reported_usage() {
+        let export = json!({
+            "info": { "tokens": { "input": 9999, "output": 9999, "reasoning": 0, "cache": { "read": 9999, "write": 9999 } } },
+            "messages": [
+                { "type": "user", "text": "draw a dot" },
+                { "type": "assistant", "content": [
+                    { "type": "text", "text": "{}" }
+                ], "tokens": { "input": 200, "output": 3, "reasoning": 5, "cache": { "read": 40, "write": 0 } } },
+                { "type": "assistant", "content": [
+                    { "type": "text", "text": "{}" }
+                ], "tokens": { "input": 100, "output": 2, "reasoning": 0, "cache": { "read": 0, "write": 7 } } }
+            ]
+        });
+        // The session aggregate (9999) is not the call's usage; only the
+        // assistant messages are. The cached prompt tokens are reported
+        // separately from the input and are counted, so a cached prompt is not
+        // under-counted (NFR-030).
+        assert_eq!(
+            parse_opencode_usage(&export.to_string()),
+            Some(200 + 3 + 5 + 40 + 100 + 2 + 7)
+        );
+    }
+
+    #[test]
+    fn a_cached_prompt_is_not_under_counted() {
+        // OpenCode reports a small input alongside a large cache read for a
+        // cached prompt; the total includes both.
+        let export = json!({
+            "messages": [
+                { "type": "assistant", "tokens": { "input": 79, "output": 12, "reasoning": 0, "cache": { "read": 30208, "write": 0 } } }
+            ]
+        });
+        assert_eq!(
+            parse_opencode_usage(&export.to_string()),
+            Some(79 + 12 + 30208)
+        );
+    }
+
+    #[test]
+    fn an_opencode_session_that_reports_no_usage_reports_none() {
+        let export = json!({
+            "messages": [
+                { "type": "assistant", "content": [{ "type": "text", "text": "{}" }] }
+            ]
+        });
+        assert_eq!(parse_opencode_usage(&export.to_string()), None);
+    }
+
+    #[test]
+    fn an_unreadable_or_truncated_usage_export_reports_no_usage() {
+        // A truncated export is not valid JSON: no usage, not a failed call.
+        assert_eq!(
+            parse_opencode_usage("{\"messages\": [{\"type\":\"assist"),
+            None
+        );
+        assert_eq!(parse_opencode_usage("not json"), None);
+        // A well-formed export with no messages carries no usage either.
+        assert_eq!(parse_opencode_usage("{}"), None);
+    }
+
+    #[test]
+    fn a_bounded_retry_absorbs_a_transient_failure() {
+        let mut attempts = 0;
+        let value = retrying(3, Duration::ZERO, |attempt| {
+            attempts += 1;
+            if attempt < 3 {
+                Err(ProviderError(format!("transient {attempt}")))
+            } else {
+                Ok(attempt)
+            }
+        })
+        .expect("succeeds on the third attempt");
+        assert_eq!(value, 3);
+        assert_eq!(attempts, 3);
+    }
+
+    #[test]
+    fn a_bounded_retry_stops_after_its_bound() {
+        let mut attempts = 0;
+        let error = retrying(3, Duration::ZERO, |_attempt| {
+            attempts += 1;
+            Err::<u8, _>(ProviderError("still failing".to_string()))
+        })
+        .expect_err("refused");
+        assert_eq!(attempts, 3, "the retry is bounded");
+        assert_eq!(error.0, "still failing");
+    }
+
+    #[test]
+    fn the_retry_backoff_grows_with_each_attempt() {
+        let base = Duration::from_millis(500);
+        assert_eq!(retry_delay(base, 1), Duration::from_millis(500));
+        assert_eq!(retry_delay(base, 2), Duration::from_millis(1_000));
+        assert_eq!(retry_delay(base, 3), Duration::from_millis(2_000));
+    }
+
+    /// A completion that fails its first `failures` calls and then succeeds, so
+    /// a retry's attempts can be counted.
+    struct Flaky {
+        failures: usize,
+        calls: std::sync::Arc<AtomicUsize>,
+    }
+
+    impl Completion for Flaky {
+        fn complete(&self, _system: &str, _user: &str) -> Result<Authored, ProviderError> {
+            let call = self.calls.fetch_add(1, Ordering::Relaxed) + 1;
+            if call <= self.failures {
+                Err(ProviderError(format!("transient {call}")))
+            } else {
+                Ok(Authored {
+                    text: "{}".to_string(),
+                    tokens: None,
+                })
+            }
+        }
+    }
+
+    fn retrying_client(failures: usize, calls: &std::sync::Arc<AtomicUsize>) -> RetryingClient {
+        RetryingClient {
+            inner: Box::new(Flaky {
+                failures,
+                calls: calls.clone(),
+            }),
+            attempts: RETRY_ATTEMPTS,
+            backoff: Duration::ZERO,
+        }
+    }
+
+    #[test]
+    fn a_provider_call_is_retried_before_it_gives_up() {
+        let calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let client = retrying_client(1, &calls);
+        let authored = client.complete("sys", "usr").expect("the retry succeeds");
+        assert_eq!(authored.text, "{}");
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            2,
+            "the transient provider failure was retried"
+        );
+    }
+
+    #[test]
+    fn a_provider_call_that_keeps_failing_gives_up_at_the_bound() {
+        let calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let client = retrying_client(usize::MAX, &calls);
+        client.complete("sys", "usr").expect_err("refused");
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            RETRY_ATTEMPTS,
+            "the provider retry is bounded"
+        );
+    }
+
+    #[test]
+    fn the_wrapped_client_uses_the_harness_retry_settings() {
+        let client = RetryingClient::new(Box::new(Flaky {
+            failures: 0,
+            calls: std::sync::Arc::new(AtomicUsize::new(0)),
+        }));
+        assert_eq!(client.attempts, RETRY_ATTEMPTS);
+        assert_eq!(client.backoff, RETRY_BACKOFF);
+    }
+
+    #[test]
+    fn reads_recorded_artifacts_for_a_resume_and_reports_a_missing_one() {
+        let dir = crate::testing::TempDir::new("recorded");
+        assert!(read_recorded_authored(dir.path(), "p1")
+            .expect("reads")
+            .is_none());
+        assert!(read_recorded_judgement(dir.path(), "p1")
+            .expect("reads")
+            .is_none());
+
+        std::fs::write(dir.path().join("p1.scene.json"), r#"{"scene":{}}"#).expect("writes");
+        std::fs::write(
+            dir.path().join("p1.judge.json"),
+            r#"{"fidelity":0.4,"qualities":{"depth":true}}"#,
+        )
+        .expect("writes");
+        let authored = read_recorded_authored(dir.path(), "p1")
+            .expect("reads")
+            .expect("the reply is recorded");
+        assert!(authored.text.contains("scene"), "{}", authored.text);
+        assert_eq!(authored.tokens, None);
+        let judgement = read_recorded_judgement(dir.path(), "p1")
+            .expect("reads")
+            .expect("the verdict is recorded");
+        assert_eq!(judgement.fidelity, 0.4);
+        assert!(judgement.qualities["depth"]);
+    }
+
+    #[test]
+    fn a_recorded_usage_is_carried_into_a_resumed_authoring_reply() {
+        let dir = crate::testing::TempDir::new("recorded-usage");
+        std::fs::write(dir.path().join("p1.scene.json"), r#"{"scene":{}}"#).expect("writes");
+        crate::testing::write_usage(dir.path(), "p1", 7_000);
+        let authored = read_recorded_authored(dir.path(), "p1")
+            .expect("reads")
+            .expect("the reply is recorded");
+        assert_eq!(authored.tokens, Some(7_000));
+    }
+
+    #[test]
+    fn a_recorded_verdict_that_is_not_a_verdict_is_left_for_the_judge() {
+        let dir = crate::testing::TempDir::new("recorded-error");
+        // The harness records a judge that returned no verdict as an error
+        // document; on resume that is no verdict, so the judge is asked again.
+        std::fs::write(
+            dir.path().join("p1.judge.json"),
+            r#"{"error":"the judge returned no verdict"}"#,
+        )
+        .expect("writes");
+        assert!(read_recorded_judgement(dir.path(), "p1")
+            .expect("reads")
+            .is_none());
     }
 }

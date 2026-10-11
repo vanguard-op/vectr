@@ -2,15 +2,17 @@
 //!
 //! A model returns a JSON object carrying a Vectr scene and, for a complex
 //! graphic, the reusable definitions the scene places. The harness materializes
-//! that bundle into a fresh evaluation project — a fixed palette and the flat
-//! recipe, so a scene that names no style resolves against known assets — and
-//! runs the real pipeline: parse, validate, resolve references, compile. A
-//! scene that fails any step is a compile failure with its diagnostics; nothing
-//! is written outside the scratch directory (NFR-011).
+//! that bundle into a fresh evaluation project — a fixed palette, a stroke
+//! profile, and the flat recipe, so a scene that names no style resolves against
+//! known assets — and runs the real pipeline: parse, validate, resolve
+//! references, compile. A scene that fails any step is a compile failure with
+//! its diagnostics; nothing is written outside the scratch directory (NFR-011).
 //!
 //! The evaluation palette carries the atmospheric tokens the hard-end guidance
 //! points a model at, so depth and perspective are expressible from the
-//! documented palette (FEAT-032).
+//! documented palette (FEAT-032). The stroke profile makes a stroke expressible
+//! too, so the evaluation project does not steer a model away from the stroke
+//! model the language carries (FEAT-008).
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -28,6 +30,17 @@ pub const PALETTE_ID: &str = "eval";
 
 /// The identifier of the evaluation project's recipe.
 pub const RECIPE_ID: &str = "flat";
+
+/// The identifier of the evaluation project's stroke profile.
+pub const STROKE_PROFILE_ID: &str = "outline";
+
+/// The width of the evaluation project's stroke profile.
+///
+/// A stroke profile's width is geometry the flat recipe honors as an explicit
+/// weight (a zero width would leave the weight to a line-art recipe's
+/// `strokeWeight`, which the flat recipe does not declare), so the profile
+/// states a positive width a stroke can be drawn at (FEAT-008, D-024).
+pub const STROKE_PROFILE_WIDTH: f64 = 4.0;
 
 /// The palette the evaluation project supplies, with atmospheric variants so a
 /// scene can express depth and distance (FEAT-032).
@@ -194,6 +207,9 @@ fn write_project(root: &Path, scene_text: &str, definitions: &[Value]) -> Result
     );
     let recipe =
         format!(r#"{{"id":"{RECIPE_ID}","projectId":"eval","name":"flat","parameters":{{}}}}"#);
+    let stroke = format!(
+        r#"{{"id":"{STROKE_PROFILE_ID}","projectId":"eval","name":"Outline","width":{STROKE_PROFILE_WIDTH},"cap":"round","join":"round"}}"#
+    );
 
     write(&root.join("vectr.project.json"), &config)?;
     write(
@@ -203,6 +219,12 @@ fn write_project(root: &Path, scene_text: &str, definitions: &[Value]) -> Result
     write(
         &root.join("recipes").join(format!("{RECIPE_ID}.json")),
         &recipe,
+    )?;
+    write(
+        &root
+            .join("strokes")
+            .join(format!("{STROKE_PROFILE_ID}.json")),
+        &stroke,
     )?;
     write(&root.join("scenes").join("scene.json"), scene_text)?;
     for (index, definition) in definitions.iter().enumerate() {
@@ -290,6 +312,18 @@ mod tests {
           "elements": []
         }"##;
         let outcome = evaluate(&authored(direct));
+        assert!(outcome.compiled, "{:?}", outcome);
+    }
+
+    #[test]
+    fn the_evaluation_project_provides_a_stroke_profile_a_stroke_resolves_against() {
+        // A stroke is expressible in the evaluation project: the profile the
+        // project supplies resolves, so a scene that draws a stroke compiles
+        // rather than being steered away from the stroke model (FEAT-008).
+        let scene = format!(
+            r##"{{"scene":{{"id":"s","projectId":"eval","name":"Stroked","formatVersion":"0.2","canvas":{{"width":100,"height":100,"background":"#ffffff"}},"elements":[{{"id":"r1","sceneId":"s","order":0,"kind":"rect","geometry":{{"x":10,"y":10,"width":80,"height":80}},"transform":{{"translateX":0,"translateY":0,"rotate":0,"scaleX":1,"scaleY":1}},"fill":{{"kind":"token","ref":"accent"}},"stroke":{{"profileId":"{STROKE_PROFILE_ID}","paint":{{"kind":"token","ref":"ink"}}}},"opacity":1,"visible":true}}]}}}}"##
+        );
+        let outcome = evaluate(&authored(&scene));
         assert!(outcome.compiled, "{:?}", outcome);
     }
 

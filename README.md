@@ -9,13 +9,13 @@ Vectr turns a plain-text scene description into clean, editable vector graphics 
 
 ## Install
 
-Vectr is in pre-release. Two channels:
+Two channels:
 
-**From crates.io** — pin the pre-release, because a bare `cargo install` will not match a pre-release version:
+**From crates.io** —
 
 ```sh
-cargo install vectr-cli --version 0.1.0-pre.2   # the `vectr` command
-cargo install vectr-mcp --version 0.1.0-pre.2   # the MCP server
+cargo install vectr-cli --version 0.1.0   # the `vectr` command
+cargo install vectr-mcp --version 0.1.0   # the MCP server
 ```
 
 **Signed binaries** — download `vectr` (and `vectr-mcp`) for your OS from the [releases page](https://github.com/vanguard-op/vectr/releases), then verify:
@@ -86,7 +86,7 @@ Elements compose by intent rather than by coordinates: groups and transforms, re
 
 ## Status
 
-Pre-release, `0.1.0-pre.2`. Shipped: the scene language and deterministic compiler, SVG and PNG export, the four version-one style recipes, gradients, schema discovery, scene validation, the MCP server, the agent skill, and reusable part definitions with part-scoped rendering. Next: quality and reach (PDF export, the embedded library, render-in-the-loop verification, the evaluation harness, icon sets, and accessibility), then single-layer shading.
+Stable, `0.1.0`. The scene language and deterministic compiler; SVG, PNG and PDF export; the four version-one style recipes and gradients; schema discovery and scene validation; the MCP server; the agent skill; reusable part definitions with part-scoped rendering; deterministic procedural generation; the embedded library; render-in-the-loop verification; the evaluation harness; icon-set mode; and accessibility metadata. Next: raster-assisted layers and single-layer shading.
 
 ## License
 
