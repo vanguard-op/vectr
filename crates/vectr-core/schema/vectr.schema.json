@@ -41,6 +41,7 @@
     "EvaluationCorpus",
     "Prompt",
     "AuthoringModel",
+    "JudgeModel",
     "EvaluationRun",
     "ElementKind",
     "PaintKind",
@@ -590,21 +591,34 @@
       "required": ["id", "name", "version"],
       "additionalProperties": false
     },
+    "JudgeModel": {
+      "title": "JudgeModel",
+      "description": "The fixed model that scores evaluation runs, independent of the authoring model under test, with the pinned version its scores apply to.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Stable identifier for the judge entry." },
+        "name": { "type": "string", "description": "Model name." },
+        "version": { "type": "string", "description": "Pinned model version the scores apply to." }
+      },
+      "required": ["id", "name", "version"],
+      "additionalProperties": false
+    },
     "EvaluationRun": {
       "title": "EvaluationRun",
-      "description": "The result of running one corpus through one authoring model.",
+      "description": "The result of running one corpus through one authoring model, scored by one fixed judge.",
       "type": "object",
       "properties": {
         "id": { "type": "string", "description": "Stable identifier for the run." },
         "corpusId": { "type": "string", "description": "References the EvaluationCorpus that was run." },
         "authoringModelId": { "type": "string", "description": "References the AuthoringModel that authored the scenes." },
+        "judgeModelId": { "type": "string", "description": "References the JudgeModel that scored the run; the fixed judge, independent of the authoring model." },
         "compileSuccessRate": { "type": "number", "minimum": 0, "maximum": 1, "description": "Share of authored scenes that compiled without error." },
-        "fidelityScore": { "type": "number", "minimum": 0, "maximum": 1, "description": "Judged visual fidelity score for the run." },
-        "medianTokens": { "type": "integer", "minimum": 0, "description": "The median authoring-model token usage per prompt across the run, over the prompts whose provider reported usage; absent when no prompt reported usage." },
+        "fidelityScore": { "type": "number", "minimum": 0, "maximum": 1, "description": "Judged visual fidelity score for the run, produced by the fixed judge independent of the authoring model." },
+        "medianTokens": { "type": "integer", "minimum": 0, "description": "The median authoring-model token usage per prompt across the run, over the prompts whose provider reported usage, including the always-read skill guidance; absent when no prompt reported usage." },
         "regression": { "type": "boolean", "description": "Whether the run regressed against the previous run of the same corpus and model." },
         "notes": { "type": "string", "description": "Anything notable about the run." }
       },
-      "required": ["id", "corpusId", "authoringModelId", "compileSuccessRate", "fidelityScore", "regression"],
+      "required": ["id", "corpusId", "authoringModelId", "judgeModelId", "compileSuccessRate", "fidelityScore", "regression"],
       "additionalProperties": false
     },
     "ElementKind": {
