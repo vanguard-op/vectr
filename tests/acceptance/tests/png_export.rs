@@ -30,6 +30,7 @@ fn half_red() -> RenderModel {
         })),
         text: None,
         transform: Affine::IDENTITY,
+        raster: None,
         paint: NodePaint {
             fill: Some(Paint::Color {
                 value: "#ff0000".to_string(),
@@ -153,6 +154,8 @@ fn a_text_element_rasterizes_its_glyphs() {
         fonts: &fonts,
         recipe: None,
         definitions: &[],
+        rasters: &[],
+        raster_layers: false,
     };
     let model = compile_with(&document, &style).expect("compiles");
 

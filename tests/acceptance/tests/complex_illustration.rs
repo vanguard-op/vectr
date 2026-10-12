@@ -470,6 +470,8 @@ fn the_documented_large_scene_compiles_completely_and_deterministically() {
         fonts: &[],
         recipe: None,
         definitions: &[],
+        rasters: &[],
+        raster_layers: false,
     };
 
     let first = compile_with(&document, &style).expect("a complex illustration compiles");
@@ -511,6 +513,8 @@ fn a_composition_above_the_documented_large_scene_count_is_warned_not_silent() {
         fonts: &[],
         recipe: None,
         definitions: &[],
+        rasters: &[],
+        raster_layers: false,
     };
 
     let model = compile_with(&document, &style).expect("a dense composition compiles");
@@ -527,8 +531,9 @@ fn a_composition_above_the_documented_large_scene_count_is_warned_not_silent() {
 
 #[test]
 fn a_large_composition_reports_an_unprocessable_element_rather_than_dropping_it() {
-    // A raster layer the compiler does not yet accept, buried under the dense
-    // composition: it is named as an error, never silently dropped (FEAT-011).
+    // A raster layer buried under the dense composition is not a valid operand
+    // of a repeat element: it is named as an error, never silently dropped
+    // (FEAT-011, FEAT-015).
     let document = scene(vec![
         element("rows", 0, "repeat", json!({ "count": 4, "spacing": 10.0 })),
         {
@@ -542,14 +547,20 @@ fn a_large_composition_reports_an_unprocessable_element_rather_than_dropping_it(
             columns
         },
         {
-            let mut tile = element("tile", 0, "raster", json!({}));
+            let mut tile = element(
+                "tile",
+                0,
+                "raster",
+                json!({ "x": 0.0, "y": 0.0, "width": 4.0, "height": 4.0 }),
+            );
+            tile["assetId"] = json!("photo");
             tile["parentId"] = json!("columns");
             tile
         },
     ]);
 
-    let scene = parse_scene(&document);
-    let diagnostics = vectr_core::compile(&scene).expect_err("the raster is refused");
+    let diagnostics =
+        vectr_core::parse(&document.to_string()).expect_err("the raster operand is refused");
     let error = diagnostics.errors().next().expect("an error");
     assert!(
         error.message.contains("tile"),
@@ -557,8 +568,8 @@ fn a_large_composition_reports_an_unprocessable_element_rather_than_dropping_it(
         error.message
     );
     assert!(
-        error.message.contains("raster"),
-        "the unsupported feature is named: {}",
+        error.message.contains("raster") && error.message.contains("repeat"),
+        "the unsupported combination is named: {}",
         error.message
     );
 }

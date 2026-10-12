@@ -188,6 +188,13 @@ pub struct ResolvedNode {
     /// node carries `text` and no `geometry` (C-003).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<TextRun>,
+    /// The placed raster image a raster node carries, alongside its bounding-box
+    /// `geometry`; absent for every other node (C-003, FEAT-015).
+    ///
+    /// PNG composites the image; SVG and PDF omit the node with a warning naming
+    /// the element and its asset, so the vector targets stay pure vector.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raster: Option<RasterImage>,
     /// The resolved world transform applied to the geometry or text.
     pub transform: Affine,
     /// The node's fill and stroke.
@@ -322,6 +329,21 @@ pub struct TextRun {
     pub width: Option<f64>,
 }
 
+/// The placed raster image a raster node carries (C-003, FEAT-015).
+///
+/// The image file's bytes travel with the model so the PNG exporter composites
+/// the layer with no external state; in JSON `data` is base64-encoded, keeping
+/// the render model plain text (D-014).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RasterImage {
+    /// The stable identifier of the resolved raster asset.
+    pub asset_id: String,
+    /// The image file's bytes, base64-encoded in JSON.
+    #[serde(with = "base64_bytes")]
+    pub data: Vec<u8>,
+}
+
 /// A font the model's text nodes render with (C-003).
 ///
 /// The font file travels with the model so an exporter finalizes glyph geometry
@@ -335,7 +357,7 @@ pub struct ResolvedFont {
     /// The font's human-readable name.
     pub name: String,
     /// The font file's bytes, base64-encoded in JSON.
-    #[serde(with = "font_data")]
+    #[serde(with = "base64_bytes")]
     pub data: Vec<u8>,
 }
 
@@ -351,8 +373,8 @@ impl ResolvedFont {
     }
 }
 
-/// Serde adapter that carries font bytes as base64 text (C-003).
-mod font_data {
+/// Serde adapter that carries a node's bytes as base64 text (C-003).
+mod base64_bytes {
     use serde::{Deserialize, Deserializer, Serializer};
 
     pub fn serialize<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
@@ -620,6 +642,7 @@ mod tests {
                     width: None,
                 }),
                 transform: crate::composition::Affine::IDENTITY,
+                raster: None,
                 paint: NodePaint::default(),
                 opacity: 1.0,
                 visible: true,

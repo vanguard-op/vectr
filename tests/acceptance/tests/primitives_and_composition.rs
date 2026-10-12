@@ -36,6 +36,8 @@ fn a_rectangle_renders_at_its_position_and_size_with_fill_and_stroke() {
         fonts: &[],
         recipe: None,
         definitions: &[],
+        rasters: &[],
+        raster_layers: false,
     };
     let model = compile_with(&document, &style).expect("compiles");
 
@@ -88,6 +90,8 @@ fn a_path_with_fill_and_stroke_renders_both_and_honours_cap_and_join() {
         fonts: &[],
         recipe: None,
         definitions: &[],
+        rasters: &[],
+        raster_layers: false,
     };
     let model = compile_with(&document, &style).expect("compiles");
 
@@ -146,6 +150,8 @@ fn a_text_element_renders_at_its_anchor_with_alignment_spacing_and_fill() {
         fonts: &[],
         recipe: None,
         definitions: &[],
+        rasters: &[],
+        raster_layers: false,
     };
     let model = compile_with(&document, &style).expect("compiles");
 
@@ -418,6 +424,8 @@ fn a_composition_lowers_to_concrete_geometry_with_no_unresolved_reference() {
         fonts: &[],
         recipe: None,
         definitions: &[],
+        rasters: &[],
+        raster_layers: false,
     };
 
     let model = compile_with(&document, &style).expect("compiles");

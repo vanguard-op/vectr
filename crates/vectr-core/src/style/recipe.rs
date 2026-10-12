@@ -419,16 +419,18 @@ pub fn validate(recipe: &StyleRecipe) -> Diagnostics {
 /// Reports where a recipe asks for a shading look it does not apply.
 ///
 /// The flat recipe draws even, solid fills (FEAT-007). It does not apply
-/// single-layer shading — that look ships as its own feature (FEAT-028) — and it
-/// cannot draw a texture, so a request for either is reported and the shape
-/// renders with its base fill rather than being left silently unshaded.
+/// single-layer shading — that look ships as its own feature (FEAT-028) — so a
+/// request for it is reported and the shape renders with its base fill rather
+/// than being left silently unshaded. Raster shading is settled separately, by
+/// [`check_raster_shading`], because whether it is honored depends on the
+/// compiled scene (FEAT-015).
 pub fn check_expressible(recipe: &StyleRecipe) -> Diagnostics {
     let mut diagnostics = Diagnostics::new();
     if !recipe.is_flat() {
         return diagnostics;
     }
-    match recipe.parameters.shading {
-        Some(Shading::SingleLayer) => diagnostics.push(
+    if recipe.parameters.shading == Some(Shading::SingleLayer) {
+        diagnostics.push(
             Diagnostic::warning(
                 SHADING_UNSUPPORTED,
                 format!(
@@ -437,18 +439,32 @@ pub fn check_expressible(recipe: &StyleRecipe) -> Diagnostics {
                 ),
             )
             .at_path("/parameters/shading"),
-        ),
-        Some(Shading::Raster) => diagnostics.push(
+        );
+    }
+    diagnostics
+}
+
+/// Reports a recipe's raster-shading request that the scene does not honor
+/// (FEAT-015).
+///
+/// A recipe whose `shading` is `raster` designates that the scene's raster
+/// layers supply the shading. When the scene carries at least one raster layer
+/// the request is honored and nothing is reported; when it carries none the
+/// request is unhonored and named, rather than silently ignored. Every other
+/// shading model is unaffected.
+pub fn check_raster_shading(recipe: &StyleRecipe, has_raster_layer: bool) -> Diagnostics {
+    let mut diagnostics = Diagnostics::new();
+    if recipe.parameters.shading == Some(Shading::Raster) && !has_raster_layer {
+        diagnostics.push(
             Diagnostic::warning(
                 TEXTURE_UNSUPPORTED,
                 format!(
-                    "recipe `{}` declares raster shading, which the flat recipe cannot express; the output stays flat and no texture is drawn",
+                    "recipe `{}` requests raster shading, but the scene carries no raster layer; the request is unhonored and the output stays flat",
                     recipe.id
                 ),
             )
             .at_path("/parameters/shading"),
-        ),
-        Some(Shading::None) | None => {}
+        );
     }
     diagnostics
 }
@@ -562,25 +578,34 @@ mod tests {
     }
 
     #[test]
-    fn a_flat_recipe_reports_texture_it_cannot_express() {
+    fn a_recipe_reports_raster_shading_the_scene_does_not_honor() {
         let recipe =
             parse(r#"{"id":"r","projectId":"p","name":"flat","parameters":{"shading":"raster"}}"#)
                 .unwrap();
         assert!(recipe.is_flat(), "the recipe names the flat look");
         assert_eq!(recipe.name_str(), "flat");
 
-        let diagnostics = check_expressible(&recipe);
-        let warning = diagnostics.warnings().next().expect("a warning");
+        // A scene with no raster layer leaves the request unhonored, and it is
+        // named rather than silently ignored (FEAT-015).
+        let unhonored = check_raster_shading(&recipe, false);
+        let warning = unhonored.warnings().next().expect("a warning");
         assert_eq!(warning.code, TEXTURE_UNSUPPORTED);
-        assert!(warning.message.contains("flat"), "{}", warning.message);
-        assert!(!diagnostics.has_errors(), "texture is reported, not fatal");
+        assert!(
+            warning.message.contains("no raster layer"),
+            "{}",
+            warning.message
+        );
+        assert!(!unhonored.has_errors(), "shading is reported, not fatal");
 
-        // A flat recipe that draws no shading asks for nothing it cannot draw.
+        // A scene carrying a raster layer honors it, so nothing is reported.
+        assert!(check_raster_shading(&recipe, true).is_empty());
+
+        // A recipe that draws no shading asks for nothing it cannot draw.
         let unshaded =
             parse(r#"{"id":"r","projectId":"p","name":"flat","parameters":{"shading":"none"}}"#)
                 .unwrap();
-        assert!(!check_expressible(&unshaded).has_errors());
-        assert!(check_expressible(&unshaded).warnings().next().is_none());
+        assert!(check_expressible(&unshaded).is_empty());
+        assert!(check_raster_shading(&unshaded, false).is_empty());
     }
 
     #[test]
@@ -633,15 +658,27 @@ mod tests {
 
     #[test]
     fn a_non_flat_recipe_is_not_checked_as_flat() {
-        // Raster shading is only unexpressible for the flat look; the check is
-        // the flat recipe's, and other recipes settle their own look.
+        // Single-layer shading is the flat recipe's concern; a non-flat recipe
+        // settles its own look, so `check_expressible` leaves it alone.
+        let recipe = parse(
+            r#"{"id":"r","projectId":"p","name":"geometric","parameters":{"shading":"single-layer"}}"#,
+        )
+        .unwrap();
+        assert!(!recipe.is_flat());
+        assert!(check_expressible(&recipe).is_empty());
+    }
+
+    #[test]
+    fn raster_shading_is_checked_for_every_recipe() {
+        // A recipe of any look that designates raster shading is fulfilled by the
+        // scene's raster layers or reported when none is present (FEAT-015).
         let recipe = parse(
             r#"{"id":"r","projectId":"p","name":"geometric","parameters":{"shading":"raster"}}"#,
         )
         .unwrap();
         assert!(!recipe.is_flat());
-        assert!(!check_expressible(&recipe).has_errors());
-        assert!(check_expressible(&recipe).warnings().next().is_none());
+        assert_eq!(check_raster_shading(&recipe, false).len(), 1);
+        assert!(check_raster_shading(&recipe, true).is_empty());
     }
 
     fn line_art(stroke_weight: Option<f64>) -> StyleRecipe {

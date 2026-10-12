@@ -16,13 +16,17 @@
 //! leaves every other stage — validation, compilation and SVG export — working
 //! (NFR-004's degradation table).
 //!
-//! # Warnings
+//! # Raster layers and warnings
 //!
-//! PNG is rasterized from the SVG document, so content the SVG writer omits is
+//! A raster layer is composited into the image in paint order (FEAT-015): the
+//! vector content is rasterized in bands around each layer and the layer's
+//! decoded image is drawn between them. Other content the SVG writer omits is
 //! omitted here for the same reason; [`export_png_reporting`] returns those
-//! warnings alongside the bytes, while [`export_png`] keeps the frozen shape.
+//! warnings, and the size warning for an oversized placed asset, alongside the
+//! bytes, while [`export_png`] keeps the frozen shape.
 
-use crate::export::svg::{export_svg_reporting, SvgOptions};
+use crate::export::raster as raster_layer;
+use crate::export::svg::{self, RasterMode};
 use crate::render::RenderModel;
 use crate::scene::{Diagnostic, DiagnosticCode, Diagnostics};
 
@@ -100,24 +104,56 @@ pub fn export_png_reporting(
 ) -> Result<PngExport, Diagnostics> {
     let pixels = resolve_pixels(model, options)?;
 
-    // Emit at the exact pixel size so the raster matches the vector rendering at
-    // that size; the view box stays in canvas coordinates. The background
-    // override passes through unchanged so the SVG writer resolves and validates
-    // one background — the override when present, otherwise the canvas's own.
-    let svg = export_svg_reporting(
-        model,
-        &SvgOptions {
-            width: Some(f64::from(pixels.width)),
-            height: Some(f64::from(pixels.height)),
-            background: options.background.clone(),
-        },
-    )?;
+    // The background is resolved and validated once, exactly as the SVG writer
+    // does, so an unusable colour is refused before any band is rasterized
+    // (FEAT-018).
+    let (background, from_options) = match options.background.as_deref() {
+        Some(value) => (value, true),
+        None => (model.canvas.background.as_str(), false),
+    };
+    let mut diagnostics = Diagnostics::new();
+    svg::validate_background(&mut diagnostics, background, from_options);
+    if diagnostics.has_errors() {
+        return Err(diagnostics);
+    }
 
-    let png = raster::rasterize(&svg.svg, pixels.width, pixels.height)?;
-    Ok(PngExport {
-        png,
-        diagnostics: svg.diagnostics,
-    })
+    let png = if has_raster_layer(model) {
+        // A scene with a raster layer is composited band by band so the layer
+        // falls in paint order (FEAT-015).
+        raster::compose(
+            model,
+            pixels.width,
+            pixels.height,
+            background,
+            &mut diagnostics,
+        )?
+    } else {
+        // No layer to composite: the whole model is one vector document,
+        // rasterized at the exact pixel size so the image matches the vector
+        // rendering at that size (FEAT-013).
+        let document = svg::emit_band(
+            model,
+            &model.nodes,
+            f64::from(pixels.width),
+            f64::from(pixels.height),
+            background,
+            RasterMode::Omit,
+            &mut diagnostics,
+        );
+        raster::rasterize(&document, pixels.width, pixels.height)?
+    };
+
+    // A placed layer large enough to bloat the file is still rendered, but its
+    // measured size is reported (FEAT-015). The missing-metadata warning follows
+    // the content findings, as it does for SVG (FEAT-026).
+    svg::warn_missing_metadata(model, &mut diagnostics);
+    raster_layer::warn_large(model, &mut diagnostics);
+    Ok(PngExport { png, diagnostics })
+}
+
+/// Whether the model places any raster layer, and so needs band compositing.
+fn has_raster_layer(model: &RenderModel) -> bool {
+    model.nodes.iter().any(|node| node.raster.is_some())
 }
 
 /// The exact pixel size of the output image.
@@ -221,7 +257,7 @@ mod tests {
     use super::*;
     use crate::composition::Affine;
     use crate::primitives::{Rect, Shape};
-    use crate::render::{NodePaint, Paint, RenderCanvas, RenderMeta, ResolvedNode};
+    use crate::render::{NodePaint, Paint, RasterImage, RenderCanvas, RenderMeta, ResolvedNode};
     // Only the rasterizer-backed tests build a text node, so these stay out of
     // the feature-off build rather than warning as unused there (FEAT-021).
     #[cfg(feature = "rasterizer")]
@@ -251,6 +287,7 @@ mod tests {
             geometry: Some(geometry),
             text: None,
             transform: Affine::IDENTITY,
+            raster: None,
             paint: NodePaint::default(),
             opacity: 1.0,
             visible: true,
@@ -430,6 +467,7 @@ mod tests {
                 width: None,
             }),
             transform: Affine::translate(5.0, 45.0),
+            raster: None,
             paint: NodePaint {
                 fill: Some(Paint::Color {
                     value: "#000000".to_string(),
@@ -461,7 +499,7 @@ mod tests {
 
     #[cfg(feature = "rasterizer")]
     #[test]
-    fn a_raster_node_is_omitted_with_a_warning() {
+    fn a_raster_node_without_an_image_is_omitted_with_a_warning() {
         let mut shape = node("r1", rect(0.0, 0.0, 1.0, 1.0));
         shape.kind = "raster".to_string();
         let export =
@@ -470,6 +508,205 @@ mod tests {
             export.diagnostics.warnings().next().map(|w| w.code.clone()),
             Some(crate::export::svg::UNSUPPORTED)
         );
+    }
+
+    /// A solid `width` by `height` PNG, for compositing tests.
+    #[cfg(feature = "rasterizer")]
+    fn solid_png(width: u32, height: u32, rgba: [u8; 4]) -> Vec<u8> {
+        let mut pixmap = resvg::tiny_skia::Pixmap::new(width, height).expect("a surface");
+        pixmap.fill(resvg::tiny_skia::Color::from_rgba8(
+            rgba[0], rgba[1], rgba[2], rgba[3],
+        ));
+        pixmap.encode_png().expect("a PNG")
+    }
+
+    #[cfg(feature = "rasterizer")]
+    fn raster_node(
+        id: &str,
+        asset_id: &str,
+        width: f64,
+        height: f64,
+        data: Vec<u8>,
+    ) -> ResolvedNode {
+        let mut shape = node(id, rect(0.0, 0.0, width, height));
+        shape.kind = "raster".to_string();
+        shape.raster = Some(RasterImage {
+            asset_id: asset_id.to_string(),
+            data,
+        });
+        shape
+    }
+
+    #[cfg(feature = "rasterizer")]
+    #[test]
+    fn a_raster_layer_composites_into_the_png() {
+        let document = model(vec![raster_node(
+            "r1",
+            "photo",
+            100.0,
+            50.0,
+            solid_png(1, 1, [255, 0, 0, 255]),
+        )]);
+        let bytes = export_png(&document, &RasterOptions::default()).expect("exports");
+        let image = decode(&bytes);
+        let pixel = image.pixel(10, 10).expect("in bounds").demultiply();
+        assert_eq!((pixel.red(), pixel.green(), pixel.blue()), (255, 0, 0));
+    }
+
+    #[cfg(feature = "rasterizer")]
+    #[test]
+    fn a_raster_layer_paints_in_document_order() {
+        let blue_rect = || {
+            let mut rect = node("e1", rect(0.0, 0.0, 100.0, 50.0));
+            rect.paint.fill = Some(Paint::Color {
+                value: "#0000ff".to_string(),
+            });
+            rect
+        };
+
+        // The rectangle paints first and the layer over it, so the layer wins.
+        let layer_over = model(vec![
+            blue_rect(),
+            raster_node(
+                "r1",
+                "photo",
+                100.0,
+                50.0,
+                solid_png(1, 1, [255, 0, 0, 255]),
+            ),
+        ]);
+        let pixel = decode(&export_png(&layer_over, &RasterOptions::default()).expect("exports"))
+            .pixel(10, 10)
+            .expect("in bounds")
+            .demultiply();
+        assert_eq!((pixel.red(), pixel.green(), pixel.blue()), (255, 0, 0));
+
+        // The layer paints first and the rectangle over it, so the rectangle
+        // wins.
+        let rect_over = model(vec![
+            raster_node(
+                "r1",
+                "photo",
+                100.0,
+                50.0,
+                solid_png(1, 1, [255, 0, 0, 255]),
+            ),
+            blue_rect(),
+        ]);
+        let pixel = decode(&export_png(&rect_over, &RasterOptions::default()).expect("exports"))
+            .pixel(10, 10)
+            .expect("in bounds")
+            .demultiply();
+        assert_eq!((pixel.red(), pixel.green(), pixel.blue()), (0, 0, 255));
+    }
+
+    #[cfg(feature = "rasterizer")]
+    #[test]
+    fn a_raster_layer_lands_at_its_placement() {
+        let mut shape = node("r1", rect(10.0, 5.0, 20.0, 10.0));
+        shape.kind = "raster".to_string();
+        shape.raster = Some(RasterImage {
+            asset_id: "photo".to_string(),
+            data: solid_png(1, 1, [255, 0, 0, 255]),
+        });
+        let image =
+            decode(&export_png(&model(vec![shape]), &RasterOptions::default()).expect("exports"));
+
+        let inside = image.pixel(15, 8).expect("in bounds").demultiply();
+        assert_eq!((inside.red(), inside.green(), inside.blue()), (255, 0, 0));
+        let outside = image.pixel(60, 8).expect("in bounds").demultiply();
+        assert_eq!(
+            (outside.red(), outside.green(), outside.blue()),
+            (255, 255, 255)
+        );
+    }
+
+    #[cfg(feature = "rasterizer")]
+    #[test]
+    fn a_raster_layer_honours_its_transform() {
+        let mut shape = node("r1", rect(0.0, 0.0, 50.0, 50.0));
+        shape.kind = "raster".to_string();
+        shape.transform = Affine::translate(50.0, 0.0);
+        shape.raster = Some(RasterImage {
+            asset_id: "photo".to_string(),
+            data: solid_png(1, 1, [255, 0, 0, 255]),
+        });
+        let image =
+            decode(&export_png(&model(vec![shape]), &RasterOptions::default()).expect("exports"));
+
+        let left = image.pixel(10, 10).expect("in bounds").demultiply();
+        assert_eq!((left.red(), left.green(), left.blue()), (255, 255, 255));
+        let right = image.pixel(60, 10).expect("in bounds").demultiply();
+        assert_eq!((right.red(), right.green(), right.blue()), (255, 0, 0));
+    }
+
+    #[cfg(feature = "rasterizer")]
+    #[test]
+    fn a_raster_layer_scales_with_the_output() {
+        // A density of two doubles the image, so the layer's box doubles too.
+        let mut shape = node("r1", rect(10.0, 5.0, 20.0, 10.0));
+        shape.kind = "raster".to_string();
+        shape.raster = Some(RasterImage {
+            asset_id: "photo".to_string(),
+            data: solid_png(1, 1, [255, 0, 0, 255]),
+        });
+        let bytes = export_png(
+            &model(vec![shape]),
+            &RasterOptions {
+                density: Some(2.0),
+                ..RasterOptions::default()
+            },
+        )
+        .expect("exports");
+        let image = decode(&bytes);
+        assert_eq!((image.width(), image.height()), (200, 100));
+        let inside = image.pixel(30, 16).expect("in bounds").demultiply();
+        assert_eq!((inside.red(), inside.green(), inside.blue()), (255, 0, 0));
+        let outside = image.pixel(120, 16).expect("in bounds").demultiply();
+        assert_eq!(
+            (outside.red(), outside.green(), outside.blue()),
+            (255, 255, 255)
+        );
+    }
+
+    #[cfg(feature = "rasterizer")]
+    #[test]
+    fn repeated_raster_exports_are_byte_identical() {
+        let document = model(vec![raster_node(
+            "r1",
+            "photo",
+            40.0,
+            20.0,
+            solid_png(3, 2, [10, 200, 30, 255]),
+        )]);
+        let options = RasterOptions {
+            density: Some(1.5),
+            ..RasterOptions::default()
+        };
+        assert_eq!(
+            export_png(&document, &options).expect("exports"),
+            export_png(&document, &options).expect("exports")
+        );
+    }
+
+    #[cfg(feature = "rasterizer")]
+    #[test]
+    fn an_oversized_raster_asset_is_reported_but_still_renders() {
+        let document = model(vec![raster_node(
+            "r1",
+            "photo",
+            100.0,
+            50.0,
+            solid_png(5_000, 8, [255, 0, 0, 255]),
+        )]);
+        let export = export_png_reporting(&document, &RasterOptions::default()).expect("exports");
+        assert!(export
+            .diagnostics
+            .warnings()
+            .any(|warning| warning.code == crate::export::raster::LARGE));
+        let image = decode(&export.png);
+        let pixel = image.pixel(10, 10).expect("in bounds").demultiply();
+        assert_eq!((pixel.red(), pixel.green(), pixel.blue()), (255, 0, 0));
     }
 
     #[test]

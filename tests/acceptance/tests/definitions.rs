@@ -113,6 +113,8 @@ fn with_definitions(definitions: &[Definition]) -> StyleContext<'_> {
         fonts: &[],
         recipe: None,
         definitions,
+        rasters: &[],
+        raster_layers: false,
     }
 }
 

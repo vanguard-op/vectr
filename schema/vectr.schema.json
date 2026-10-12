@@ -109,7 +109,7 @@
     },
     "Element": {
       "title": "Element",
-      "description": "One drawing entity, in a scene or in a reusable definition: a primitive, a group, a composition operation, a text run, or an instance that places a definition. One shape serves both owners: an element belongs to exactly one of a Scene and a Definition, by sceneId or definitionId. A parameter-capable field holds either a literal of the field's type or a parameter reference, written as the object { \"param\": \"<name>\" }; a reference is valid only where the element is owned by a definition. Elements form a tree through parentId, and paint order follows order.",
+      "description": "One drawing entity, in a scene or in a reusable definition: a primitive, a group, a composition operation, a text run, a raster layer, or an instance that places a definition. One shape serves both owners: an element belongs to exactly one of a Scene and a Definition, by sceneId or definitionId. A parameter-capable field holds either a literal of the field's type or a parameter reference, written as the object { \"param\": \"<name>\" }; a reference is valid only where the element is owned by a definition. A raster element places the raster asset its assetId names, occupies the origin and size of its bounding box, and is not a valid operand of a boolean, offset, alongPath, projection, procedural, or repeat element. Elements form a tree through parentId, and paint order follows order.",
       "type": "object",
       "properties": {
         "id": { "type": "string", "description": "Stable identifier for the element." },
@@ -125,6 +125,7 @@
         "fill": { "anyOf": [{ "$ref": "#/$defs/PaintValue" }, { "type": "null" }], "description": "The element's fill paint, a token parameter reference, or null for no fill." },
         "stroke": { "anyOf": [{ "$ref": "#/$defs/Stroke" }, { "type": "null" }], "description": "The element's stroke, or null for no stroke." },
         "fontId": { "type": ["string", "null"], "description": "References the Asset of kind font used to render a text element, or null to use the default open-licensed font. Applies only to a text element." },
+        "assetId": { "type": ["string", "null"], "description": "References the Asset of kind raster that supplies a raster element's image data, resolved against the scene that owns the element; required when kind is raster and null otherwise." },
         "opacity": { "$ref": "#/$defs/NumberValue", "description": "Element opacity, from 0 to 1; a literal number or a number parameter reference." },
         "visible": { "$ref": "#/$defs/BoolValue", "description": "Whether the element is rendered; a literal boolean or a boolean parameter reference." },
         "definitionRef": { "type": ["string", "null"], "description": "References the Definition this element places; required when kind is instance and null otherwise." },
@@ -147,6 +148,19 @@
         {
           "if": { "properties": { "kind": { "not": { "const": "text" } } }, "required": ["kind"] },
           "then": { "not": { "required": ["fontId"] } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "raster" } }, "required": ["kind"] },
+          "then": {
+            "required": ["assetId"],
+            "properties": {
+              "geometry": { "required": ["x", "y", "width", "height"] }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "kind": { "not": { "const": "raster" } } }, "required": ["kind"] },
+          "then": { "not": { "required": ["assetId"] } }
         }
       ]
     },
@@ -245,13 +259,13 @@
     },
     "Geometry": {
       "title": "Geometry",
-      "description": "The element's geometry; which fields apply depends on kind. A rect and an ellipse are both placed by the x and y origin of their bounding box and sized by width and height, with the ellipse inscribed in that box and rx and ry rounding a rect's corners. A text element is anchored by x and y at the baseline of its first line, sized by fontSize, and wrapped to width when width is set. Each numeric or string field holds a literal of its type or a parameter reference; points, align, operation, and axis hold their literal value only.",
+      "description": "The element's geometry; which fields apply depends on kind. A rect and an ellipse are both placed by the x and y origin of their bounding box and sized by width and height, with the ellipse inscribed in that box and rx and ry rounding a rect's corners. A raster element is placed by the x and y origin of its bounding box and sized by width and height, all of which it requires. A text element is anchored by x and y at the baseline of its first line, sized by fontSize, and wrapped to width when width is set. Each numeric or string field holds a literal of its type or a parameter reference; points, align, operation, and axis hold their literal value only.",
       "type": "object",
       "properties": {
         "x": { "$ref": "#/$defs/NumberValue", "description": "X origin of the bounding box in scene units; for a text element, the anchor of its first line. A literal number or a number parameter reference." },
         "y": { "$ref": "#/$defs/NumberValue", "description": "Y origin of the bounding box in scene units; for a text element, the baseline of its first line. A literal number or a number parameter reference." },
-        "width": { "$ref": "#/$defs/NumberValue", "description": "Bounding-box width for rect-like and ellipse elements, and the wrap width for text elements. A literal number or a number parameter reference." },
-        "height": { "$ref": "#/$defs/NumberValue", "description": "Bounding-box height for rect-like and ellipse elements. A literal number or a number parameter reference." },
+        "width": { "$ref": "#/$defs/NumberValue", "description": "Bounding-box width for rect-like and ellipse elements, the placed width of a raster element, and the wrap width for text elements. A literal number or a number parameter reference." },
+        "height": { "$ref": "#/$defs/NumberValue", "description": "Bounding-box height for rect-like and ellipse elements, and the placed height of a raster element. A literal number or a number parameter reference." },
         "rx": { "$ref": "#/$defs/NumberValue", "description": "Corner radius in X for rect elements. A literal number or a number parameter reference." },
         "ry": { "$ref": "#/$defs/NumberValue", "description": "Corner radius in Y for rect elements. A literal number or a number parameter reference." },
         "points": {
@@ -623,7 +637,7 @@
     },
     "ElementKind": {
       "title": "ElementKind",
-      "description": "The element's role.",
+      "description": "The element's role. A raster element places the raster asset its assetId names.",
       "type": "string",
       "enum": ["rect", "ellipse", "polygon", "line", "path", "text", "group", "repeat", "boolean", "alongPath", "offset", "projection", "procedural", "raster", "instance"]
     },

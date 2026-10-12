@@ -138,6 +138,12 @@ pub struct Element {
     /// rejected (FEAT-024).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub font_id: Option<String>,
+    /// References the [`Asset`] of kind `raster` that supplies this raster
+    /// element's image data, resolved against the scene that owns the element.
+    ///
+    /// Required when `kind` is `raster` and null otherwise (C-001, FEAT-015).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asset_id: Option<String>,
     /// Element opacity, a literal or a number parameter reference.
     pub opacity: NumberValue,
     /// Whether the element is rendered, a literal or a boolean parameter
@@ -873,6 +879,53 @@ pub struct IconEntry {
     /// the icon's name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub accessible_name: Option<String>,
+}
+
+/// An external file a scene references (C-001, FEAT-015).
+///
+/// A font asset supplies a text element's glyphs and a raster asset supplies a
+/// raster element's image data. Each asset belongs to exactly one scene, named
+/// by `sceneId`, so a raster element resolves its `assetId` against the scene
+/// that owns it (docs/Vectr/schema.md, "Asset", "Relationships").
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Asset {
+    /// Stable identifier for the asset.
+    pub id: String,
+    /// References the scene that uses the asset.
+    pub scene_id: String,
+    /// The type of asset.
+    pub kind: AssetKind,
+    /// Location of the asset file, inside the project root.
+    pub path: String,
+    /// The licence governing the asset.
+    pub license: String,
+    /// What the asset is used for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+/// The type of asset an [`Asset`] document declares (C-001).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AssetKind {
+    /// A font a text element renders with.
+    Font,
+    /// An image asset.
+    Image,
+    /// A raster layer's image data.
+    Raster,
+}
+
+impl AssetKind {
+    /// The kind name as it appears in the scene language.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AssetKind::Font => "font",
+            AssetKind::Image => "image",
+            AssetKind::Raster => "raster",
+        }
+    }
 }
 
 /// A number that is either a literal or a parameter reference (C-001).

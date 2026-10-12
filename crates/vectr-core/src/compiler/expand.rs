@@ -290,6 +290,7 @@ impl Expander<'_> {
             fill: None,
             stroke: None,
             font_id: None,
+            asset_id: None,
             opacity: NumberValue::Literal(opacity),
             visible: BoolValue::Literal(visible),
             definition_ref: None,
@@ -693,6 +694,7 @@ fn resolve_element(
             })
         }),
         font_id: template.font_id.clone(),
+        asset_id: template.asset_id.clone(),
         opacity: NumberValue::Literal(
             number_or_report(&template.opacity, values, "/opacity", &mut diagnostics)
                 .unwrap_or(1.0),
@@ -1048,6 +1050,8 @@ mod tests {
             fonts: &[],
             recipe: None,
             definitions,
+            rasters: &[],
+            raster_layers: false,
         };
         compile_with_style(scene, &style)
     }

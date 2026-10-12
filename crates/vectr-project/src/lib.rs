@@ -23,7 +23,7 @@ mod guide;
 mod part;
 mod scene;
 
-pub use assets::{project_root, project_root_from, ProjectAssets, STYLE_ASSET};
+pub use assets::{project_root, project_root_from, ProjectAssets, RASTER_FORMAT, STYLE_ASSET};
 pub use guide::{
     authoring_guide, AGENT_GUIDE_BUDGET_BYTES, AUTHORING_GUIDE_FILE, SKILL_ENTRY_BUDGET_BYTES,
 };

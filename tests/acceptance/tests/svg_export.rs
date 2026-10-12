@@ -46,6 +46,7 @@ fn plain_node(id: &str, kind: &str, geometry: Shape) -> ResolvedNode {
         geometry: Some(geometry),
         text: None,
         transform: Affine::IDENTITY,
+        raster: None,
         paint: NodePaint::default(),
         opacity: 1.0,
         visible: true,
@@ -89,6 +90,8 @@ fn stroked_and_filled_shapes_match_the_render_model() {
         fonts: &[],
         recipe: None,
         definitions: &[],
+        rasters: &[],
+        raster_layers: false,
     };
     let model = compile_with(&document, &style).expect("compiles");
 
@@ -122,6 +125,8 @@ fn text_is_emitted_as_outlined_paths_with_its_name_and_accessible_text() {
         fonts: &fonts,
         recipe: None,
         definitions: &[],
+        rasters: &[],
+        raster_layers: false,
     };
     let model = compile_with(&document, &style).expect("compiles");
 
@@ -253,6 +258,8 @@ fn emitted_svg_is_inert_with_no_script_or_event_handler() {
         fonts: &[],
         recipe: None,
         definitions: &[],
+        rasters: &[],
+        raster_layers: false,
     };
     let model = compile_with(&document, &style).expect("compiles");
 

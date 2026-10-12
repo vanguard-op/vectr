@@ -42,7 +42,9 @@ skrifa = { workspace = true }
 # the member, and the workspace `resvg` entry carries `default-features = false`
 # (D-007), so its native system-font, text, SVGZ and raster-image defaults stay
 # off and the rasterizer remains pure-Rust and free of native system
-# dependencies.
+# dependencies. A raster-assisted layer is composited from the decoded image in
+# the export layer rather than by the rasterizer (FEAT-015), so the raster-image
+# default is not needed.
 resvg = { workspace = true, optional = true }
 
 [features]

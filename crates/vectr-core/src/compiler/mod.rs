@@ -22,9 +22,10 @@
 //! element contributes one node. A `group` is a container that contributes no
 //! node of its own: its identity and name travel on every descendant node as an
 //! ancestor chain, outermost first, so an exporter can rebuild the named-group
-//! nesting (FEAT-011, FEAT-012). The one feature the compiler does not yet
-//! accept — a plain `raster` layer, which ships behind the raster-layers flag
-//! (FEAT-015) — is refused by name.
+//! nesting (FEAT-011, FEAT-012). A `raster` layer compiles to a raster node
+//! carrying its bounding box and image bytes when raster layers are enabled and
+//! the caller supplies its asset; with the feature off it is refused by name
+//! (FEAT-015).
 //!
 //! # Paint
 //!
@@ -91,13 +92,13 @@ use crate::primitives::{
     SubPath,
 };
 use crate::render::{
-    NodeGroup, NodePaint, NodeStroke, RenderCanvas, RenderMeta, RenderModel, ResolvedFont,
-    ResolvedNode, TextRun,
+    NodeGroup, NodePaint, NodeStroke, RasterImage, RenderCanvas, RenderMeta, RenderModel,
+    ResolvedFont, ResolvedNode, TextRun,
 };
 use crate::scene::{
     validate, BoolValue, BooleanOperation, Canvas, Definition, Diagnostic, DiagnosticCode,
     Diagnostics, Element, ElementKind, Geometry, Location, NumberValue, Procedure, Scene,
-    TextAlign, Transform, CURRENT_FORMAT_VERSION,
+    TextAlign, Transform, CURRENT_FORMAT_VERSION, MISSING_ASSET,
 };
 use crate::style::{self, Gradient, Palette, StrokeProfile, StyleRecipe, UNDEFINED_STROKE};
 
@@ -166,6 +167,15 @@ pub struct StyleContext<'a> {
     /// The project's reusable definitions, so an instance element expands
     /// without filesystem access (C-002, FEAT-030).
     pub definitions: &'a [Definition],
+    /// The raster assets the scene's raster elements resolve against, each an
+    /// id, a name and its image bytes (C-002, FEAT-015).
+    pub rasters: &'a [RasterAsset],
+    /// Whether raster layers are enabled (FEAT-015).
+    ///
+    /// With the flag on, a raster element whose asset the context supplies
+    /// compiles to a raster node; with it off, a scene carrying a raster layer
+    /// fails as an unsupported feature rather than silently dropping the layer.
+    pub raster_layers: bool,
 }
 
 /// A font asset a caller supplies so the compiler can resolve a text element's
@@ -200,6 +210,43 @@ impl FontAsset {
         ResolvedFont {
             id: self.id.clone(),
             name: self.name.clone(),
+            data: self.data.clone(),
+        }
+    }
+}
+
+/// A raster asset a caller supplies so the compiler can resolve a raster
+/// element's `assetId` without filesystem access (C-002, FEAT-015).
+///
+/// The caller reads the image file the project's Asset document names and passes
+/// its bytes here; a raster element compiles to a raster node only when the
+/// asset resolves and raster layers are enabled, and the model carries the image
+/// bytes so an exporter composites them with no external state.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RasterAsset {
+    /// The asset's stable identifier, matched against a raster element's
+    /// `assetId`.
+    pub id: String,
+    /// The asset's human-readable name.
+    pub name: String,
+    /// The image file's bytes.
+    pub data: Vec<u8>,
+}
+
+impl RasterAsset {
+    /// Builds a raster asset from its parts.
+    pub fn new(id: impl Into<String>, name: impl Into<String>, data: Vec<u8>) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            data,
+        }
+    }
+
+    /// The asset as the render model carries it.
+    pub fn resolved(&self) -> RasterImage {
+        RasterImage {
+            asset_id: self.id.clone(),
             data: self.data.clone(),
         }
     }
@@ -323,6 +370,13 @@ pub fn compile_with_style<'s>(
         compiler
             .diagnostics
             .extend(style::check_recipe_expressible(recipe));
+        // A recipe designating raster shading is fulfilled by the scene's raster
+        // layers; with none present the unhonored request is named rather than
+        // silently ignored (FEAT-015).
+        let has_raster_layer = compiler.nodes.iter().any(|node| node.raster.is_some());
+        compiler
+            .diagnostics
+            .extend(style::check_recipe_raster_shading(recipe, has_raster_layer));
         // A grid finer than the renderable resolution is a performance concern,
         // reported rather than silently snapped (FEAT-009).
         compiler
@@ -415,6 +469,7 @@ fn definition_scene(definition: &Definition) -> Scene {
         fill: None,
         stroke: None,
         font_id: None,
+        asset_id: None,
         opacity: NumberValue::Literal(1.0),
         visible: BoolValue::Literal(true),
         definition_ref: Some(definition.id.clone()),
@@ -871,7 +926,7 @@ impl Compiler<'_, '_> {
         }
 
         match kind {
-            ElementKind::Raster => self.reject_unsupported(index, "raster"),
+            ElementKind::Raster => self.emit_raster(index, world, opacity, visible, copy, groups),
             // An instance is lowered to concrete elements before compilation;
             // reaching one here means a scene was compiled without expansion.
             ElementKind::Instance => self.reject_unsupported(index, "instance"),
@@ -1821,6 +1876,7 @@ impl Compiler<'_, '_> {
             groups: groups.to_vec(),
             geometry: Some(geometry),
             text: None,
+            raster: None,
             transform,
             paint,
             opacity,
@@ -1878,8 +1934,64 @@ impl Compiler<'_, '_> {
             groups: groups.to_vec(),
             geometry: None,
             text: Some(run),
+            raster: None,
             transform,
             paint,
+            opacity,
+            visible,
+        });
+    }
+
+    /// Appends one raster node for a raster element (C-003, FEAT-015).
+    ///
+    /// The node carries its bounding-box geometry and the placed image bytes, so
+    /// the PNG exporter composites the layer and the vector exporters omit it
+    /// with a warning rather than approximating it.
+    #[allow(clippy::too_many_arguments)]
+    fn push_raster_node(
+        &mut self,
+        index: usize,
+        geometry: Shape,
+        raster: RasterImage,
+        transform: Affine,
+        opacity: f64,
+        visible: bool,
+        copy: Option<&CopyTag>,
+        groups: &[NodeGroup],
+    ) {
+        if self.limit_hit {
+            return;
+        }
+        if self.nodes.len() >= MAX_RENDER_NODES {
+            self.limit_hit = true;
+            let diagnostic = self.node_limit_diagnostic();
+            self.diagnostics.push(diagnostic);
+            return;
+        }
+
+        let (base_id, name, accessible_name) = {
+            let element = &self.scene.elements[index];
+            (
+                element.id.clone(),
+                element.name.clone(),
+                element.accessible_name.clone(),
+            )
+        };
+        let id = self.unique_id(&base_id, copy);
+        let order = self.order;
+        self.order += 1;
+        self.nodes.push(ResolvedNode {
+            id,
+            name,
+            accessible_name,
+            order,
+            kind: "raster".to_string(),
+            groups: groups.to_vec(),
+            geometry: Some(geometry),
+            text: None,
+            raster: Some(raster),
+            transform,
+            paint: NodePaint::default(),
             opacity,
             visible,
         });
@@ -1994,6 +2106,72 @@ impl Compiler<'_, '_> {
             Affine::translate(geometry.x().unwrap_or(0.0), geometry.y().unwrap_or(0.0))
         };
         self.push_text_node(index, world.then(anchor), opacity, visible, copy, groups);
+    }
+
+    /// Emits one raster node for a raster element (C-003, FEAT-015).
+    ///
+    /// The layer occupies the origin and size of its bounding box and paints in
+    /// document order like any other element, over or under the vector artwork.
+    /// With raster layers disabled the element is refused as an unsupported
+    /// feature; with them enabled a reference the caller's raster assets do not
+    /// supply is a missing-asset error, so the layer is never silently dropped.
+    fn emit_raster(
+        &mut self,
+        index: usize,
+        world: Affine,
+        opacity: f64,
+        visible: bool,
+        copy: Option<&CopyTag>,
+        groups: &[NodeGroup],
+    ) {
+        if !self.style.raster_layers {
+            self.reject_unsupported(index, "raster");
+            return;
+        }
+
+        let (element_id, asset_id, origin) = {
+            let element = &self.scene.elements[index];
+            let geometry = &element.geometry;
+            (
+                element.id.clone(),
+                element.asset_id.clone().unwrap_or_default(),
+                [
+                    geometry.x().unwrap_or(0.0),
+                    geometry.y().unwrap_or(0.0),
+                    geometry.width().unwrap_or(0.0),
+                    geometry.height().unwrap_or(0.0),
+                ],
+            )
+        };
+
+        // A raster element with no assetId is refused by validation; guard the
+        // emission path so it cannot produce a node with no image.
+        if asset_id.is_empty() {
+            self.reject_unsupported(index, "raster without an assetId");
+            return;
+        }
+
+        let Some(asset) = self.style.rasters.iter().find(|asset| asset.id == asset_id) else {
+            self.diagnostics.push(
+                Diagnostic::error(
+                    MISSING_ASSET,
+                    format!("raster element `{element_id}` references missing asset `{asset_id}`"),
+                )
+                .with_location(Location::element_at(&element_id, "/assetId")),
+            );
+            return;
+        };
+
+        let image = asset.resolved();
+        let bounds = Shape::Rect(Rect {
+            x: origin[0],
+            y: origin[1],
+            width: origin[2],
+            height: origin[3],
+            rx: 0.0,
+            ry: 0.0,
+        });
+        self.push_raster_node(index, bounds, image, world, opacity, visible, copy, groups);
     }
 
     /// Resolves the paint an element declares (C-002, FEAT-005, FEAT-027).
@@ -2232,7 +2410,7 @@ impl Compiler<'_, '_> {
         }
         let kind = self.scene.elements[index].kind;
         let value = match kind {
-            ElementKind::Raster => 0,
+            ElementKind::Raster => 1,
             ElementKind::Instance => 0,
             ElementKind::Rect
             | ElementKind::Ellipse
@@ -2461,6 +2639,26 @@ mod tests {
             "rect",
             json!({ "x": 0.0, "y": 0.0, "width": width, "height": height }),
         )
+    }
+
+    /// A raster element placed by a bounding box and naming a raster asset.
+    fn raster_element(
+        id: &str,
+        order: u64,
+        asset_id: &str,
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+    ) -> Value {
+        let mut element = base(
+            id,
+            order,
+            "raster",
+            json!({ "x": x, "y": y, "width": width, "height": height }),
+        );
+        element["assetId"] = json!(asset_id);
+        element
     }
 
     /// A token paint reference as the scene language carries it.
@@ -2938,13 +3136,98 @@ mod tests {
     }
 
     #[test]
-    fn a_raster_element_is_refused_as_unsupported() {
-        let raster = base("r1", 0, "raster", json!({}));
+    fn a_raster_element_is_refused_while_raster_layers_are_off() {
+        let raster = raster_element("r1", 0, "photo", 0.0, 0.0, 10.0, 10.0);
         let scene = scene_of(json!([raster]), None);
-        let diagnostics = compile(&scene).expect_err("raster is unsupported");
+        let diagnostics = compile(&scene).expect_err("raster is unsupported while off");
         let error = diagnostics.errors().next().expect("an error");
         assert_eq!(error.code, UNSUPPORTED);
         assert!(error.message.contains("raster"));
+    }
+
+    #[test]
+    fn a_raster_layer_compiles_to_a_raster_node_carrying_its_asset() {
+        let raster = raster_element("photo-layer", 0, "photo", 4.0, 8.0, 20.0, 10.0);
+        let scene = scene_of(json!([raster]), None);
+        let assets = [RasterAsset::new("photo", "Photo", vec![1, 2, 3, 4])];
+        let style = StyleContext {
+            rasters: &assets,
+            raster_layers: true,
+            ..StyleContext::default()
+        };
+
+        let model = compile_with_style(&scene, &style).expect("compiles");
+        assert_eq!(model.nodes.len(), 1);
+        let node = &model.nodes[0];
+        assert_eq!(node.kind, "raster");
+        assert_eq!(
+            node.geometry,
+            Some(Shape::Rect(PrimRect {
+                x: 4.0,
+                y: 8.0,
+                width: 20.0,
+                height: 10.0,
+                rx: 0.0,
+                ry: 0.0,
+            })),
+            "the layer occupies the origin and size of its bounding box"
+        );
+        let image = node.raster.as_ref().expect("a raster image");
+        assert_eq!(image.asset_id, "photo");
+        assert_eq!(image.data, vec![1, 2, 3, 4]);
+        assert!(
+            node.paint.fill.is_none(),
+            "the layer paints its image, not a fill"
+        );
+    }
+
+    #[test]
+    fn a_raster_layer_with_a_missing_asset_is_refused_at_its_asset_id() {
+        let raster = raster_element("r1", 0, "ghost", 0.0, 0.0, 10.0, 10.0);
+        let scene = scene_of(json!([raster]), None);
+        let assets = [RasterAsset::new("photo", "Photo", vec![1])];
+        let style = StyleContext {
+            rasters: &assets,
+            raster_layers: true,
+            ..StyleContext::default()
+        };
+
+        let diagnostics = compile_with_style(&scene, &style).expect_err("missing asset");
+        let error = diagnostics.errors().next().expect("an error");
+        assert_eq!(error.code, MISSING_ASSET);
+        assert!(error.message.contains("ghost"), "{}", error.message);
+        assert_eq!(
+            error
+                .location
+                .as_ref()
+                .and_then(|location| location.json_path.as_deref()),
+            Some("/assetId")
+        );
+    }
+
+    #[test]
+    fn a_raster_layer_is_honored_by_a_raster_shading_recipe() {
+        let raster = raster_element("r1", 0, "photo", 0.0, 0.0, 10.0, 10.0);
+        let scene = scene_of(json!([raster]), None);
+        let assets = [RasterAsset::new("photo", "Photo", vec![1])];
+        let recipe = flat_recipe("raster");
+        let style = StyleContext {
+            rasters: &assets,
+            raster_layers: true,
+            recipe: Some(&recipe),
+            ..StyleContext::default()
+        };
+
+        let model = compile_with_style(&scene, &style).expect("compiles");
+        assert!(model.nodes.iter().any(|node| node.raster.is_some()));
+        assert!(
+            !model
+                .diagnostics
+                .warnings()
+                .any(|warning| warning.code == TEXTURE_UNSUPPORTED),
+            "an honored raster shading request is not reported: {:?}",
+            model.diagnostics
+        );
     }
 
     #[test]
@@ -2981,6 +3264,8 @@ mod tests {
             fonts: &[],
             recipe: None,
             definitions: &[],
+            rasters: &[],
+            raster_layers: false,
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -3089,6 +3374,8 @@ mod tests {
             fonts: &[],
             recipe: Some(&recipe),
             definitions: &[],
+            rasters: &[],
+            raster_layers: false,
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -3138,6 +3425,8 @@ mod tests {
             fonts: &[],
             recipe: None,
             definitions: &[],
+            rasters: &[],
+            raster_layers: false,
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -3161,6 +3450,8 @@ mod tests {
             fonts: &[],
             recipe: Some(&recipe),
             definitions: &[],
+            rasters: &[],
+            raster_layers: false,
         };
 
         let model = compile_with_style(&scene, &style).expect("the scene still compiles");
@@ -3196,6 +3487,8 @@ mod tests {
             fonts: &[],
             recipe: Some(&recipe),
             definitions: &[],
+            rasters: &[],
+            raster_layers: false,
         };
 
         let model = compile_with_style(&scene, &style).expect("the shading request is not fatal");
@@ -3256,6 +3549,8 @@ mod tests {
             fonts: &[],
             recipe: Some(&recipe),
             definitions: &[],
+            rasters: &[],
+            raster_layers: false,
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -3296,6 +3591,8 @@ mod tests {
             fonts: &[],
             recipe: Some(&recipe),
             definitions: &[],
+            rasters: &[],
+            raster_layers: false,
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -3328,6 +3625,8 @@ mod tests {
             fonts: &[],
             recipe: Some(&recipe),
             definitions: &[],
+            rasters: &[],
+            raster_layers: false,
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -3352,6 +3651,8 @@ mod tests {
             fonts: &[],
             recipe: Some(&recipe),
             definitions: &[],
+            rasters: &[],
+            raster_layers: false,
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -3386,6 +3687,8 @@ mod tests {
             fonts: &[],
             recipe: Some(&recipe),
             definitions: &[],
+            rasters: &[],
+            raster_layers: false,
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -3420,6 +3723,8 @@ mod tests {
             fonts: &[],
             recipe: Some(&recipe),
             definitions: &[],
+            rasters: &[],
+            raster_layers: false,
         };
 
         let model =
@@ -3458,6 +3763,8 @@ mod tests {
                 fonts: &[],
                 recipe: None,
                 definitions: &[],
+                rasters: &[],
+                raster_layers: false,
             },
         )
         .expect("compiles");
@@ -3470,6 +3777,8 @@ mod tests {
                 fonts: &[],
                 recipe: None,
                 definitions: &[],
+                rasters: &[],
+                raster_layers: false,
             },
         )
         .expect("compiles");
@@ -3520,6 +3829,8 @@ mod tests {
             fonts: &[],
             recipe: None,
             definitions: &[],
+            rasters: &[],
+            raster_layers: false,
         };
 
         let diagnostics =
@@ -3656,6 +3967,8 @@ mod tests {
             fonts: &fonts,
             recipe: None,
             definitions: &[],
+            rasters: &[],
+            raster_layers: false,
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -3680,6 +3993,8 @@ mod tests {
             fonts: &fonts,
             recipe: None,
             definitions: &[],
+            rasters: &[],
+            raster_layers: false,
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -3702,6 +4017,8 @@ mod tests {
             fonts: &fonts,
             recipe: None,
             definitions: &[],
+            rasters: &[],
+            raster_layers: false,
         };
 
         let diagnostics =
@@ -3743,6 +4060,8 @@ mod tests {
             fonts: &fonts,
             recipe: None,
             definitions: &[],
+            rasters: &[],
+            raster_layers: false,
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -3773,6 +4092,8 @@ mod tests {
             fonts: &fonts,
             recipe: None,
             definitions: &[],
+            rasters: &[],
+            raster_layers: false,
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -3802,6 +4123,8 @@ mod tests {
             fonts: &fonts,
             recipe: None,
             definitions: &[],
+            rasters: &[],
+            raster_layers: false,
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -3877,6 +4200,8 @@ mod tests {
             fonts: &[],
             recipe: Some(&recipe),
             definitions: &[],
+            rasters: &[],
+            raster_layers: false,
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -3912,6 +4237,8 @@ mod tests {
             fonts: &[],
             recipe: Some(&recipe),
             definitions: &[],
+            rasters: &[],
+            raster_layers: false,
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -3955,6 +4282,8 @@ mod tests {
             fonts: &[],
             recipe: Some(&recipe),
             definitions: &[],
+            rasters: &[],
+            raster_layers: false,
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -3990,6 +4319,8 @@ mod tests {
             fonts: &[],
             recipe: Some(&recipe),
             definitions: &[],
+            rasters: &[],
+            raster_layers: false,
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -4036,6 +4367,8 @@ mod tests {
             fonts: &[],
             recipe: Some(&recipe),
             definitions: &[],
+            rasters: &[],
+            raster_layers: false,
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -4096,6 +4429,8 @@ mod tests {
             fonts: &[],
             recipe: Some(&recipe),
             definitions: &[],
+            rasters: &[],
+            raster_layers: false,
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -4127,6 +4462,8 @@ mod tests {
             fonts: &[],
             recipe: Some(&recipe),
             definitions: &[],
+            rasters: &[],
+            raster_layers: false,
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -4165,6 +4502,8 @@ mod tests {
             fonts: &[],
             recipe: Some(&recipe),
             definitions: &[],
+            rasters: &[],
+            raster_layers: false,
         };
 
         let model = compile_with_style(&scene, &style).expect("compiles");
@@ -4195,6 +4534,8 @@ mod tests {
             fonts: &[],
             recipe: Some(&recipe),
             definitions: &[],
+            rasters: &[],
+            raster_layers: false,
         };
         assert_eq!(
             compile_with_style(&scene, &style).expect("compiles"),
@@ -4224,6 +4565,8 @@ mod tests {
             fonts: &[],
             recipe: Some(recipe),
             definitions: &[],
+            rasters: &[],
+            raster_layers: false,
         }
     }
 

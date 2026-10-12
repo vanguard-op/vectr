@@ -269,6 +269,7 @@ mod tests {
             })),
             text: None,
             transform: Affine::IDENTITY,
+            raster: None,
             paint: NodePaint {
                 fill: Some(Paint::Color {
                     value: "#ff0000".to_string(),

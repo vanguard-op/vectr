@@ -285,6 +285,7 @@ fn icon_scene(set: &IconSet, icon: &IconEntry, definition: &Definition) -> Scene
         fill: None,
         stroke: None,
         font_id: None,
+        asset_id: None,
         opacity: NumberValue::Literal(1.0),
         visible: BoolValue::Literal(true),
         definition_ref: Some(definition.id.clone()),
@@ -436,6 +437,8 @@ mod tests {
             fonts: &[],
             recipe: None,
             definitions: &[],
+            rasters: &[],
+            raster_layers: false,
         }
     }
 

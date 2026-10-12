@@ -41,6 +41,7 @@ pub mod constraints;
 pub mod export {
     pub mod pdf;
     pub mod png;
+    pub mod raster;
     pub mod svg;
 }
 
@@ -57,8 +58,8 @@ pub use compiler::expand::{
     UNRESOLVED_DEFINITION, UNUSED_DEFINITION,
 };
 pub use compiler::{
-    compile, compile_definition, compile_subtree, compile_with_style, FontAsset, StyleContext,
-    DEFAULT_FONT_ID, EMPTY_PART_FRAME, PART, PART_FRAME_FALLBACK,
+    compile, compile_definition, compile_subtree, compile_with_style, FontAsset, RasterAsset,
+    StyleContext, DEFAULT_FONT_ID, EMPTY_PART_FRAME, PART, PART_FRAME_FALLBACK,
 };
 pub use composition::{flatten_shape, is_composition, projection_for, resolve_transform, Affine};
 pub use constraints::{resolve as resolve_constraints, Attachment, Frame, Placement, Resolution};
@@ -73,16 +74,17 @@ pub use icon_set::{
 };
 pub use primitives::{Ellipse, Line, Polygon, Rect, Shape};
 pub use render::{
-    GradientPaint, NodePaint, NodeStroke, Paint, RenderCanvas, RenderMeta, RenderModel,
-    ResolvedFont, ResolvedNode, ResolvedStop, TextRun,
+    GradientPaint, NodePaint, NodeStroke, Paint, RasterImage, RenderCanvas, RenderMeta,
+    RenderModel, ResolvedFont, ResolvedNode, ResolvedStop, TextRun,
 };
 pub use scene::{
-    is_color, parse, parse_definition, parse_icon_set, validate, validate_color,
-    validate_definition, validate_icon_set, Binding, BindingValue, BoolValue, Canvas, Constraint,
-    ConstraintKind, Definition, Diagnostic, DiagnosticCode, Diagnostics, Element, ElementKind,
-    Geometry, IconEntry, IconSet, Location, NumberValue, Origin, PaintKind, PaintValue, ParamRef,
-    Parameter, ParameterType, ParameterValue, Procedure, ProjectionAxis, Scene, Severity,
-    StringValue, TextAlign, Transform, CURRENT_FORMAT_VERSION, MAX_SCENE_BYTES,
+    is_color, parse, parse_asset, parse_definition, parse_icon_set, validate, validate_asset,
+    validate_color, validate_definition, validate_icon_set, validate_raster_references, Asset,
+    AssetKind, Binding, BindingValue, BoolValue, Canvas, Constraint, ConstraintKind, Definition,
+    Diagnostic, DiagnosticCode, Diagnostics, Element, ElementKind, Geometry, IconEntry, IconSet,
+    Location, NumberValue, Origin, PaintKind, PaintValue, ParamRef, Parameter, ParameterType,
+    ParameterValue, Procedure, ProjectionAxis, Scene, Severity, StringValue, TextAlign, Transform,
+    ASSET_KIND, CURRENT_FORMAT_VERSION, MAX_SCENE_BYTES, MISSING_ASSET,
 };
 pub use schema::{schema, schema_for, SchemaForm, SCHEMA_VERSION, UNKNOWN_SCHEMA_TYPE};
 pub use style::{

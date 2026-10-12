@@ -310,6 +310,48 @@ mod tests {
     }
 
     #[test]
+    fn the_element_declares_the_raster_surface() {
+        // A raster element names a raster asset by `assetId` and is placed by a
+        // complete bounding box, so the published contract must carry the field
+        // and require it — and the box — when the kind is `raster` (C-001,
+        // FEAT-015). A model authoring from the schema can then express a layer.
+        let schema = parsed(&schema(SchemaForm::Full).unwrap());
+        let element = &schema["$defs"]["Element"];
+        assert_eq!(
+            element["properties"]["assetId"]["type"],
+            serde_json::json!(["string", "null"]),
+            "the element declares assetId"
+        );
+
+        let conditionals = element["allOf"].as_array().expect("element conditionals");
+        let raster = conditionals
+            .iter()
+            .find(|rule| rule["if"]["properties"]["kind"]["const"] == "raster")
+            .expect("a raster conditional");
+        assert!(
+            raster["then"]["required"]
+                .as_array()
+                .expect("required fields")
+                .iter()
+                .any(|value| value == "assetId"),
+            "a raster element requires an assetId"
+        );
+        assert_eq!(
+            raster["then"]["properties"]["geometry"]["required"],
+            serde_json::json!(["x", "y", "width", "height"]),
+            "a raster element requires its bounding box"
+        );
+
+        // A non-raster element may not carry an asset reference.
+        assert!(conditionals.iter().any(|rule| {
+            rule["if"]["properties"]["kind"]["not"]["const"] == "raster"
+                && rule["then"]["not"]["required"]
+                    .as_array()
+                    .is_some_and(|required| required.iter().any(|value| value == "assetId"))
+        }));
+    }
+
+    #[test]
     fn the_compact_form_is_the_full_contract_minified() {
         let full = schema(SchemaForm::Full).unwrap();
         let compact = schema(SchemaForm::Compact).unwrap();

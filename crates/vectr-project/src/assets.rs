@@ -18,6 +18,15 @@
 //! be read is a located diagnostic and no compilation happens; nothing is
 //! substituted silently (NFR-011, FEAT-005).
 //!
+//! A raster layer places the image an `Asset` of kind `raster` names (FEAT-015).
+//! Because each asset belongs to exactly one scene, a scene's assets are the
+//! documents whose `sceneId` names it, and a raster element resolves its
+//! `assetId` only among those. The image file is read as data and never
+//! executed (NFR-022), must resolve inside the project root (NFR-024), and is
+//! carried to the compiler as the bytes a PNG export composites. A reference
+//! that resolves to no asset, or to an asset of another kind, is reported at
+//! the element's `assetId` before anything renders (FEAT-018).
+//!
 //! A scene renders in the recipe it names, or, when it names none, the project's
 //! `defaultRecipeId` (docs/Vectr/schema.md, "ProjectConfig"). The recipe is
 //! resolved the same way a palette is: by identifier from its folder, an
@@ -36,7 +45,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use vectr_core::compiler::FONT;
+use vectr_core::compiler::{RasterAsset, FONT};
+use vectr_core::scene::{parse_asset, validate_raster_references, Asset, AssetKind};
 use vectr_core::style::{UNDEFINED_GRADIENT, UNDEFINED_STROKE};
 use vectr_core::{
     expand, parse_definition, parse_gradient, parse_palette, parse_stroke_profile,
@@ -85,6 +95,19 @@ const DEFAULT_RECIPE_FIELD: &str = "/defaultRecipeId";
 /// not be read or parsed, so the project an input refers to is broken.
 pub const STYLE_ASSET: DiagnosticCode = DiagnosticCode::new("E_PROJECT_ASSET");
 
+/// A raster element places an asset whose file is not a PNG image (FEAT-015,
+/// D-056).
+///
+/// The finding names the element and its raster asset and is reported by
+/// reference validation, before anything renders, so a file in another format
+/// is a structural failure rather than a surprise at export time (C-001,
+/// FEAT-018).
+pub const RASTER_FORMAT: DiagnosticCode = DiagnosticCode::new("E_RASTER_FORMAT");
+
+/// The eight-byte PNG file signature, the whole of the format check a raster
+/// asset's file must pass (FEAT-015, D-056).
+const PNG_SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+
 /// The bundled default font's family name.
 const DEFAULT_FONT_NAME: &str = "Inter";
 
@@ -113,7 +136,30 @@ pub struct ProjectAssets {
     strokes: Vec<StrokeProfile>,
     gradients: Vec<Gradient>,
     fonts: Vec<FontAsset>,
+    /// The `Asset` documents the scene declares (FEAT-015).
+    ///
+    /// Every asset belongs to exactly one scene, so this holds the documents
+    /// whose `sceneId` names the scene being loaded; a raster element resolves
+    /// its `assetId` only among them (FEAT-018).
+    assets: Vec<Asset>,
+    /// The image bytes of each `raster` asset the scene declares, read as data
+    /// for the compiler to carry into the render model (FEAT-015, NFR-022).
+    rasters: Vec<RasterAsset>,
     definitions: Vec<Definition>,
+}
+
+/// The palette and style recipe a compile resolves against, with the field
+/// paths that named them, so an unresolved reference is located where it was
+/// declared (FEAT-019).
+struct StyleSelection<'a> {
+    /// The palette the scene selected, or the project's default.
+    palette_id: Option<&'a str>,
+    /// The field that named `palette_id`.
+    palette_field: &'a str,
+    /// The style recipe the scene selected, or the project's default.
+    recipe_id: Option<&'a str>,
+    /// The field that named `recipe_id`.
+    recipe_field: &'a str,
 }
 
 impl ProjectAssets {
@@ -173,11 +219,15 @@ impl ProjectAssets {
         Self::assemble(
             root,
             &mut diagnostics,
-            palette_id.as_deref(),
-            palette_field,
-            recipe_id.as_deref(),
-            recipe_field,
+            StyleSelection {
+                palette_id: palette_id.as_deref(),
+                palette_field,
+                recipe_id: recipe_id.as_deref(),
+                recipe_field,
+            },
+            Some(scene.id.as_str()),
             |definitions| has_text(scene, definitions),
+            has_raster(scene),
         )
     }
 
@@ -202,11 +252,17 @@ impl ProjectAssets {
         Self::assemble(
             root,
             &mut diagnostics,
-            Some(&palette_id),
-            DEFAULT_PALETTE_FIELD,
-            recipe_id.as_deref(),
-            DEFAULT_RECIPE_FIELD,
+            StyleSelection {
+                palette_id: Some(&palette_id),
+                palette_field: DEFAULT_PALETTE_FIELD,
+                recipe_id: recipe_id.as_deref(),
+                recipe_field: DEFAULT_RECIPE_FIELD,
+            },
+            // A definition owns no raster element (FEAT-015), so it carries no
+            // scene-scoped asset.
+            None,
             |definitions| definition_has_text(definition, definitions),
+            false,
         )
     }
 
@@ -219,12 +275,17 @@ impl ProjectAssets {
     fn assemble(
         root: &Path,
         diagnostics: &mut Diagnostics,
-        palette_id: Option<&str>,
-        palette_field: &str,
-        recipe_id: Option<&str>,
-        recipe_field: &str,
+        selection: StyleSelection<'_>,
+        scene_id: Option<&str>,
         needs_text: impl Fn(&[Definition]) -> bool,
+        needs_raster: bool,
     ) -> Result<Self, Diagnostics> {
+        let StyleSelection {
+            palette_id,
+            palette_field,
+            recipe_id,
+            recipe_field,
+        } = selection;
         let palette = match palette_id {
             Some(id) => match load_palette(root, id, palette_field) {
                 Ok(palette) => Some(palette),
@@ -283,6 +344,22 @@ impl ProjectAssets {
             }
         }
 
+        // A scene's raster assets are only read when a raster element places
+        // one; a scene without raster layers carries none (FEAT-015).
+        let mut assets = Vec::new();
+        let mut rasters = Vec::new();
+        if needs_raster {
+            if let Some(scene_id) = scene_id {
+                match load_scene_assets(root, scene_id) {
+                    Ok(loaded) => {
+                        assets = loaded.documents;
+                        rasters = loaded.rasters;
+                    }
+                    Err(findings) => diagnostics.extend(findings),
+                }
+            }
+        }
+
         if diagnostics.has_errors() {
             return Err(std::mem::take(diagnostics));
         }
@@ -292,6 +369,8 @@ impl ProjectAssets {
             strokes,
             gradients,
             fonts,
+            assets,
+            rasters,
             definitions,
         })
     }
@@ -305,12 +384,18 @@ impl ProjectAssets {
     }
 
     /// The style context the compiler resolves the scene against (D-013).
+    ///
+    /// Raster layers stay off by default: a front end turns them on by setting
+    /// [`StyleContext::raster_layers`] for the scene it renders, so the
+    /// rollout flag gates the capability (FEAT-015).
     pub fn style_context(&self) -> StyleContext<'_> {
         StyleContext {
             palette: self.palette.as_ref(),
             strokes: &self.strokes,
             gradients: &self.gradients,
             fonts: &self.fonts,
+            rasters: &self.rasters,
+            raster_layers: false,
             recipe: self.recipe.as_ref(),
             definitions: &self.definitions,
         }
@@ -324,6 +409,16 @@ impl ProjectAssets {
     /// The gradients the project defines (FEAT-027).
     pub fn gradients(&self) -> &[Gradient] {
         &self.gradients
+    }
+
+    /// The `Asset` documents the scene declares (FEAT-015).
+    pub fn assets(&self) -> &[Asset] {
+        &self.assets
+    }
+
+    /// The image bytes of the scene's `raster` assets, read as data (FEAT-015).
+    pub fn rasters(&self) -> &[RasterAsset] {
+        &self.rasters
     }
 
     /// The reusable definitions the project provides (FEAT-030).
@@ -355,11 +450,58 @@ impl ProjectAssets {
         match expand(scene, &self.definitions) {
             Ok(expansion) => {
                 diagnostics.extend(expansion.diagnostics);
+                diagnostics.extend(validate_raster_references(&expansion.scene, &self.assets));
+                diagnostics.extend(self.check_raster_formats(&expansion.scene));
                 diagnostics.extend(self.check_element_references(&expansion.scene.elements));
             }
             Err(errors) => {
                 diagnostics.extend(errors);
+                diagnostics.extend(validate_raster_references(scene, &self.assets));
+                diagnostics.extend(self.check_raster_formats(scene));
                 diagnostics.extend(self.check_element_references(&scene.elements));
+            }
+        }
+        diagnostics
+    }
+
+    /// Checks every resolvable raster element's asset file is a PNG image
+    /// (FEAT-015, FEAT-018, D-056).
+    ///
+    /// A raster asset's file must be a PNG image; a file in any other format is
+    /// a located error naming the element and its asset, reported during
+    /// reference validation so it fails before anything renders rather than at
+    /// export time. A reference that resolves to no asset or to another kind is
+    /// left to [`validate_raster_references`], so one problem yields one finding.
+    fn check_raster_formats(&self, scene: &Scene) -> Diagnostics {
+        let mut diagnostics = Diagnostics::new();
+        for element in &scene.elements {
+            if element.kind != ElementKind::Raster {
+                continue;
+            }
+            let Some(asset_id) = element.asset_id.as_deref().filter(|id| !id.is_empty()) else {
+                // A raster element with no assetId is reported by `validate`.
+                continue;
+            };
+            let Some(asset) = self.assets.iter().find(|asset| asset.id == asset_id) else {
+                continue;
+            };
+            if asset.kind != AssetKind::Raster {
+                continue;
+            }
+            let Some(raster) = self.rasters.iter().find(|raster| raster.id == asset_id) else {
+                continue;
+            };
+            if !raster.data.starts_with(&PNG_SIGNATURE) {
+                diagnostics.push(
+                    Diagnostic::error(
+                        RASTER_FORMAT,
+                        format!(
+                            "raster element `{}` references asset `{asset_id}`, whose file `{}` is not a PNG image",
+                            element.id, asset.path
+                        ),
+                    )
+                    .with_location(Location::element_at(element.id.clone(), "/assetId")),
+                );
             }
         }
         diagnostics
@@ -496,6 +638,19 @@ fn definition_has_text(definition: &Definition, definitions: &[Definition]) -> b
 /// Whether a definition element is a text run.
 fn is_text_element(element: &Element) -> bool {
     element.kind == ElementKind::Text
+}
+
+/// Whether a scene places any raster layer, and so needs the scene-scoped
+/// raster assets read at all (FEAT-015).
+///
+/// Only a scene owns a raster element; a definition's elements are checked
+/// separately, and a raster element inside one is a validation error
+/// (FEAT-015, FEAT-018).
+fn has_raster(scene: &Scene) -> bool {
+    scene
+        .elements
+        .iter()
+        .any(|element| element.kind == ElementKind::Raster)
 }
 
 /// The two open-licensed fonts Vectr ships, under the default and fallback ids.
@@ -869,6 +1024,111 @@ fn load_font_assets(root: &Path) -> Result<Vec<FontAsset>, Diagnostics> {
     }
 }
 
+/// The `Asset` documents a scene declares, and the raster image bytes its
+/// raster elements place (FEAT-015).
+#[derive(Debug, Default)]
+struct SceneAssets {
+    /// Every `Asset` document whose `sceneId` names the scene.
+    documents: Vec<Asset>,
+    /// The bytes of each `raster` asset among them, read as data (NFR-022).
+    rasters: Vec<RasterAsset>,
+}
+
+/// Loads the `Asset` documents a scene declares and the raster image bytes they
+/// supply (FEAT-015, C-001).
+///
+/// Every asset belongs to exactly one scene, so only the documents whose
+/// `sceneId` names `scene_id` are loaded; a raster element resolves its
+/// `assetId` among those alone (docs/Vectr/schema.md, "Asset", "Relationships").
+/// Each document is read through the core's asset parser so a malformed one
+/// fails loudly rather than being skipped (NFR-011). A raster asset's image file
+/// is read as data and never executed (NFR-022), and must resolve inside the
+/// project root (NFR-024).
+fn load_scene_assets(root: &Path, scene_id: &str) -> Result<SceneAssets, Diagnostics> {
+    let dir = root.join(ASSET_DIR);
+    let canonical_root = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let mut loaded = SceneAssets::default();
+    let mut diagnostics = Diagnostics::new();
+
+    for path in json_files(&dir) {
+        let source = match fs::read_to_string(&path) {
+            Ok(source) => source,
+            Err(error) => {
+                diagnostics.push(asset_error(format!(
+                    "cannot read asset `{}`: {error}",
+                    path.display()
+                )));
+                continue;
+            }
+        };
+        let asset = match parse_asset(&source) {
+            Ok(asset) => asset,
+            Err(findings) => {
+                diagnostics.extend(invalid(&path, "asset", findings));
+                continue;
+            }
+        };
+        // An asset belongs to exactly one scene; one declared for another scene
+        // does not resolve here.
+        if asset.scene_id != scene_id {
+            continue;
+        }
+        if asset.kind == AssetKind::Raster {
+            match read_scene_raster(root, &path, &asset, &canonical_root) {
+                Ok(raster) => loaded.rasters.push(raster),
+                Err(findings) => {
+                    diagnostics.extend(findings);
+                    continue;
+                }
+            }
+        }
+        loaded.documents.push(asset);
+    }
+
+    if diagnostics.has_errors() {
+        Err(diagnostics)
+    } else {
+        Ok(loaded)
+    }
+}
+
+/// Reads one raster asset's image file as data, keeping it inside the project
+/// root (FEAT-015, NFR-022, NFR-024).
+fn read_scene_raster(
+    root: &Path,
+    document: &Path,
+    asset: &Asset,
+    canonical_root: &Path,
+) -> Result<RasterAsset, Diagnostics> {
+    let Some(file) = asset_file(root, document, &asset.path) else {
+        return Err(Diagnostics::from(asset_error(format!(
+            "raster asset `{}` names `{}`, which is not a file",
+            asset.id, asset.path
+        ))));
+    };
+    let canonical = fs::canonicalize(&file).unwrap_or_else(|_| file.clone());
+    if !canonical.starts_with(canonical_root) {
+        return Err(Diagnostics::from(asset_error(format!(
+            "raster asset `{}` names `{}`, which is outside the project",
+            asset.id, asset.path
+        ))));
+    }
+    match fs::read(&file) {
+        Ok(data) => {
+            let name = asset
+                .description
+                .clone()
+                .unwrap_or_else(|| asset.id.clone());
+            Ok(RasterAsset::new(asset.id.clone(), name, data))
+        }
+        Err(error) => Err(Diagnostics::from(asset_error(format!(
+            "cannot read raster asset `{}` from `{}`: {error}",
+            asset.id,
+            file.display()
+        )))),
+    }
+}
+
 /// Resolves an asset's `path` against the project root, then the document.
 fn asset_file(root: &Path, document: &Path, relative: &str) -> Option<PathBuf> {
     let from_root = root.join(relative);
@@ -953,11 +1213,17 @@ fn font_error(message: impl Into<String>) -> Diagnostic {
     Diagnostic::error(FONT, message)
 }
 
+/// A broken or unreadable `Asset` document, as a single finding (FEAT-015).
+fn asset_error(message: impl Into<String>) -> Diagnostic {
+    Diagnostic::error(STYLE_ASSET, message)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    use vectr_core::scene::{ASSET_KIND, MISSING_ASSET};
     use vectr_core::{compile_with_style, parse as parse_scene};
 
     const TEXT_SCENE: &str = r##"{
@@ -986,6 +1252,22 @@ mod tests {
         {
           "id": "r1", "sceneId": "s", "order": 0, "kind": "rect",
           "geometry": { "x": 0, "y": 0, "width": 10, "height": 10 },
+          "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
+          "opacity": 1, "visible": true
+        }
+      ]
+    }"##;
+
+    const RASTER_SCENE: &str = r##"{
+      "id": "s",
+      "projectId": "p",
+      "name": "Raster",
+      "formatVersion": "0.2",
+      "canvas": { "width": 100, "height": 100, "background": "#ffffff" },
+      "elements": [
+        {
+          "id": "photo", "sceneId": "s", "order": 0, "kind": "raster", "assetId": "photo",
+          "geometry": { "x": 0, "y": 0, "width": 100, "height": 100 },
           "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
           "opacity": 1, "visible": true
         }
@@ -1360,6 +1642,224 @@ mod tests {
         let error = diagnostics.errors().next().expect("an error");
         assert_eq!(error.code, FONT);
         assert!(error.message.contains("outside"), "{}", error.message);
+    }
+
+    /// A raster `Asset` document declaring an `id`, `sceneId`, `kind` and
+    /// `path`, with a nominal licence.
+    fn raster_asset(id: &str, scene_id: &str, kind: &str, path: &str) -> String {
+        format!(
+            r#"{{"id":"{id}","sceneId":"{scene_id}","kind":"{kind}","path":"{path}","license":"CC0"}}"#
+        )
+    }
+
+    /// Nominal image bytes; the loader reads a raster asset's file as data and
+    /// never interprets it (NFR-022).
+    const RASTER_BYTES: &[u8] = b"\x89PNG\r\n\x1a\nfake-image-data";
+
+    #[test]
+    fn a_raster_asset_is_loaded_for_its_scene_and_carried() {
+        let dir = TempDir::new("assets-raster");
+        write(dir.path(), "vectr.project.json", "{}");
+        fs::create_dir_all(dir.path().join("assets")).expect("creates assets");
+        fs::write(dir.path().join("assets/photo.png"), RASTER_BYTES).expect("writes the image");
+        write(
+            dir.path(),
+            "assets/photo.json",
+            &raster_asset("photo", "s", "raster", "assets/photo.png"),
+        );
+        let scene_path = write(dir.path(), "scenes/scene.json", RASTER_SCENE);
+        let scene = parse_scene(RASTER_SCENE).expect("a valid scene");
+
+        let assets = ProjectAssets::load_for_scene(&scene_path, &scene).expect("loads");
+        assert!(assets.check_references(&scene).is_empty());
+        assert_eq!(assets.assets().len(), 1);
+        assert_eq!(assets.rasters().len(), 1);
+        assert_eq!(assets.rasters()[0].id, "photo");
+        assert_eq!(assets.rasters()[0].data, RASTER_BYTES);
+        assert_eq!(assets.style_context().rasters.len(), 1);
+        assert!(
+            !assets.style_context().raster_layers,
+            "the flag stays off until a front end enables it"
+        );
+    }
+
+    #[test]
+    fn a_missing_raster_asset_is_reported_against_the_element() {
+        let dir = TempDir::new("assets-raster-missing");
+        write(dir.path(), "vectr.project.json", "{}");
+        let scene_path = write(dir.path(), "scenes/scene.json", RASTER_SCENE);
+        let scene = parse_scene(RASTER_SCENE).expect("a valid scene");
+
+        let assets = ProjectAssets::load_for_scene(&scene_path, &scene).expect("loads");
+        assert!(assets.rasters().is_empty());
+        let diagnostics = assets.check_references(&scene);
+        let error = diagnostics.errors().next().expect("an error");
+        assert_eq!(error.code, MISSING_ASSET);
+        assert!(error.message.contains("photo"), "{}", error.message);
+        let location = error.location.as_ref().expect("the reference is located");
+        assert_eq!(location.element_id.as_deref(), Some("photo"));
+        assert_eq!(location.json_path.as_deref(), Some("/assetId"));
+    }
+
+    #[test]
+    fn a_raster_reference_to_another_kind_is_reported() {
+        let dir = TempDir::new("assets-raster-kind");
+        write(dir.path(), "vectr.project.json", "{}");
+        fs::create_dir_all(dir.path().join("assets")).expect("creates assets");
+        fs::write(dir.path().join("assets/Brand.ttf"), bundled("Inter.ttf"))
+            .expect("writes the font");
+        write(
+            dir.path(),
+            "assets/photo.json",
+            &raster_asset("photo", "s", "font", "assets/Brand.ttf"),
+        );
+        let scene_path = write(dir.path(), "scenes/scene.json", RASTER_SCENE);
+        let scene = parse_scene(RASTER_SCENE).expect("a valid scene");
+
+        let assets = ProjectAssets::load_for_scene(&scene_path, &scene).expect("loads");
+        let diagnostics = assets.check_references(&scene);
+        let error = diagnostics.errors().next().expect("an error");
+        assert_eq!(error.code, ASSET_KIND);
+        assert!(error.message.contains("font"), "{}", error.message);
+    }
+
+    #[test]
+    fn an_asset_of_another_scene_does_not_resolve() {
+        let dir = TempDir::new("assets-raster-scene");
+        write(dir.path(), "vectr.project.json", "{}");
+        fs::create_dir_all(dir.path().join("assets")).expect("creates assets");
+        fs::write(dir.path().join("assets/photo.png"), RASTER_BYTES).expect("writes the image");
+        write(
+            dir.path(),
+            "assets/photo.json",
+            &raster_asset("photo", "other", "raster", "assets/photo.png"),
+        );
+        let scene_path = write(dir.path(), "scenes/scene.json", RASTER_SCENE);
+        let scene = parse_scene(RASTER_SCENE).expect("a valid scene");
+
+        let assets = ProjectAssets::load_for_scene(&scene_path, &scene).expect("loads");
+        assert!(
+            assets.assets().is_empty(),
+            "an asset belongs to exactly one scene"
+        );
+        let diagnostics = assets.check_references(&scene);
+        let error = diagnostics.errors().next().expect("an error");
+        assert_eq!(error.code, MISSING_ASSET);
+    }
+
+    /// JPEG bytes, a valid image in a format a raster layer does not accept.
+    const JPEG_BYTES: &[u8] = &[0xff, 0xd8, 0xff, 0xe0, b'f', b'a', b'k', b'e'];
+
+    #[test]
+    fn a_raster_asset_whose_file_is_not_a_png_is_reported() {
+        let dir = TempDir::new("assets-raster-format");
+        write(dir.path(), "vectr.project.json", "{}");
+        fs::create_dir_all(dir.path().join("assets")).expect("creates assets");
+        fs::write(dir.path().join("assets/photo.jpg"), JPEG_BYTES).expect("writes the image");
+        write(
+            dir.path(),
+            "assets/photo.json",
+            &raster_asset("photo", "s", "raster", "assets/photo.jpg"),
+        );
+        let scene_path = write(dir.path(), "scenes/scene.json", RASTER_SCENE);
+        let scene = parse_scene(RASTER_SCENE).expect("a valid scene");
+
+        let assets = ProjectAssets::load_for_scene(&scene_path, &scene).expect("loads");
+        let diagnostics = assets.check_references(&scene);
+        let error = diagnostics.errors().next().expect("an error");
+        assert_eq!(error.code, RASTER_FORMAT);
+        assert!(
+            error.message.contains("photo"),
+            "the asset and element are named: {}",
+            error.message
+        );
+        assert!(
+            error.message.contains("PNG"),
+            "the expected format is named: {}",
+            error.message
+        );
+        let location = error.location.as_ref().expect("the reference is located");
+        assert_eq!(location.element_id.as_deref(), Some("photo"));
+        assert_eq!(location.json_path.as_deref(), Some("/assetId"));
+    }
+
+    #[test]
+    fn a_png_raster_asset_passes_the_format_check() {
+        let dir = TempDir::new("assets-raster-format-ok");
+        write(dir.path(), "vectr.project.json", "{}");
+        fs::create_dir_all(dir.path().join("assets")).expect("creates assets");
+        fs::write(dir.path().join("assets/photo.png"), RASTER_BYTES).expect("writes the image");
+        write(
+            dir.path(),
+            "assets/photo.json",
+            &raster_asset("photo", "s", "raster", "assets/photo.png"),
+        );
+        let scene_path = write(dir.path(), "scenes/scene.json", RASTER_SCENE);
+        let scene = parse_scene(RASTER_SCENE).expect("a valid scene");
+
+        let assets = ProjectAssets::load_for_scene(&scene_path, &scene).expect("loads");
+        assert!(assets.check_references(&scene).is_empty());
+    }
+
+    #[test]
+    fn a_missing_asset_is_reported_once_not_as_a_format_failure() {
+        let dir = TempDir::new("assets-raster-format-missing");
+        write(dir.path(), "vectr.project.json", "{}");
+        let scene_path = write(dir.path(), "scenes/scene.json", RASTER_SCENE);
+        let scene = parse_scene(RASTER_SCENE).expect("a valid scene");
+
+        let assets = ProjectAssets::load_for_scene(&scene_path, &scene).expect("loads");
+        let diagnostics = assets.check_references(&scene);
+        let errors: Vec<&str> = diagnostics
+            .errors()
+            .map(|error| error.code.as_str())
+            .collect();
+        assert_eq!(
+            errors,
+            vec!["E_MISSING_ASSET"],
+            "one unresolved reference yields one finding"
+        );
+    }
+
+    #[test]
+    fn a_raster_file_outside_the_project_root_is_refused() {
+        let dir = TempDir::new("assets-raster-escape");
+        let outside = dir.path().join("outside");
+        fs::create_dir_all(&outside).expect("creates the outside directory");
+        fs::write(outside.join("photo.png"), RASTER_BYTES).expect("writes the image");
+        let project = dir.path().join("project");
+        write(&project, "vectr.project.json", "{}");
+        write(
+            &project,
+            "assets/photo.json",
+            &raster_asset("photo", "s", "raster", "../outside/photo.png"),
+        );
+        let scene_path = write(&project, "scenes/scene.json", RASTER_SCENE);
+        let scene = parse_scene(RASTER_SCENE).expect("a valid scene");
+
+        let diagnostics = ProjectAssets::load_for_scene(&scene_path, &scene).expect_err("refused");
+        let error = diagnostics.errors().next().expect("an error");
+        assert_eq!(error.code, STYLE_ASSET);
+        assert!(error.message.contains("outside"), "{}", error.message);
+    }
+
+    #[test]
+    fn a_scene_without_raster_layers_loads_no_asset() {
+        let dir = TempDir::new("assets-no-raster");
+        write(dir.path(), "vectr.project.json", "{}");
+        fs::create_dir_all(dir.path().join("assets")).expect("creates assets");
+        fs::write(dir.path().join("assets/photo.png"), RASTER_BYTES).expect("writes the image");
+        write(
+            dir.path(),
+            "assets/photo.json",
+            &raster_asset("photo", "s", "raster", "assets/photo.png"),
+        );
+        let scene_path = write(dir.path(), "scenes/scene.json", RECT_SCENE);
+        let scene = parse_scene(RECT_SCENE).expect("a valid scene");
+
+        let assets = ProjectAssets::load_for_scene(&scene_path, &scene).expect("loads");
+        assert!(assets.assets().is_empty());
+        assert!(assets.rasters().is_empty());
     }
 
     #[test]

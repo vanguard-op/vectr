@@ -35,6 +35,8 @@ fn compiling_the_same_scene_twice_yields_an_identical_model() {
         fonts: &[],
         recipe: None,
         definitions: &[],
+        rasters: &[],
+        raster_layers: false,
     };
 
     let first = compile_with(&document, &style).expect("compiles");
@@ -124,6 +126,8 @@ fn a_text_element_carries_its_string_resolved_font_and_layout() {
         fonts: &fonts,
         recipe: None,
         definitions: &[],
+        rasters: &[],
+        raster_layers: false,
     };
 
     let model = compile_with(&document, &style).expect("compiles");
@@ -150,7 +154,17 @@ fn a_text_element_carries_its_string_resolved_font_and_layout() {
 
 #[test]
 fn an_unsupported_feature_is_refused_by_name() {
-    let document = scene(vec![element("r1", 0, "raster", json!({}))]);
+    // A raster layer is well-formed — it names its asset and carries its
+    // bounding box — but raster layers are off by default, so a plain compile
+    // refuses it as an unsupported feature naming the element (FEAT-015).
+    let mut raster = element(
+        "r1",
+        0,
+        "raster",
+        json!({ "x": 0, "y": 0, "width": 4, "height": 4 }),
+    );
+    raster["assetId"] = json!("photo");
+    let document = scene(vec![raster]);
     let scene = parse_scene(&document);
     let diagnostics = vectr_core::compile(&scene).expect_err("refused");
     let error = diagnostics.errors().next().expect("an error");
@@ -173,6 +187,8 @@ fn the_render_model_round_trips_through_its_json_representation() {
         fonts: &[],
         recipe: None,
         definitions: &[],
+        rasters: &[],
+        raster_layers: false,
     };
     let model = compile_with(&document, &style).expect("compiles");
 

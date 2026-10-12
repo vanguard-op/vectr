@@ -14,6 +14,7 @@
 use std::fmt::Write as _;
 
 use crate::composition::Affine;
+use crate::export::raster;
 use crate::fonts::FontLibrary;
 use crate::primitives::{Path as PathGeometry, Segment, Shape};
 use crate::render::{GradientPaint, NodeStroke, Paint, RenderModel, ResolvedNode};
@@ -159,12 +160,17 @@ impl Emitter {
     ) {
         for node in &model.nodes {
             if node.kind == "raster" {
-                warn(
-                    diagnostics,
-                    UNSUPPORTED,
-                    node,
-                    "is a raster layer, which PDF export omits",
-                );
+                match &node.raster {
+                    Some(image) => {
+                        raster::warn_omitted(diagnostics, node, &image.asset_id, "PDF export")
+                    }
+                    None => warn(
+                        diagnostics,
+                        UNSUPPORTED,
+                        node,
+                        "is a raster layer, which PDF export omits",
+                    ),
+                }
                 continue;
             }
             if !is_finite(node) {
@@ -1181,6 +1187,7 @@ mod tests {
             geometry: Some(geometry),
             text: None,
             transform: Affine::IDENTITY,
+            raster: None,
             paint: NodePaint::default(),
             opacity: 1.0,
             visible: true,
@@ -1310,7 +1317,7 @@ mod tests {
     }
 
     #[test]
-    fn a_raster_node_is_omitted_with_a_warning() {
+    fn a_raster_node_without_an_image_is_omitted_with_a_warning() {
         let mut shape = node("r1", rect(0.0, 0.0, 1.0, 1.0));
         shape.kind = "raster".to_string();
         let (text, diagnostics) = content(&model(vec![shape]), Profile::Srgb);
@@ -1319,6 +1326,22 @@ mod tests {
             diagnostics.warnings().next().map(|w| w.code.clone()),
             Some(UNSUPPORTED)
         );
+    }
+
+    #[test]
+    fn a_raster_layer_is_omitted_with_a_warning_naming_its_asset() {
+        let mut shape = node("r1", rect(0.0, 0.0, 50.0, 50.0));
+        shape.kind = "raster".to_string();
+        shape.raster = Some(crate::render::RasterImage {
+            asset_id: "photo".to_string(),
+            data: b"\x89PNG\r\n\x1a\n".to_vec(),
+        });
+        let (text, diagnostics) = content(&model(vec![shape]), Profile::Srgb);
+        assert!(!text.contains("r1"), "{text}");
+        let warning = diagnostics.warnings().next().expect("a warning");
+        assert_eq!(warning.code, crate::export::raster::OMITTED);
+        assert!(warning.message.contains("r1"), "{}", warning.message);
+        assert!(warning.message.contains("photo"), "{}", warning.message);
     }
 
     #[test]

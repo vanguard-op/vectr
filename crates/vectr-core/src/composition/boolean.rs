@@ -133,6 +133,7 @@ mod tests {
             fill: None,
             stroke: None,
             font_id: None,
+            asset_id: None,
             opacity: NumberValue::Literal(1.0),
             visible: BoolValue::Literal(true),
             definition_ref: None,

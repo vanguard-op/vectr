@@ -23,16 +23,19 @@
 //!
 //! A node the SVG target cannot represent — a raster layer, or geometry whose
 //! coordinates are not finite — is omitted rather than emitted corrupted, and
-//! the omission is reported as a warning naming the node (C-003). The frozen
-//! [`export_svg`] signature has no channel for those warnings, so
-//! [`export_svg_reporting`] returns them alongside the document; the CLI and
-//! other callers that surface warnings use it, while [`export_svg`] remains the
-//! frozen shape.
+//! the omission is reported as a warning naming the node (C-003). A raster
+//! layer's warning names the element and its asset; the PNG exporter instead
+//! composites the layer separately, so the omission warning is not raised there
+//! (FEAT-015). The frozen [`export_svg`] signature has no channel for those
+//! warnings, so [`export_svg_reporting`] returns them alongside the document;
+//! the CLI and other callers that surface warnings use it, while [`export_svg`]
+//! remains the frozen shape.
 
-use crate::render::RenderModel;
+use crate::render::{RenderModel, ResolvedNode};
 use crate::scene::{validate_color, Diagnostic, DiagnosticCode, Diagnostics};
 
 mod emit;
+pub(crate) use emit::RasterMode;
 
 /// A node the SVG target cannot represent, omitted with a warning.
 pub const UNSUPPORTED: DiagnosticCode = DiagnosticCode::new("W_UNSUPPORTED_SVG");
@@ -87,6 +90,18 @@ pub fn export_svg_reporting(
     model: &RenderModel,
     options: &SvgOptions,
 ) -> Result<SvgExport, Diagnostics> {
+    export_svg_with(model, options, RasterMode::Omit)
+}
+
+/// Emits a model as SVG with an explicit raster-layer mode (C-003, FEAT-015).
+///
+/// The public exporters use [`RasterMode::Omit`] so the user's SVG stays pure
+/// vector and the omission is warned.
+fn export_svg_with(
+    model: &RenderModel,
+    options: &SvgOptions,
+    raster: RasterMode,
+) -> Result<SvgExport, Diagnostics> {
     let size = resolve_size(model, options)?;
     let (background, from_options) = match options.background.as_deref() {
         Some(value) => (value, true),
@@ -99,7 +114,14 @@ pub fn export_svg_reporting(
         return Err(diagnostics);
     }
 
-    let svg = emit::document(model, &size, background, &mut diagnostics);
+    let svg = emit::document(
+        model,
+        &model.nodes,
+        &size,
+        background,
+        raster,
+        &mut diagnostics,
+    );
     if diagnostics.has_errors() {
         return Err(diagnostics);
     }
@@ -108,13 +130,40 @@ pub fn export_svg_reporting(
     Ok(SvgExport { svg, diagnostics })
 }
 
+/// Emits one document at an already-resolved size, over a subset of the model's
+/// nodes (FEAT-015).
+///
+/// The PNG exporter uses this to rasterize the vector content in bands around a
+/// composited raster layer, so paint order is preserved; the caller has already
+/// validated the background and size.
+pub(crate) fn emit_band(
+    model: &RenderModel,
+    nodes: &[ResolvedNode],
+    width: f64,
+    height: f64,
+    background: &str,
+    raster: RasterMode,
+    diagnostics: &mut Diagnostics,
+) -> String {
+    emit::document(
+        model,
+        nodes,
+        &emit::Size { width, height },
+        background,
+        raster,
+        diagnostics,
+    )
+}
+
 /// Notes a document that carries no accessible metadata (FEAT-026).
 ///
 /// A scene without a title and without a description exports successfully, but
 /// the document then has nothing for assistive technology to announce; the gap
 /// is reported rather than left silent. The warning follows any content the
-/// target omitted, so the exporter's own findings stay first.
-fn warn_missing_metadata(model: &RenderModel, diagnostics: &mut Diagnostics) {
+/// target omitted, so the exporter's own findings stay first. The PNG exporter
+/// applies it to the model directly, since it no longer routes through
+/// [`export_svg_reporting`].
+pub(crate) fn warn_missing_metadata(model: &RenderModel, diagnostics: &mut Diagnostics) {
     if model.meta.title.is_none() && model.meta.description.is_none() {
         diagnostics.push(Diagnostic::warning(
             MISSING_METADATA,
@@ -128,8 +177,9 @@ fn warn_missing_metadata(model: &RenderModel, diagnostics: &mut Diagnostics) {
 /// A value that is neither a colour SVG supports nor a transparent sentinel is
 /// a located error, so no invalid colour reaches the output (FEAT-018).
 /// `from_options` selects the name and location, distinguishing an export
-/// override from the canvas's own background.
-fn validate_background(diagnostics: &mut Diagnostics, value: &str, from_options: bool) {
+/// override from the canvas's own background. Shared with the PNG exporter,
+/// which validates the background before it rasterizes any band (FEAT-015).
+pub(crate) fn validate_background(diagnostics: &mut Diagnostics, value: &str, from_options: bool) {
     if emit::is_transparent(value) {
         return;
     }
@@ -187,7 +237,8 @@ mod tests {
         Ellipse, Line, Path as PathGeometry, Polygon, Rect, Segment, Shape, SubPath,
     };
     use crate::render::{
-        NodePaint, NodeStroke, Paint, RenderCanvas, RenderMeta, ResolvedFont, ResolvedNode, TextRun,
+        NodePaint, NodeStroke, Paint, RasterImage, RenderCanvas, RenderMeta, ResolvedFont,
+        ResolvedNode, TextRun,
     };
     use crate::scene::TextAlign;
     use crate::style::{StrokeCap, StrokeJoin};
@@ -214,6 +265,7 @@ mod tests {
             geometry: Some(geometry),
             text: None,
             transform: Affine::IDENTITY,
+            raster: None,
             paint: NodePaint::default(),
             opacity: 1.0,
             visible: true,
@@ -258,6 +310,7 @@ mod tests {
                 width: None,
             }),
             transform: Affine::IDENTITY,
+            raster: None,
             paint: NodePaint {
                 fill: Some(Paint::Color {
                     value: "#000000".to_string(),
@@ -323,6 +376,8 @@ mod tests {
             fonts: &[],
             recipe: None,
             definitions: &[],
+            rasters: &[],
+            raster_layers: false,
         };
 
         let compiled = compile_with_style(&scene, &style).expect("compiles");
@@ -826,6 +881,54 @@ mod tests {
         assert!(svg.contains("</svg>"), "{svg}");
     }
 
+    /// A raster node placing an asset as the compiler emits one.
+    fn raster_node(id: &str, asset_id: &str) -> ResolvedNode {
+        let mut shape = node(id, None, rect(0.0, 0.0, 10.0, 10.0));
+        shape.kind = "raster".to_string();
+        shape.raster = Some(RasterImage {
+            asset_id: asset_id.to_string(),
+            data: b"\x89PNG\r\n\x1a\n".to_vec(),
+        });
+        shape
+    }
+
+    #[test]
+    fn a_raster_layer_is_omitted_with_a_warning_naming_its_asset() {
+        let export = export_svg_reporting(
+            &model(vec![raster_node("r1", "photo")]),
+            &SvgOptions::default(),
+        )
+        .expect("exports");
+        assert!(!export.svg.contains("r1"), "{}", export.svg);
+        assert!(!export.svg.contains("<image"), "{}", export.svg);
+        let warning = export.diagnostics.warnings().next().expect("a warning");
+        assert_eq!(warning.code, crate::export::raster::OMITTED);
+        assert!(warning.message.contains("r1"), "{}", warning.message);
+        assert!(warning.message.contains("photo"), "{}", warning.message);
+    }
+
+    #[test]
+    fn a_skipped_raster_layer_draws_nothing_and_does_not_warn() {
+        // The PNG exporter's emission mode skips the layer silently because it
+        // composites the image itself (FEAT-015).
+        let export = export_svg_with(
+            &model(vec![raster_node("r1", "photo")]),
+            &SvgOptions::default(),
+            super::RasterMode::Skip,
+        )
+        .expect("exports");
+        assert!(!export.svg.contains("r1"), "{}", export.svg);
+        assert!(!export.svg.contains("<image"), "{}", export.svg);
+        assert!(
+            !export
+                .diagnostics
+                .warnings()
+                .any(|warning| warning.code == crate::export::raster::OMITTED),
+            "{:?}",
+            export.diagnostics
+        );
+    }
+
     #[test]
     fn an_invalid_output_size_is_refused() {
         let document = model(Vec::new());
@@ -1012,6 +1115,8 @@ mod tests {
                 fonts: &fonts,
                 recipe: None,
                 definitions: &[],
+                rasters: &[],
+                raster_layers: false,
             },
         )
         .expect("compiles");

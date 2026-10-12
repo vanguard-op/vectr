@@ -22,6 +22,7 @@ called.
 | Gradient | `gradients/` | a paint `ref` with `kind: "gradient"` |
 | Definition | `definitions/<id>.json` | an `instance` element's `definitionRef` |
 | Asset (font) | `assets/` | `element.fontId` on a text element |
+| Asset (raster) | `assets/` | `element.assetId` on a `raster` element; the asset's `sceneId` names the scene that owns it |
 
 A command that omits the scene uses the project's `defaultSceneId`; a command
 that names one operates on that scene alone, whatever the default says,
@@ -65,6 +66,7 @@ vectr schema --type StyleRecipe
 vectr schema --type Gradient
 vectr schema --type Definition
 vectr schema --type Binding
+vectr schema --type Asset
 ```
 
 Type names are matched case-insensitively; an unknown name is refused with the
@@ -185,6 +187,16 @@ A stroke profile carries geometry only. `strokes/hairline.json`:
   `lineHeight` is the baseline-to-baseline distance. Omit `fontId` to use the
   bundled open-licensed sans (Inter, with Noto Sans as glyph fallback);
   `fontId` may appear only on a text element.
+- **A raster layer places an image and renders only in PNG.** A `raster`
+  element is a leaf placed by `geometry` `{x, y, width, height}` (all four
+  required) and carries `assetId`, naming an `Asset` document of kind `raster`
+  whose `sceneId` names the scene that owns the element; its `path` locates the
+  image inside the project. A raster layer paints in `order` like any other
+  element, belongs to a scene (never a definition), and is not an operand of a
+  composition. SVG and PDF omit it with a warning naming the element and its
+  asset rather than approximating it, and it renders at all only when the
+  tool's raster-layers flag is enabled; reach for vector shapes and gradients
+  first, and use a raster layer only when a photographic fill is asked for.
 - **Recipes** are named `flat`, `line-art`, `geometric`, or `isometric`. A scene
   renders in the recipe it names, else the project's `defaultRecipeId`. A
   stroke-based recipe's `strokeWeight` applies to a stroke whose profile width

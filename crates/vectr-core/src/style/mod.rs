@@ -37,8 +37,8 @@ pub use palette::{
 };
 pub use recipe::{
     check_expressible as check_recipe_expressible, check_grid as check_recipe_grid,
-    check_line_art as check_recipe_line_art, parse as parse_style_recipe,
-    validate as validate_style_recipe,
+    check_line_art as check_recipe_line_art, check_raster_shading as check_recipe_raster_shading,
+    parse as parse_style_recipe, validate as validate_style_recipe,
 };
 pub use stroke::{parse as parse_stroke_profile, validate as validate_stroke_profile};
 

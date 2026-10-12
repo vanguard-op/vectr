@@ -30,13 +30,13 @@ use vectr_core::compiler::FONT;
 use vectr_core::export::pdf as pdf_export;
 use vectr_core::export::png as png_export;
 use vectr_core::export::svg as svg_export;
-use vectr_core::scene::INVALID_COLOR;
+use vectr_core::scene::{ASSET_KIND, INVALID_COLOR, MISSING_ASSET};
 use vectr_core::{
     compile_definition, compile_subtree, compile_with_style, export_pdf_reporting,
     export_png_reporting, export_svg_reporting, parse as parse_scene_source, schema, schema_for,
     validate as validate_scene_model, validate_color, validate_gradient_usage,
     validate_palette_usage, Diagnostic, DiagnosticCode, Diagnostics, PdfOptions, RasterOptions,
-    RenderModel, Scene, SchemaForm, SvgOptions,
+    RenderModel, Scene, SchemaForm, StyleContext, SvgOptions,
 };
 
 use crate::icon_set;
@@ -44,6 +44,7 @@ use crate::init;
 use crate::output::write_atomic;
 use vectr_project::{
     project_root_from, resolve_part, resolve_scene, ProjectAssets, ProjectScene, ResolvedPart,
+    RASTER_FORMAT,
 };
 
 /// The command succeeded.
@@ -66,6 +67,10 @@ pub const ENABLE_PDF_ENV: &str = "VECTR_ENABLE_PDF_EXPORT";
 /// The environment variable that enables icon-set mode, a rollout flag that is
 /// off by default (FEAT-025).
 pub const ENABLE_ICON_SET_ENV: &str = "VECTR_ENABLE_ICON_SET_MODE";
+
+/// The environment variable that enables raster layers, a rollout flag that is
+/// off by default (FEAT-015).
+pub const ENABLE_RASTER_LAYERS_ENV: &str = "VECTR_ENABLE_RASTER_LAYERS";
 
 /// The usage block shared by the help text and every usage error.
 const USAGE: &str = "\
@@ -1098,12 +1103,12 @@ fn compile_scene(cwd: &Path, scene: &ProjectScene, out: Option<&Path>, check: bo
     let references = assets.check_references(&parsed);
     if references.has_errors() {
         return Report::failure(
-            dependency_exit_code(&references, EXIT_COMPILE),
+            reference_exit_code(&references),
             diagnostics_text(&references),
         );
     }
 
-    let style = assets.style_context();
+    let style = gated_style(&assets);
     let model = match compile_with_style(&parsed, &style) {
         Ok(model) => model,
         Err(diagnostics) => {
@@ -1188,12 +1193,12 @@ fn export_scene(
     let references = assets.check_references(&parsed);
     if references.has_errors() {
         return Report::failure(
-            dependency_exit_code(&references, EXIT_COMPILE),
+            reference_exit_code(&references),
             diagnostics_text(&references),
         );
     }
 
-    let style = assets.style_context();
+    let style = gated_style(&assets);
     let model = match compile_with_style(&parsed, &style) {
         Ok(model) => model,
         Err(diagnostics) => {
@@ -1281,7 +1286,7 @@ fn inspect_scene(
         );
     }
 
-    let style = assets.style_context();
+    let style = gated_style(&assets);
     let model = match compile_with_style(&parsed, &style) {
         Ok(model) => model,
         Err(diagnostics) => {
@@ -1419,10 +1424,10 @@ fn render_part(
 
     let compiled = match &resolved {
         ResolvedPart::Definition { definition, assets } => {
-            compile_definition(definition, &assets.style_context())
+            compile_definition(definition, &gated_style(assets))
         }
         ResolvedPart::Element { scene, assets } => {
-            compile_subtree(scene, part, &assets.style_context())
+            compile_subtree(scene, part, &gated_style(assets))
         }
     };
     let model = match compiled {
@@ -1710,6 +1715,27 @@ pub fn enabled_value(value: Option<&str>) -> bool {
     )
 }
 
+/// Whether the raster-layers rollout flag is set (FEAT-015, C-004).
+///
+/// The flag is read from the environment so the capability can be enabled
+/// without a rebuild. It is off by default, so a scene carrying a raster layer
+/// is an unsupported feature until the flag is set.
+fn raster_layers_enabled() -> bool {
+    enabled_value(std::env::var(ENABLE_RASTER_LAYERS_ENV).ok().as_deref())
+}
+
+/// The style context a scene compiles against, with the raster-layers rollout
+/// flag applied (FEAT-015).
+///
+/// The project loader leaves raster layers off; the flag turns them on for the
+/// commands that render, so a scene's raster layers become raster nodes only
+/// when the capability is enabled (C-004).
+fn gated_style(assets: &ProjectAssets) -> StyleContext<'_> {
+    let mut style = assets.style_context();
+    style.raster_layers = raster_layers_enabled();
+    style
+}
+
 /// Classifies a project-asset loading failure: a missing font is a dependency,
 /// any other unreadable project asset is missing input.
 pub(crate) fn asset_exit_code(diagnostics: &Diagnostics) -> i32 {
@@ -1723,6 +1749,22 @@ fn dependency_exit_code(diagnostics: &Diagnostics, fallback: i32) -> i32 {
         EXIT_DEPENDENCY
     } else {
         fallback
+    }
+}
+
+/// Classifies a scene's unresolved references (C-004).
+///
+/// A raster element's `assetId` that resolves to no raster asset, to an asset of
+/// the wrong kind, or to a raster asset whose file is not a PNG image, is an
+/// invalid scene (exit 1); every other unresolvable
+/// reference is a compile failure, and a missing font is a dependency (exit 4).
+fn reference_exit_code(diagnostics: &Diagnostics) -> i32 {
+    if diagnostics.errors().any(|error| {
+        error.code == MISSING_ASSET || error.code == ASSET_KIND || error.code == RASTER_FORMAT
+    }) {
+        EXIT_INVALID_SCENE
+    } else {
+        dependency_exit_code(diagnostics, EXIT_COMPILE)
     }
 }
 
@@ -1811,6 +1853,18 @@ mod tests {
     /// Holds the PDF-flag lock for the duration of a test.
     fn pdf_flag() -> std::sync::MutexGuard<'static, ()> {
         PDF_FLAG_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Serializes the tests that toggle the raster-layers rollout flag, which
+    /// lives in the process environment and is shared by every test in this
+    /// binary.
+    static RASTER_FLAG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Holds the raster-flag lock for the duration of a test.
+    fn raster_flag() -> std::sync::MutexGuard<'static, ()> {
+        RASTER_FLAG_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
@@ -2554,6 +2608,140 @@ mod tests {
         assert!(
             text.contains("1 0 0 rg"),
             "the resolved fill colour: {text}"
+        );
+    }
+
+    /// A scene placing one raster layer over its full canvas.
+    const RASTER_SCENE: &str = r##"{
+      "id": "raster",
+      "projectId": "project",
+      "name": "Raster",
+      "formatVersion": "0.2",
+      "canvas": { "width": 20, "height": 20, "background": "#ffffff" },
+      "elements": [
+        {
+          "id": "photo", "sceneId": "raster", "order": 0, "kind": "raster", "assetId": "photo",
+          "geometry": { "x": 0, "y": 0, "width": 20, "height": 20 },
+          "transform": { "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1 },
+          "opacity": 1, "visible": true
+        }
+      ]
+    }"##;
+
+    /// A valid one-by-one red PNG, so the compositing path can decode a real
+    /// image rather than fail on placeholder bytes (FEAT-015).
+    const RASTER_PNG: &[u8] = &[
+        137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6,
+        0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84, 120, 218, 99, 248, 207, 192, 240,
+        31, 0, 5, 0, 1, 255, 86, 199, 47, 13, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+    ];
+
+    /// Writes a project whose scene places a raster layer resolved by the asset
+    /// document `assets/photo.json` and the image file `assets/photo.png`.
+    fn raster_project(dir: &TempDir) {
+        project(dir, "raster", RASTER_SCENE);
+        write_at(
+            dir,
+            "assets/photo.json",
+            r#"{"id":"photo","sceneId":"raster","kind":"raster","path":"assets/photo.png","license":"CC0"}"#,
+        );
+        fs::write(dir.path().join("assets/photo.png"), RASTER_PNG).expect("writes the image");
+    }
+
+    #[test]
+    fn raster_layers_are_gated_by_the_flag() {
+        let _guard = raster_flag();
+        let dir = TempDir::new("raster-flag");
+        raster_project(&dir);
+        let out = dir.path().join("out.png");
+
+        // Off by default: a scene carrying a raster layer is an unsupported
+        // feature and nothing is written (FEAT-015, C-004).
+        std::env::remove_var(ENABLE_RASTER_LAYERS_ENV);
+        let disabled = run_in(
+            Command::Export {
+                scene: None,
+                format: Format::Png,
+                out: Some(out.clone()),
+                width: None,
+                height: None,
+                density: None,
+                background: None,
+                profile: None,
+            },
+            dir.path(),
+        );
+        assert_eq!(disabled.code, EXIT_COMPILE, "{}", disabled.stderr);
+        assert!(
+            disabled.stderr.contains("E_UNSUPPORTED"),
+            "{}",
+            disabled.stderr
+        );
+        assert!(!out.exists(), "nothing is written while the flag is off");
+
+        // Enabled: the layer renders into PNG, and the SVG export omits it with
+        // a warning naming the element and its asset.
+        std::env::set_var(ENABLE_RASTER_LAYERS_ENV, "1");
+        let png = run_in(
+            Command::Export {
+                scene: None,
+                format: Format::Png,
+                out: Some(out.clone()),
+                width: None,
+                height: None,
+                density: None,
+                background: None,
+                profile: None,
+            },
+            dir.path(),
+        );
+        let svg_out = dir.path().join("out.svg");
+        let svg = run_in(
+            Command::Export {
+                scene: None,
+                format: Format::Svg,
+                out: Some(svg_out.clone()),
+                width: None,
+                height: None,
+                density: None,
+                background: None,
+                profile: None,
+            },
+            dir.path(),
+        );
+        std::env::remove_var(ENABLE_RASTER_LAYERS_ENV);
+        assert_eq!(png.code, EXIT_SUCCESS, "{}", png.stderr);
+        assert!(out.exists());
+        assert_eq!(svg.code, EXIT_SUCCESS, "{}", svg.stderr);
+        assert!(svg.stderr.contains("W_RASTER_OMITTED"), "{}", svg.stderr);
+        assert!(svg.stderr.contains("photo"), "{}", svg.stderr);
+    }
+
+    #[test]
+    fn a_raster_asset_that_resolves_to_nothing_is_an_invalid_scene() {
+        let _guard = raster_flag();
+        let dir = TempDir::new("raster-missing");
+        // The scene places a raster layer but no asset document declares it.
+        project(&dir, "raster", RASTER_SCENE);
+        std::env::remove_var(ENABLE_RASTER_LAYERS_ENV);
+        let report = run_in(
+            Command::Export {
+                scene: None,
+                format: Format::Png,
+                out: Some(dir.path().join("out.png")),
+                width: None,
+                height: None,
+                density: None,
+                background: None,
+                profile: None,
+            },
+            dir.path(),
+        );
+        assert_eq!(report.code, EXIT_INVALID_SCENE, "{}", report.stderr);
+        assert!(
+            report.stderr.contains("E_MISSING_ASSET"),
+            "{}",
+            report.stderr
         );
     }
 

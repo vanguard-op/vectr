@@ -14,10 +14,11 @@ mod version;
 pub use color::{is_color, validate_color, INVALID_COLOR};
 pub use diagnostic::{Diagnostic, DiagnosticCode, Diagnostics, Location, Severity};
 pub use model::{
-    default_name_pattern, Axis, Binding, BindingValue, BoolValue, BooleanOperation, Canvas,
-    Constraint, ConstraintKind, Definition, Element, ElementKind, Geometry, IconEntry, IconSet,
-    NumberValue, Origin, Paint, PaintKind, PaintValue, ParamRef, Parameter, ParameterType,
-    ParameterValue, Procedure, ProjectionAxis, Scene, StringValue, Stroke, TextAlign, Transform,
+    default_name_pattern, Asset, AssetKind, Axis, Binding, BindingValue, BoolValue,
+    BooleanOperation, Canvas, Constraint, ConstraintKind, Definition, Element, ElementKind,
+    Geometry, IconEntry, IconSet, NumberValue, Origin, Paint, PaintKind, PaintValue, ParamRef,
+    Parameter, ParameterType, ParameterValue, Procedure, ProjectionAxis, Scene, StringValue,
+    Stroke, TextAlign, Transform,
 };
 pub use version::{
     is_supported, is_supported_version, parse_version, supported_range, CURRENT_FORMAT_VERSION,
@@ -25,6 +26,17 @@ pub use version::{
 };
 
 use std::collections::HashSet;
+
+/// A raster element's `assetId` resolves to no Asset document (C-001).
+pub const MISSING_ASSET: DiagnosticCode = DiagnosticCode::new("E_MISSING_ASSET");
+
+/// A raster element's `assetId` names an Asset of a kind other than `raster`
+/// (C-001).
+pub const ASSET_KIND: DiagnosticCode = DiagnosticCode::new("E_ASSET_KIND");
+
+/// A raster element appears where the language does not permit one: as a
+/// composition operand, or owned by a reusable definition (C-001, FEAT-015).
+pub const UNSUPPORTED: DiagnosticCode = DiagnosticCode::new("E_UNSUPPORTED");
 
 /// The largest scene document the parser accepts, in bytes.
 ///
@@ -325,6 +337,114 @@ pub fn validate_icon_set(set: &IconSet) -> Diagnostics {
         }
     }
 
+    diagnostics
+}
+
+/// Reads an asset document from a JSON document (C-001, FEAT-015).
+///
+/// On success the returned [`Asset`] is structurally valid and passes
+/// [`validate_asset`]; parsing refuses rather than returning one missing a
+/// required field (NFR-011).
+pub fn parse_asset(source: &str) -> Result<Asset, Diagnostics> {
+    ensure_within_size(source.len())?;
+
+    let value: serde_json::Value = serde_json::from_str(source)
+        .map_err(|error| diagnostics_from_serde(DiagnosticCode::PARSE, &error))?;
+    if !value.is_object() {
+        return Err(Diagnostics::from(Diagnostic::error(
+            DiagnosticCode::PARSE,
+            "not an asset document: the top level must be a JSON object",
+        )));
+    }
+
+    let asset: Asset = serde_json::from_str(source)
+        .map_err(|error| diagnostics_from_serde(DiagnosticCode::SCHEMA, &error))?;
+
+    let findings = validate_asset(&asset);
+    if findings.has_errors() {
+        return Err(findings);
+    }
+    Ok(asset)
+}
+
+/// Checks a parsed asset document against the language contract (C-001).
+///
+/// Returns every finding, errors and warnings alike, in a deterministic order.
+/// A declared field the schema requires must be present and non-empty, so a
+/// raster element referencing the asset resolves to a usable record (FEAT-015).
+pub fn validate_asset(asset: &Asset) -> Diagnostics {
+    let mut diagnostics = Diagnostics::new();
+
+    if asset.id.is_empty() {
+        diagnostics.push(
+            Diagnostic::error(DiagnosticCode::SCHEMA, "`id` must not be empty").at_path("/id"),
+        );
+    }
+    if asset.scene_id.is_empty() {
+        diagnostics.push(
+            Diagnostic::error(DiagnosticCode::SCHEMA, "`sceneId` must not be empty")
+                .at_path("/sceneId"),
+        );
+    }
+    if asset.path.is_empty() {
+        diagnostics.push(
+            Diagnostic::error(DiagnosticCode::SCHEMA, "`path` must not be empty").at_path("/path"),
+        );
+    }
+    if asset.license.is_empty() {
+        diagnostics.push(
+            Diagnostic::error(DiagnosticCode::SCHEMA, "`license` must not be empty")
+                .at_path("/license"),
+        );
+    }
+
+    diagnostics
+}
+
+/// Checks every raster element's `assetId` against the project's Asset documents
+/// (C-001, FEAT-018).
+///
+/// A reference that resolves to no asset is [`MISSING_ASSET`]; one that resolves
+/// to an asset of a kind other than `raster` is [`ASSET_KIND`]. Each finding
+/// names the element and the reference at its `assetId` field, so an
+/// unresolvable raster reference fails validation before anything is rendered
+/// (FEAT-015, FEAT-018).
+pub fn validate_raster_references(scene: &Scene, assets: &[Asset]) -> Diagnostics {
+    let mut diagnostics = Diagnostics::new();
+    for element in &scene.elements {
+        if element.kind != ElementKind::Raster {
+            continue;
+        }
+        let Some(asset_id) = element.asset_id.as_deref().filter(|id| !id.is_empty()) else {
+            // A raster element with no assetId is reported by `validate`.
+            continue;
+        };
+        let location = || Location::element_at(element.id.clone(), "/assetId");
+        match assets.iter().find(|asset| asset.id == asset_id) {
+            None => diagnostics.push(
+                Diagnostic::error(
+                    MISSING_ASSET,
+                    format!(
+                        "raster element `{}` references asset `{asset_id}`, which no asset document provides",
+                        element.id
+                    ),
+                )
+                .with_location(location()),
+            ),
+            Some(asset) if asset.kind != AssetKind::Raster => diagnostics.push(
+                Diagnostic::error(
+                    ASSET_KIND,
+                    format!(
+                        "raster element `{}` references asset `{asset_id}`, which is a {} asset, not a raster",
+                        element.id,
+                        asset.kind.as_str()
+                    ),
+                )
+                .with_location(location()),
+            ),
+            Some(_) => {}
+        }
+    }
     diagnostics
 }
 
@@ -932,6 +1052,8 @@ fn validate_elements(diagnostics: &mut Diagnostics, elements: &[Element]) {
         validate_transform(diagnostics, &element.transform, &base);
         validate_text(diagnostics, element, &base);
         validate_text_operand(diagnostics, elements, element, &base, &index_of);
+        validate_raster(diagnostics, element, &base);
+        validate_raster_operand(diagnostics, elements, element, &base, &index_of);
     }
 
     validate_procedural(diagnostics, elements, &index_of);
@@ -1110,7 +1232,7 @@ fn validate_text_operand(
         return;
     };
     let parent_kind = elements[parent_index].kind;
-    if is_text_operand_kind(parent_kind) {
+    if is_composition_operand_kind(parent_kind) {
         diagnostics.push(
             Diagnostic::error(
                 DiagnosticCode::SCHEMA,
@@ -1128,8 +1250,124 @@ fn validate_text_operand(
     }
 }
 
-/// The composition kinds a text element cannot be lowered into.
-fn is_text_operand_kind(kind: ElementKind) -> bool {
+/// A raster element needs its asset reference and a complete bounding box, and
+/// belongs to a scene rather than a definition (C-001, FEAT-015).
+///
+/// The element occupies the origin and size of its bounding box, so `x`, `y`,
+/// `width` and `height` are all required, and `assetId` is required when the
+/// kind is `raster` and forbidden otherwise. Because an asset belongs to exactly
+/// one scene, a raster element owned by a definition is reported rather than
+/// accepted with no scene to resolve its asset against.
+fn validate_raster(diagnostics: &mut Diagnostics, element: &Element, base: &str) {
+    if element.kind == ElementKind::Raster {
+        if element.definition_id.is_some() {
+            diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::SCHEMA,
+                    format!(
+                        "raster element `{}` belongs to a definition; an asset belongs to exactly one scene",
+                        element.id
+                    ),
+                )
+                .with_location(Location::element_at(
+                    element.id.clone(),
+                    format!("{base}/kind"),
+                )),
+            );
+        }
+
+        if element.asset_id.as_deref().is_none_or(str::is_empty) {
+            diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::SCHEMA,
+                    format!("raster element `{}` requires an assetId", element.id),
+                )
+                .with_location(Location::element_at(
+                    element.id.clone(),
+                    format!("{base}/assetId"),
+                )),
+            );
+        }
+
+        let geometry = &element.geometry;
+        for (field, present) in [
+            ("x", geometry.x.is_some()),
+            ("y", geometry.y.is_some()),
+            ("width", geometry.width.is_some()),
+            ("height", geometry.height.is_some()),
+        ] {
+            if !present {
+                diagnostics.push(
+                    Diagnostic::error(
+                        DiagnosticCode::SCHEMA,
+                        format!(
+                            "raster element `{}` requires geometry.{field} for its bounding box",
+                            element.id
+                        ),
+                    )
+                    .with_location(Location::element_at(
+                        element.id.clone(),
+                        format!("{base}/geometry/{field}"),
+                    )),
+                );
+            }
+        }
+    } else if element.asset_id.is_some() {
+        diagnostics.push(
+            Diagnostic::error(
+                DiagnosticCode::SCHEMA,
+                format!(
+                    "element `{}` declares assetId but is not a raster element",
+                    element.id
+                ),
+            )
+            .with_location(Location::element_at(
+                element.id.clone(),
+                format!("{base}/assetId"),
+            )),
+        );
+    }
+}
+
+/// A raster element cannot be an operand of a boolean, offset, alongPath,
+/// projection, procedural, or repeat element (C-001, FEAT-015).
+fn validate_raster_operand(
+    diagnostics: &mut Diagnostics,
+    elements: &[Element],
+    element: &Element,
+    base: &str,
+    index_of: &std::collections::HashMap<&str, usize>,
+) {
+    if element.kind != ElementKind::Raster {
+        return;
+    }
+    let Some(parent_id) = element.parent_id.as_deref() else {
+        return;
+    };
+    let Some(&parent_index) = index_of.get(parent_id) else {
+        return;
+    };
+    let parent_kind = elements[parent_index].kind;
+    if is_composition_operand_kind(parent_kind) {
+        diagnostics.push(
+            Diagnostic::error(
+                UNSUPPORTED,
+                format!(
+                    "raster element `{}` is not a valid operand of a {} element",
+                    element.id,
+                    parent_kind.as_str()
+                ),
+            )
+            .with_location(Location::element_at(
+                element.id.clone(),
+                format!("{base}/parentId"),
+            )),
+        );
+    }
+}
+
+/// The composition kinds a text or raster element cannot be lowered into.
+fn is_composition_operand_kind(kind: ElementKind) -> bool {
     matches!(
         kind,
         ElementKind::Boolean
@@ -2153,5 +2391,207 @@ mod tests {
             assert_eq!(procedure.as_str(), name);
         }
         assert_eq!(Procedure::from_name("wobble"), None);
+    }
+
+    /// A scene source carrying the given element list.
+    fn scene_with(elements: serde_json::Value) -> String {
+        serde_json::json!({
+            "id": "s",
+            "projectId": "p",
+            "name": "R",
+            "formatVersion": SHIPPED_VERSION,
+            "canvas": { "width": 10, "height": 10, "background": "transparent" },
+            "elements": elements
+        })
+        .to_string()
+    }
+
+    /// A raster element with an optional `assetId` and the given geometry.
+    fn raster_element(asset_id: Option<&str>, geometry: serde_json::Value) -> serde_json::Value {
+        let mut element = serde_json::json!({
+            "id": "r1",
+            "sceneId": "s",
+            "order": 0,
+            "kind": "raster",
+            "geometry": geometry,
+            "transform": {
+                "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1
+            },
+            "opacity": 1,
+            "visible": true
+        });
+        if let Some(asset_id) = asset_id {
+            element["assetId"] = serde_json::json!(asset_id);
+        }
+        element
+    }
+
+    #[test]
+    fn a_raster_element_requires_its_asset_and_bounding_box() {
+        let source = scene_with(serde_json::json!([raster_element(
+            None,
+            serde_json::json!({})
+        )]));
+        let diagnostics = parse_error(&source);
+        let paths: Vec<&str> = diagnostics
+            .errors()
+            .filter_map(|error| error.location.as_ref()?.json_path.as_deref())
+            .collect();
+        for expected in [
+            "/elements/0/assetId",
+            "/elements/0/geometry/x",
+            "/elements/0/geometry/y",
+            "/elements/0/geometry/width",
+            "/elements/0/geometry/height",
+        ] {
+            assert!(
+                paths.contains(&expected),
+                "missing `{expected}` in {paths:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_well_formed_raster_element_round_trips() {
+        let source = scene_with(serde_json::json!([raster_element(
+            Some("photo"),
+            serde_json::json!({ "x": 1, "y": 2, "width": 4, "height": 3 })
+        )]));
+        let scene = parse(&source).expect("a well-formed raster element");
+        assert_eq!(
+            scene
+                .element("r1")
+                .and_then(|element| element.asset_id.as_deref()),
+            Some("photo")
+        );
+        let text = scene.to_json_string().expect("serializable");
+        assert!(text.contains(r#""assetId":"photo""#), "{text}");
+        assert_eq!(parse(&text).expect("round-trips"), scene);
+    }
+
+    #[test]
+    fn a_non_raster_element_may_not_declare_an_asset() {
+        let mut element = serde_json::json!({
+            "id": "e1",
+            "sceneId": "s",
+            "order": 0,
+            "kind": "rect",
+            "geometry": { "x": 0, "y": 0, "width": 1, "height": 1 },
+            "transform": {
+                "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1
+            },
+            "opacity": 1,
+            "visible": true
+        });
+        element["assetId"] = serde_json::json!("photo");
+
+        let diagnostics = parse_error(&scene_with(serde_json::json!([element])));
+        let error = diagnostics.errors().next().expect("an error");
+        assert_eq!(error.code, DiagnosticCode::SCHEMA);
+        assert!(error.message.contains("not a raster"), "{}", error.message);
+    }
+
+    #[test]
+    fn a_raster_element_owned_by_a_definition_is_refused() {
+        let definition = r#"{"id":"chip","projectId":"p","name":"Chip","parameters":[],"origin":{"x":0,"y":0},"elements":[{"id":"r1","definitionId":"chip","order":0,"kind":"raster","assetId":"photo","geometry":{"x":0,"y":0,"width":4,"height":4},"transform":{"translateX":0,"translateY":0,"rotate":0,"scaleX":1,"scaleY":1},"opacity":1,"visible":true}]}"#;
+        let diagnostics = parse_definition(definition).expect_err("a raster in a definition");
+        let error = diagnostics.errors().next().expect("an error");
+        assert_eq!(error.code, DiagnosticCode::SCHEMA);
+        assert!(
+            error.message.contains("belongs to a definition"),
+            "{}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn a_raster_element_is_refused_as_a_composition_operand() {
+        let source = scene_with(serde_json::json!([
+            {
+                "id": "b1",
+                "sceneId": "s",
+                "order": 0,
+                "kind": "boolean",
+                "geometry": { "operation": "union" },
+                "transform": {
+                    "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1
+                },
+                "opacity": 1,
+                "visible": true
+            },
+            {
+                "id": "r1",
+                "sceneId": "s",
+                "parentId": "b1",
+                "order": 0,
+                "kind": "raster",
+                "assetId": "photo",
+                "geometry": { "x": 0, "y": 0, "width": 4, "height": 4 },
+                "transform": {
+                    "translateX": 0, "translateY": 0, "rotate": 0, "scaleX": 1, "scaleY": 1
+                },
+                "opacity": 1,
+                "visible": true
+            }
+        ]));
+        let diagnostics = parse_error(&source);
+        let error = diagnostics.errors().next().expect("an error");
+        assert_eq!(error.code, UNSUPPORTED);
+        assert!(error.message.contains("r1"), "{}", error.message);
+    }
+
+    #[test]
+    fn a_raster_reference_resolves_against_the_scene_assets() {
+        let source = scene_with(serde_json::json!([raster_element(
+            Some("photo"),
+            serde_json::json!({ "x": 0, "y": 0, "width": 4, "height": 4 })
+        )]));
+        let scene = parse(&source).expect("a valid scene");
+
+        let raster = Asset {
+            id: "photo".to_string(),
+            scene_id: "s".to_string(),
+            kind: AssetKind::Raster,
+            path: "assets/photo.png".to_string(),
+            license: "CC0".to_string(),
+            description: None,
+        };
+        assert!(validate_raster_references(&scene, std::slice::from_ref(&raster)).is_empty());
+
+        // A font asset of the same id is the wrong kind for a raster element.
+        let mut font = raster.clone();
+        font.kind = AssetKind::Font;
+        let wrong_kind = validate_raster_references(&scene, std::slice::from_ref(&font));
+        let error = wrong_kind.errors().next().expect("an error");
+        assert_eq!(error.code, ASSET_KIND);
+        assert!(error.message.contains("photo"), "{}", error.message);
+
+        // No asset of that id is missing.
+        let missing = validate_raster_references(&scene, &[]);
+        let error = missing.errors().next().expect("an error");
+        assert_eq!(error.code, MISSING_ASSET);
+    }
+
+    #[test]
+    fn an_asset_document_parses_and_validates() {
+        let asset = parse_asset(
+            r#"{"id":"photo","sceneId":"s","kind":"raster","path":"assets/photo.png","license":"CC0"}"#,
+        )
+        .expect("a valid asset");
+        assert_eq!(asset.kind, AssetKind::Raster);
+        assert_eq!(asset.kind.as_str(), "raster");
+
+        let incomplete = parse_asset(r#"{"id":"photo","sceneId":"s","kind":"raster"}"#);
+        assert!(incomplete.is_err(), "a missing required field is refused");
+
+        let empty =
+            parse_asset(r#"{"id":"","sceneId":"s","kind":"raster","path":"p","license":"l"}"#);
+        let error = empty
+            .expect_err("an empty id")
+            .errors()
+            .next()
+            .unwrap()
+            .clone();
+        assert!(error.message.contains("`id`"), "{}", error.message);
     }
 }

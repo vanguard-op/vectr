@@ -48,6 +48,8 @@ fn context<'a>(
         fonts: &[],
         recipe,
         definitions: &[],
+        rasters: &[],
+        raster_layers: false,
     }
 }
 

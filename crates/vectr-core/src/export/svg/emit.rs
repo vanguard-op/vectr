@@ -20,6 +20,23 @@ use crate::scene::{Diagnostic, Diagnostics, Location};
 use crate::style::{GradientType, Spread, StrokeCap, StrokeJoin};
 
 use super::UNSUPPORTED;
+use crate::export::raster;
+
+/// How the writer treats a node of kind `raster` (FEAT-015).
+///
+/// The document a caller exports omits the layer so the SVG stays pure vector
+/// and the omission is warned; the intermediate document the PNG exporter
+/// rasterizes skips the layer silently, because the PNG exporter composites the
+/// image itself. The frozen [`SvgOptions`](super::SvgOptions) surface cannot
+/// carry the distinction (C-002), so it travels as an internal emission mode
+/// (C-003).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RasterMode {
+    /// Omit a raster layer, warning that the target cannot represent it.
+    Omit,
+    /// Draw nothing for a raster layer and warn about nothing.
+    Skip,
+}
 
 /// The rendered width and height of the output document.
 pub(crate) struct Size {
@@ -27,15 +44,18 @@ pub(crate) struct Size {
     pub(crate) height: f64,
 }
 
-/// Renders the whole SVG document.
+/// Renders an SVG document over the given nodes.
 ///
-/// Nodes the target cannot represent are omitted and reported on `diagnostics`;
-/// the caller decides whether the collection is fatal (it never is for warnings
-/// alone).
+/// `nodes` selects the content — the whole model for a normal export, or one
+/// band of vector content around a composited raster layer (FEAT-015). Nodes the
+/// target cannot represent are omitted and reported on `diagnostics`; the caller
+/// decides whether the collection is fatal (it never is for warnings alone).
 pub(crate) fn document(
     model: &RenderModel,
+    nodes: &[ResolvedNode],
     size: &Size,
     background: &str,
+    mode: RasterMode,
     diagnostics: &mut Diagnostics,
 ) -> String {
     let canvas = &model.canvas;
@@ -69,13 +89,13 @@ pub(crate) fn document(
 
     let mut ids = IdAllocator::default();
     let fonts = FontLibrary::new(&model.fonts);
-    let defs = GradientDefs::build(&model.nodes, &mut ids);
+    let defs = GradientDefs::build(nodes, &mut ids);
     if !defs.is_empty() {
         let _ = writeln!(out, "  <defs>");
         defs.write(&mut out);
         let _ = writeln!(out, "  </defs>");
     }
-    emit_nodes(&mut out, &model.nodes, &fonts, &defs, &mut ids, diagnostics);
+    emit_nodes(&mut out, nodes, &fonts, &defs, mode, &mut ids, diagnostics);
 
     out.push_str("</svg>\n");
     out
@@ -216,16 +236,13 @@ fn emit_nodes(
     nodes: &[ResolvedNode],
     fonts: &FontLibrary<'_>,
     defs: &GradientDefs,
+    mode: RasterMode,
     ids: &mut IdAllocator,
     diagnostics: &mut Diagnostics,
 ) {
     let mut open: Vec<String> = Vec::new();
     for node in nodes {
-        if let Some(reason) = unsupported(node) {
-            omit(diagnostics, node, reason);
-            continue;
-        }
-        let Some(shape) = shape_for(node, fonts, defs, diagnostics) else {
+        let Some(shape) = render_node(node, fonts, defs, mode, diagnostics) else {
             continue;
         };
 
@@ -272,15 +289,59 @@ fn emit_nodes(
     }
 }
 
-/// The reason a node cannot be represented, or `None` when it can.
+/// Why a node other than a raster layer cannot be represented, or `None` when
+/// it can.
 fn unsupported(node: &ResolvedNode) -> Option<&'static str> {
-    if node.kind == "raster" {
-        Some("is a raster layer, which SVG export omits")
-    } else if !is_finite(node) {
+    if !is_finite(node) {
         Some("has non-finite geometry or transform, so SVG export omits it")
     } else {
         None
     }
+}
+
+/// The SVG for one node, or `None` when it draws nothing (FEAT-015).
+///
+/// A raster layer is omitted with a warning naming the element and its asset
+/// when the document is the user's SVG, and skipped silently when the PNG
+/// exporter rasterizes the vector content, because that exporter composites the
+/// image itself. A raster node carrying no placed image is a generic omission
+/// in either mode, mirroring the other unrepresentable content. Every other node
+/// uses its shape or outlined glyphs.
+fn render_node(
+    node: &ResolvedNode,
+    fonts: &FontLibrary<'_>,
+    defs: &GradientDefs,
+    mode: RasterMode,
+    diagnostics: &mut Diagnostics,
+) -> Option<String> {
+    if node.kind == "raster" {
+        if !is_finite(node) {
+            omit(
+                diagnostics,
+                node,
+                "has non-finite geometry or transform, so SVG export omits it",
+            );
+            return None;
+        }
+        let Some(image) = &node.raster else {
+            omit(
+                diagnostics,
+                node,
+                "is a raster layer with no placed image, so SVG export omits it",
+            );
+            return None;
+        };
+        if mode == RasterMode::Omit {
+            raster::warn_omitted(diagnostics, node, &image.asset_id, "SVG export");
+        }
+        return None;
+    }
+
+    if let Some(reason) = unsupported(node) {
+        omit(diagnostics, node, reason);
+        return None;
+    }
+    shape_for(node, fonts, defs, diagnostics)
 }
 
 /// The SVG shape for a node: a text node's outlined glyphs, or a shape's native
