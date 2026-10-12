@@ -92,8 +92,8 @@ use crate::primitives::{
     SubPath,
 };
 use crate::render::{
-    NodeGroup, NodePaint, NodeStroke, RasterImage, RenderCanvas, RenderMeta, RenderModel,
-    ResolvedFont, ResolvedNode, TextRun,
+    NodeGroup, NodePaint, NodeShading, NodeStroke, Paint, RasterImage, RenderCanvas, RenderMeta,
+    RenderModel, ResolvedFont, ResolvedNode, TextRun,
 };
 use crate::scene::{
     validate, BoolValue, BooleanOperation, Canvas, Definition, Diagnostic, DiagnosticCode,
@@ -252,6 +252,72 @@ impl RasterAsset {
     }
 }
 
+/// The resolved single-layer shading a scene applies to its filled shapes
+/// (C-003, FEAT-028).
+///
+/// The light vector is in scene coordinates and the colour is the palette
+/// token's concrete value, so every shading node the compiler emits is flat and
+/// concrete.
+#[derive(Debug, Clone, PartialEq)]
+struct ShadingPlan {
+    /// The unit light vector, in scene coordinates.
+    light: [f64; 2],
+    /// The resolved shade colour.
+    color: String,
+}
+
+/// Resolves the single-layer shading the effective recipe applies (FEAT-028).
+///
+/// A recipe that does not request single-layer shading derives nothing. A
+/// request whose shade tone is absent or does not resolve against the palette is
+/// a located error and no model is produced, so a shading layer is never drawn
+/// in a colour the palette does not provide.
+fn shading_plan(
+    recipe: Option<&StyleRecipe>,
+    palette: Option<&Palette>,
+    diagnostics: &mut Diagnostics,
+) -> Result<Option<ShadingPlan>, ()> {
+    let Some(recipe) = recipe else {
+        return Ok(None);
+    };
+    if !recipe.requests_single_layer_shading() {
+        return Ok(None);
+    }
+
+    let Some(token) = recipe.shade_token().filter(|token| !token.is_empty()) else {
+        diagnostics.push(
+            Diagnostic::error(
+                style::SHADING,
+                format!(
+                    "recipe `{}` requests single-layer shading but declares no `shadeToken`",
+                    recipe.id
+                ),
+            )
+            .at_path("/parameters/shadeToken"),
+        );
+        return Err(());
+    };
+
+    let Some(color) = palette.and_then(|palette| palette.resolve(token)) else {
+        diagnostics.push(
+            Diagnostic::error(
+                style::SHADING,
+                format!(
+                    "recipe `{}` requests single-layer shading, but shade token `{token}` is not defined by the palette",
+                    recipe.id
+                ),
+            )
+            .at_path("/parameters/shadeToken"),
+        );
+        return Err(());
+    };
+
+    Ok(Some(ShadingPlan {
+        light: style::light_vector(recipe.light_direction()),
+        color: color.to_string(),
+    }))
+}
+
 /// Compiles a validated scene into its render model (C-002).
 ///
 /// Runs without style assets, so paint carries the scene's declared references;
@@ -302,6 +368,15 @@ pub fn compile_with_style<'s>(
         None => return Err(diagnostics),
     };
 
+    // The single-layer shading the effective recipe applies, resolved once
+    // before any node is emitted: a request the palette cannot fulfil stops the
+    // pipeline here rather than drawing a shading layer in a guessed colour
+    // (FEAT-028).
+    let shading = match shading_plan(style.recipe, style.palette, &mut diagnostics) {
+        Ok(plan) => plan,
+        Err(()) => return Err(diagnostics),
+    };
+
     let resolution = match constraints::resolve(scene) {
         Ok(resolution) => resolution,
         Err(errors) => {
@@ -340,6 +415,7 @@ pub fn compile_with_style<'s>(
         yield_cache: vec![None; scene.elements.len()],
         scene_seed: scene.seed.unwrap_or(procedural::DEFAULT_SEED),
         canvas_background,
+        shading,
     };
 
     compiler.prepare();
@@ -365,11 +441,10 @@ pub fn compile_with_style<'s>(
     }
 
     // A recipe that asks for a look the language cannot express is reported,
-    // never silently approximated (FEAT-007, NFR-011).
+    // never silently approximated (FEAT-007, NFR-011). Single-layer shading is
+    // derived per node as the tree is emitted, so a shape the build cannot shade
+    // is reported there rather than here.
     if let Some(recipe) = style.recipe {
-        compiler
-            .diagnostics
-            .extend(style::check_recipe_expressible(recipe));
         // A recipe designating raster shading is fulfilled by the scene's raster
         // layers; with none present the unhonored request is named rather than
         // silently ignored (FEAT-015).
@@ -794,6 +869,10 @@ struct Compiler<'a, 's> {
     /// The canvas background resolved against the palette: a token name is
     /// replaced by its colour before the model is built (FEAT-005).
     canvas_background: String,
+    /// The resolved single-layer shading the effective recipe applies, when it
+    /// requests it; every filled vector node gains one shading node on its far
+    /// side (FEAT-028).
+    shading: Option<ShadingPlan>,
 }
 
 impl Compiler<'_, '_> {
@@ -1865,6 +1944,15 @@ impl Compiler<'_, '_> {
         let geometry = self.snap_geometry(geometry);
         self.check_freeform(&base_id, &geometry);
         let paint = self.paint_for(index);
+
+        // Under single-layer shading a filled shape carries exactly one shading
+        // layer on its own outline (C-003, FEAT-028).
+        let shading = if paint.fill.is_some() {
+            self.shading_layer(&id, &geometry, transform)
+        } else {
+            None
+        };
+
         let order = self.order;
         self.order += 1;
         self.nodes.push(ResolvedNode {
@@ -1879,9 +1967,49 @@ impl Compiler<'_, '_> {
             raster: None,
             transform,
             paint,
+            shading,
             opacity,
             visible,
         });
+    }
+
+    /// Derives the shading layer a filled vector node carries, or reports why it
+    /// cannot (C-003, FEAT-028).
+    ///
+    /// The layer carries the node's resolved fill area clipped to the far side of
+    /// the light line, in the node's own frame, with the resolved flat shade
+    /// paint. A shape the build cannot shade — no enclosed area, an empty region,
+    /// or a transform that cannot be inverted — is named rather than silently
+    /// left unshaded.
+    fn shading_layer(
+        &mut self,
+        base_id: &str,
+        geometry: &Shape,
+        transform: Affine,
+    ) -> Option<NodeShading> {
+        let (light, color) = {
+            let plan = self.shading.as_ref()?;
+            (plan.light, plan.color.clone())
+        };
+        match style::shading_region(geometry, &transform, light) {
+            Ok(region) => Some(NodeShading {
+                geometry: region,
+                paint: Paint::Color { value: color },
+            }),
+            Err(reason) => {
+                self.diagnostics.push(
+                    Diagnostic::warning(
+                        style::SHADING_UNSUPPORTED,
+                        format!(
+                            "element `{base_id}` requests single-layer shading, but it cannot be drawn: {}",
+                            reason.reason()
+                        ),
+                    )
+                    .with_location(Location::element(base_id)),
+                );
+                None
+            }
+        }
     }
 
     /// Appends one text node for a text element (C-003, FEAT-011).
@@ -1937,6 +2065,7 @@ impl Compiler<'_, '_> {
             raster: None,
             transform,
             paint,
+            shading: None,
             opacity,
             visible,
         });
@@ -1992,6 +2121,7 @@ impl Compiler<'_, '_> {
             raster: Some(raster),
             transform,
             paint: NodePaint::default(),
+            shading: None,
             opacity,
             visible,
         });
@@ -2608,8 +2738,8 @@ mod tests {
     use crate::style::{
         parse_gradient, parse_palette, parse_stroke_profile, parse_style_recipe, FREEFORM_CURVE,
         GRID_SNAPPED, GRID_TOO_FINE, ISOMETRIC_OFF_AXIS, LINE_ART_EMPTY, MIN_GRID_SIZE,
-        MIN_STROKE_WEIGHT, SHADING_UNSUPPORTED, STROKE_WEIGHT_CLAMPED, TEXTURE_UNSUPPORTED,
-        UNDEFINED_TOKEN,
+        MIN_STROKE_WEIGHT, SHADING, SHADING_UNSUPPORTED, STROKE_WEIGHT_CLAMPED,
+        TEXTURE_UNSUPPORTED, UNDEFINED_TOKEN,
     };
     use serde_json::{json, Value};
 
@@ -3470,41 +3600,318 @@ mod tests {
         );
     }
 
+    /// A flat recipe requesting single-layer shading in the given tone, with the
+    /// given light direction (or the documented default when none is given).
+    fn single_layer_recipe(token: &str, light: Option<&str>) -> crate::style::StyleRecipe {
+        let light = match light {
+            Some(direction) => format!(r#","lightDirection":"{direction}""#),
+            None => String::new(),
+        };
+        parse_style_recipe(&format!(
+            r#"{{"id":"recipe-s","projectId":"p","name":"flat","parameters":{{"shading":"single-layer","shadeToken":"{token}"{light}}}}}"#
+        ))
+        .expect("a single-layer recipe")
+    }
+
+    /// The world points a node's shading layer spans, under the node's
+    /// transform.
+    fn shading_world_points(node: &ResolvedNode) -> Vec<[f64; 2]> {
+        let shading = node.shading.as_ref().expect("a shading layer");
+        flatten_shape(&shading.geometry)
+            .into_iter()
+            .flatten()
+            .map(|point| node.transform.apply(point))
+            .collect()
+    }
+
     #[test]
-    fn a_flat_recipe_that_requests_single_layer_shading_warns_and_keeps_the_base_fill() {
+    fn a_single_layer_recipe_attaches_one_shading_layer_per_filled_shape() {
+        let mut element = rect("e1", 0, 10.0, 10.0);
+        element["fill"] = token_paint("accent");
+        element["opacity"] = json!(0.5);
+        let scene = scene_of(json!([element]), None);
+        let palette = flat_palette();
+        let recipe = single_layer_recipe("ink", Some("top"));
+        let style = StyleContext {
+            palette: Some(&palette),
+            recipe: Some(&recipe),
+            ..StyleContext::default()
+        };
+
+        let model = compile_with_style(&scene, &style).expect("compiles");
+        assert_eq!(
+            model.nodes.len(),
+            1,
+            "the shading is carried by the node, not a second node: {:?}",
+            model.nodes
+        );
+
+        let node = model.node("e1").expect("the node");
+        assert_eq!(node.opacity, 0.5, "the element opacity stays on the node");
+        let shading = node
+            .shading
+            .as_ref()
+            .expect("the node carries a shading layer");
+        assert_eq!(
+            shading.paint,
+            crate::render::Paint::Color {
+                value: "#111111".to_string()
+            },
+            "the shading layer is flat in the shade tone"
+        );
+        assert!(
+            matches!(shading.geometry, Shape::Path(_)),
+            "the derived region is a concrete path: {:?}",
+            shading.geometry
+        );
+
+        // Light from the top shades the far bottom half and never the lit top;
+        // the layer shares the node's frame, so its transform places it.
+        let points = shading_world_points(node);
+        assert!(
+            points.iter().all(|point| point[1] >= 5.0 - 1e-9),
+            "{points:?}"
+        );
+        assert!(
+            points.iter().any(|point| point[1] > 5.0 + 1e-9),
+            "{points:?}"
+        );
+
+        // The layer crosses the process boundary as data (C-003, D-014).
+        let text = model.to_json_string().expect("serializable");
+        assert!(text.contains("\"shading\":{\"geometry\""), "{text}");
+        assert_eq!(crate::render::parse(&text).expect("deserializable"), model);
+    }
+
+    #[test]
+    fn a_gradient_fill_keeps_its_gradient_and_gains_a_flat_shade() {
+        let mut element = rect("e1", 0, 10.0, 10.0);
+        element["fill"] = json!({ "kind": "gradient", "ref": "fade" });
+        let scene = scene_of(json!([element]), None);
+        let palette = flat_palette();
+        let gradients = [parse_gradient(
+            r##"{"id":"fade","projectId":"p","name":"F","type":"linear","stops":[{"offset":0,"token":"accent"},{"offset":1,"token":"ink"}]}"##,
+        )
+        .expect("a gradient")];
+        let recipe = single_layer_recipe("ink", Some("right"));
+        let style = StyleContext {
+            palette: Some(&palette),
+            gradients: &gradients,
+            recipe: Some(&recipe),
+            ..StyleContext::default()
+        };
+
+        let model = compile_with_style(&scene, &style).expect("compiles");
+        let node = model.node("e1").expect("the node");
+        assert!(
+            matches!(node.paint.fill, Some(crate::render::Paint::Gradient(_))),
+            "the gradient base fill survives"
+        );
+        assert_eq!(
+            node.shading.as_ref().expect("a shading layer").paint,
+            crate::render::Paint::Color {
+                value: "#111111".to_string()
+            },
+            "the shading layer itself carries no gradient"
+        );
+    }
+
+    #[test]
+    fn a_stroke_only_shape_and_a_text_run_derive_no_shading() {
+        let mut stroked = rect("stroked", 0, 10.0, 10.0);
+        stroked["stroke"] = stroke_json("outline", "accent");
+        let mut text = base(
+            "label",
+            1,
+            "text",
+            json!({ "x": 0.0, "y": 20.0, "text": "Hi", "fontSize": 8.0 }),
+        );
+        text["fill"] = token_paint("accent");
+        let scene = scene_of(json!([stroked, text]), None);
+        let palette = flat_palette();
+        let outline = profile("outline", 1.0);
+        let recipe = single_layer_recipe("ink", None);
+        let style = StyleContext {
+            palette: Some(&palette),
+            strokes: std::slice::from_ref(&outline),
+            recipe: Some(&recipe),
+            ..StyleContext::default()
+        };
+
+        let model = compile_with_style(&scene, &style).expect("compiles");
+        assert!(model.node("stroked").unwrap().paint.fill.is_none());
+        assert_eq!(
+            model
+                .nodes
+                .iter()
+                .filter(|node| node.shading.is_some())
+                .count(),
+            0,
+            "a stroke-only shape and a text run enclose no fill area: {:?}",
+            model.nodes
+        );
+    }
+
+    #[test]
+    fn a_filled_line_reports_that_it_cannot_be_shaded() {
+        let mut line = base(
+            "line1",
+            0,
+            "line",
+            json!({ "points": [[0.0, 0.0], [10.0, 10.0]] }),
+        );
+        line["fill"] = token_paint("accent");
+        let scene = scene_of(json!([line]), None);
+        let palette = flat_palette();
+        let recipe = single_layer_recipe("ink", None);
+        let style = StyleContext {
+            palette: Some(&palette),
+            recipe: Some(&recipe),
+            ..StyleContext::default()
+        };
+
+        let model = compile_with_style(&scene, &style).expect("the line still compiles");
+        assert_eq!(model.nodes.len(), 1, "a line encloses no area to shade");
+        assert!(
+            model.node("line1").unwrap().shading.is_none(),
+            "the filled line carries no shading layer"
+        );
+        let warning = model
+            .diagnostics
+            .warnings()
+            .find(|warning| warning.code == SHADING_UNSUPPORTED)
+            .expect("the unshadable shape is named");
+        assert!(
+            warning.message.contains("line1"),
+            "the warning names the shape: {}",
+            warning.message
+        );
+    }
+
+    #[test]
+    fn a_group_derives_no_shading_but_each_area_inside_it_does() {
+        let group = base("g1", 0, "group", json!({}));
+        let mut child = rect("c1", 0, 10.0, 10.0);
+        child["parentId"] = json!("g1");
+        child["fill"] = token_paint("accent");
+        let scene = scene_of(json!([group, child]), None);
+        let palette = flat_palette();
+        let recipe = single_layer_recipe("ink", None);
+        let style = StyleContext {
+            palette: Some(&palette),
+            recipe: Some(&recipe),
+            ..StyleContext::default()
+        };
+
+        let model = compile_with_style(&scene, &style).expect("compiles");
+        let ids: Vec<&str> = model.nodes.iter().map(|node| node.id.as_str()).collect();
+        assert_eq!(ids, vec!["c1"], "a group contributes no shading of its own");
+        assert!(
+            model.node("c1").unwrap().shading.is_some(),
+            "the filled area inside the group carries its own shading layer"
+        );
+        assert_eq!(
+            model
+                .node("c1")
+                .unwrap()
+                .groups
+                .first()
+                .map(|group| group.id.as_str()),
+            Some("g1"),
+            "the node still carries its ancestor group chain"
+        );
+    }
+
+    #[test]
+    fn the_documented_default_light_direction_shades_the_bottom_right_side() {
+        let mut element = rect("e1", 0, 10.0, 10.0);
+        element["fill"] = token_paint("accent");
+        let scene = scene_of(json!([element]), None);
+        let palette = flat_palette();
+        let recipe = single_layer_recipe("ink", None);
+        let style = StyleContext {
+            palette: Some(&palette),
+            recipe: Some(&recipe),
+            ..StyleContext::default()
+        };
+
+        let model = compile_with_style(&scene, &style).expect("compiles");
+        let node = model.node("e1").expect("the node");
+        // The default is a top-left light, whose far side is the bottom-right of
+        // the bounding box centre: x + y >= 10.
+        let points = shading_world_points(node);
+        assert!(
+            points
+                .iter()
+                .all(|point| point[0] + point[1] >= 10.0 - 1e-9),
+            "{points:?}"
+        );
+    }
+
+    #[test]
+    fn a_single_layer_request_without_a_shade_token_is_refused() {
         let mut element = rect("e1", 0, 10.0, 10.0);
         element["fill"] = token_paint("accent");
         let scene = scene_of(json!([element]), None);
         let palette = flat_palette();
         let recipe = parse_style_recipe(
-            r#"{"id":"recipe-1","projectId":"p","name":"flat","parameters":{"shading":"single-layer","shadeToken":"ink"}}"#,
+            r#"{"id":"recipe-s","projectId":"p","name":"flat","parameters":{"shading":"single-layer"}}"#,
         )
-        .expect("a flat recipe requesting single-layer shading");
+        .expect("the missing tone is a validation error, not a parse one");
         let style = StyleContext {
             palette: Some(&palette),
-            strokes: &[],
-            gradients: &[],
-            fonts: &[],
             recipe: Some(&recipe),
-            definitions: &[],
-            rasters: &[],
-            raster_layers: false,
+            ..StyleContext::default()
         };
 
-        let model = compile_with_style(&scene, &style).expect("the shading request is not fatal");
-        assert!(
-            model
-                .diagnostics
-                .warnings()
-                .any(|warning| warning.code == SHADING_UNSUPPORTED),
-            "the unapplied shading is reported, never silently ignored: {:?}",
-            model.diagnostics
-        );
-        assert_eq!(
-            model.nodes[0].paint.fill.as_ref().and_then(color),
-            Some("#ff0000"),
-            "the shape renders with its base fill"
-        );
+        let diagnostics = compile_with_style(&scene, &style).expect_err("refused");
+        let error = diagnostics
+            .errors()
+            .find(|error| error.code == SHADING)
+            .expect("a shading error");
+        assert!(error.message.contains("shadeToken"), "{}", error.message);
+    }
+
+    #[test]
+    fn a_shade_token_the_palette_does_not_define_is_refused() {
+        let mut element = rect("e1", 0, 10.0, 10.0);
+        element["fill"] = token_paint("accent");
+        let scene = scene_of(json!([element]), None);
+        let palette = flat_palette();
+        let recipe = single_layer_recipe("ghost", None);
+        let style = StyleContext {
+            palette: Some(&palette),
+            recipe: Some(&recipe),
+            ..StyleContext::default()
+        };
+
+        let diagnostics = compile_with_style(&scene, &style).expect_err("refused");
+        let error = diagnostics
+            .errors()
+            .find(|error| error.code == SHADING)
+            .expect("a shading error");
+        assert!(error.message.contains("ghost"), "{}", error.message);
+    }
+
+    #[test]
+    fn single_layer_shading_is_deterministic() {
+        let mut first = rect("a", 0, 10.0, 10.0);
+        first["fill"] = token_paint("accent");
+        let mut second = rect("b", 1, 12.0, 6.0);
+        second["fill"] = token_paint("accent");
+        second["transform"]["translateX"] = json!(30.0);
+        let scene = scene_of(json!([first, second]), None);
+        let palette = flat_palette();
+        let recipe = single_layer_recipe("ink", Some("bottomRight"));
+        let style = StyleContext {
+            palette: Some(&palette),
+            recipe: Some(&recipe),
+            ..StyleContext::default()
+        };
+
+        let once = compile_with_style(&scene, &style).expect("compiles");
+        let twice = compile_with_style(&scene, &style).expect("compiles");
+        assert_eq!(once, twice, "the shading is identical both times (NFR-010)");
     }
 
     #[test]

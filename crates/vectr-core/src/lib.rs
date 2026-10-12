@@ -74,8 +74,8 @@ pub use icon_set::{
 };
 pub use primitives::{Ellipse, Line, Polygon, Rect, Shape};
 pub use render::{
-    GradientPaint, NodePaint, NodeStroke, Paint, RasterImage, RenderCanvas, RenderMeta,
-    RenderModel, ResolvedFont, ResolvedNode, ResolvedStop, TextRun,
+    GradientPaint, NodePaint, NodeShading, NodeStroke, Paint, RasterImage, RenderCanvas,
+    RenderMeta, RenderModel, ResolvedFont, ResolvedNode, ResolvedStop, TextRun,
 };
 pub use scene::{
     is_color, parse, parse_asset, parse_definition, parse_icon_set, validate, validate_asset,
@@ -88,12 +88,13 @@ pub use scene::{
 };
 pub use schema::{schema, schema_for, SchemaForm, SCHEMA_VERSION, UNKNOWN_SCHEMA_TYPE};
 pub use style::{
-    parse_gradient, parse_palette, parse_stroke_profile, parse_style_recipe,
+    light_vector, parse_gradient, parse_palette, parse_stroke_profile, parse_style_recipe,
     resolve_canvas_background, resolve_fill, resolve_gradient, resolve_stroke,
-    resolve_stroke_paint, validate_gradient, validate_gradient_usage, validate_palette,
-    validate_palette_usage, validate_stroke_profile, validate_style_recipe, Gradient, GradientStop,
-    GradientType, LightDirection, Palette, PaletteToken, RecipeName, RecipeParameters,
-    ResolvedStroke, Shading, Spread, StrokeCap, StrokeJoin, StrokeProfile, StyleRecipe,
-    FREEFORM_CURVE, GRID_SNAPPED, GRID_TOO_FINE, ISOMETRIC_OFF_AXIS, LINE_ART_EMPTY, MIN_GRID_SIZE,
-    MIN_STROKE_WEIGHT, STROKE_WEIGHT_CLAMPED,
+    resolve_stroke_paint, shading_region, validate_gradient, validate_gradient_usage,
+    validate_palette, validate_palette_usage, validate_stroke_profile, validate_style_recipe,
+    Gradient, GradientStop, GradientType, LightDirection, Palette, PaletteToken, RecipeName,
+    RecipeParameters, ResolvedStroke, Shading, ShadingUnavailable, Spread, StrokeCap, StrokeJoin,
+    StrokeProfile, StyleRecipe, FREEFORM_CURVE, GRID_SNAPPED, GRID_TOO_FINE, ISOMETRIC_OFF_AXIS,
+    LINE_ART_EMPTY, MIN_GRID_SIZE, MIN_STROKE_WEIGHT, SHADING, SHADING_UNSUPPORTED,
+    STROKE_WEIGHT_CLAMPED,
 };

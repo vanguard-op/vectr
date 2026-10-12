@@ -47,6 +47,7 @@ pub(crate) fn document(
         backdrop: backdrop(background),
         ext_states: Vec::new(),
         shadings: Vec::new(),
+        forms: Vec::new(),
         flattened: 0,
     };
 
@@ -78,13 +79,33 @@ pub(crate) fn document(
 
     let ext_states = emitter.ext_states;
     let shadings = emitter.shadings;
+    let forms = emitter.forms;
 
     let content_id = builder.stream(content.as_bytes());
+    // A form's own resources must resolve every paint alpha and shading it
+    // references, so each form carries the document's full resource set (an
+    // unused entry is harmless). The forms are allocated after all nodes have
+    // been emitted, once every resource is known.
+    let form_resources = resources(&ext_states, &shadings, &[]);
+    let form_objects: Vec<(String, usize)> = forms
+        .iter()
+        .map(|form| {
+            let body = form_body(form, &form_resources);
+            (form.name.clone(), builder.alloc(body))
+        })
+        .collect();
     let page_id = builder.reserve();
     let pages_id = builder.reserve();
     builder.set(
         page_id,
-        page_body(pages_id, content_id, page, &ext_states, &shadings),
+        page_body(
+            pages_id,
+            content_id,
+            page,
+            &ext_states,
+            &shadings,
+            &form_objects,
+        ),
     );
     builder.set(
         pages_id,
@@ -123,8 +144,22 @@ struct Emitter {
     ext_states: Vec<(f64, String, usize)>,
     /// Shading resources: the resource name and object id.
     shadings: Vec<(String, usize)>,
+    /// Form XObjects drawing a node's composite, so the element opacity can be
+    /// applied to the whole of it (FEAT-028).
+    forms: Vec<Form>,
     /// How many paints were flattened because the profile lacks transparency.
     flattened: usize,
+}
+
+/// One form XObject: a node's paints drawn into their own buffer so a single
+/// alpha can be applied to the composite (FEAT-028).
+struct Form {
+    /// The resource name the page content invokes it by.
+    name: String,
+    /// The form's content stream.
+    content: String,
+    /// The form's bounding box, in the coordinates its content draws in.
+    bbox: (f64, f64, f64, f64),
 }
 
 impl Emitter {
@@ -204,7 +239,15 @@ impl Emitter {
         }
     }
 
-    /// Emits one node: its fill, then its stroke.
+    /// Emits one node: its fill, then its shading layer, then its stroke.
+    ///
+    /// A shaded node is one element paint — its base fill and its shading layer
+    /// are paints of the same element — so an element opacity below 1 is applied
+    /// to their composite rather than to each paint alone. The node is drawn
+    /// into a transparency group and the group is faded once (FEAT-028); the
+    /// paints inside carry only their own alpha. A profile that cannot carry
+    /// transparency keeps the per-paint path, where the opacity is flattened
+    /// into each paint and reported.
     fn node(
         &mut self,
         out: &mut String,
@@ -213,6 +256,14 @@ impl Emitter {
         diagnostics: &mut Diagnostics,
         builder: &mut Builder,
     ) {
+        let opacity = node.opacity.clamp(0.0, 1.0);
+        if node.shading.is_some() && opacity < 1.0 && self.profile.supports_transparency() {
+            if let Some(bbox) = node_bounds(node) {
+                self.composite(out, node, geometry, opacity, bbox, diagnostics, builder);
+                return;
+            }
+        }
+
         out.push_str("q\n");
         if node.transform != Affine::IDENTITY {
             let t = node.transform;
@@ -227,13 +278,86 @@ impl Emitter {
                 num(t.f)
             );
         }
-        let opacity = node.opacity.clamp(0.0, 1.0);
+        self.paint_content(out, node, geometry, opacity, diagnostics, builder);
+        out.push_str("Q\n");
+    }
+
+    /// Emits a node's paints — fill, shading layer, stroke, in that order — with
+    /// `opacity` folded into every paint.
+    fn paint_content(
+        &mut self,
+        out: &mut String,
+        node: &ResolvedNode,
+        geometry: &Geometry<'_>,
+        opacity: f64,
+        diagnostics: &mut Diagnostics,
+        builder: &mut Builder,
+    ) {
         if let Some(fill) = &node.paint.fill {
             self.fill(out, node, geometry, fill, opacity, diagnostics, builder);
+        }
+        // The single shading layer sits between the base fill and the stroke, so
+        // it composites above the fill and below the stroke (C-003, FEAT-028).
+        if let Some(shading) = &node.shading {
+            self.fill(
+                out,
+                node,
+                &Geometry::Shape(&shading.geometry),
+                &shading.paint,
+                opacity,
+                diagnostics,
+                builder,
+            );
         }
         if let Some(stroke) = &node.paint.stroke {
             self.stroke(out, node, geometry, stroke, opacity, diagnostics, builder);
         }
+    }
+
+    /// Draws a node's paints into a transparency group and fades the group once,
+    /// so the element opacity applies to the composite of its paints rather than
+    /// to each paint alone (FEAT-028).
+    #[allow(clippy::too_many_arguments)]
+    fn composite(
+        &mut self,
+        out: &mut String,
+        node: &ResolvedNode,
+        geometry: &Geometry<'_>,
+        opacity: f64,
+        bbox: (f64, f64, f64, f64),
+        diagnostics: &mut Diagnostics,
+        builder: &mut Builder,
+    ) {
+        let mut content = String::from("q\n");
+        if node.transform != Affine::IDENTITY {
+            let t = node.transform;
+            let _ = writeln!(
+                content,
+                "{} {} {} {} {} {} cm",
+                num(t.a),
+                num(t.b),
+                num(t.c),
+                num(t.d),
+                num(t.e),
+                num(t.f)
+            );
+        }
+        // Inside the group each paint carries only its own alpha; the element
+        // opacity is the group's alpha, applied to the composite.
+        self.paint_content(&mut content, node, geometry, 1.0, diagnostics, builder);
+        content.push_str("Q\n");
+
+        // The invocation is isolated in a q/Q so the group's alpha does not leak
+        // into the graphics state the following nodes paint in.
+        out.push_str("q\n");
+        self.set_alpha(out, opacity, builder);
+        let name = format!("Fx{}", self.forms.len() + 1);
+        self.forms.push(Form {
+            name: name.clone(),
+            content,
+            bbox,
+        });
+        let _ = writeln!(out, "/{name} Do");
         out.push_str("Q\n");
     }
 
@@ -519,7 +643,24 @@ fn page_body(
     page: &Page,
     ext_states: &[(f64, String, usize)],
     shadings: &[(String, usize)],
+    forms: &[(String, usize)],
 ) -> Vec<u8> {
+    let resources = resources(ext_states, shadings, forms);
+    format!(
+        "<< /Type /Page /Parent {pages_id} 0 R /MediaBox [0 0 {} {}] /Resources {resources} /Contents {content_id} 0 R >>",
+        num(page.width),
+        num(page.height)
+    )
+    .into_bytes()
+}
+
+/// A resource dictionary naming the paint alphas, shadings and form XObjects a
+/// content stream may reference.
+fn resources(
+    ext_states: &[(f64, String, usize)],
+    shadings: &[(String, usize)],
+    forms: &[(String, usize)],
+) -> String {
     let mut resources = String::from("<<");
     if !ext_states.is_empty() {
         resources.push_str(" /ExtGState <<");
@@ -535,13 +676,36 @@ fn page_body(
         }
         resources.push_str(" >>");
     }
+    if !forms.is_empty() {
+        resources.push_str(" /XObject <<");
+        for (name, id) in forms {
+            let _ = write!(resources, " /{name} {id} 0 R");
+        }
+        resources.push_str(" >>");
+    }
     resources.push_str(" >>");
-    format!(
-        "<< /Type /Page /Parent {pages_id} 0 R /MediaBox [0 0 {} {}] /Resources {resources} /Contents {content_id} 0 R >>",
-        num(page.width),
-        num(page.height)
+    resources
+}
+
+/// The indirect object body of a transparency-group form XObject.
+///
+/// The group is isolated (`/I true`) so its paints composite into their own
+/// buffer and the element opacity is applied once, to the composite, matching
+/// the render model's one-element-paint semantics (FEAT-028).
+fn form_body(form: &Form, resources: &str) -> Vec<u8> {
+    let (min_x, min_y, max_x, max_y) = form.bbox;
+    let mut body = format!(
+        "<< /Type /XObject /Subtype /Form /BBox [{} {} {} {}] /Group << /Type /Group /S /Transparency /CS /DeviceRGB /I true /K false >> /Resources {resources} /Length {} >>\nstream\n",
+        num(min_x),
+        num(min_y),
+        num(max_x),
+        num(max_y),
+        form.content.len()
     )
-    .into_bytes()
+    .into_bytes();
+    body.extend_from_slice(form.content.as_bytes());
+    body.extend_from_slice(b"\nendstream");
+    body
 }
 
 /// Writes one paint's colour operator.
@@ -978,6 +1142,47 @@ fn normalize_extent(origin: f64, extent: f64) -> (f64, f64) {
     }
 }
 
+/// The scene-coordinate bounding box a node's paints occupy, padded for the
+/// stroke and a hair of rounding. `None` when it cannot be computed, in which
+/// case the node falls back to per-paint painting.
+///
+/// Only the node's own geometry and its shading region are measured; a text node
+/// never carries a shading layer, so it never reaches this path.
+fn node_bounds(node: &ResolvedNode) -> Option<(f64, f64, f64, f64)> {
+    let mut points: Vec<[f64; 2]> = Vec::new();
+    if let Some(shape) = &node.geometry {
+        collect_shape_points(shape, &mut points);
+    }
+    if let Some(shading) = &node.shading {
+        collect_shape_points(&shading.geometry, &mut points);
+    }
+    let transform = node.transform;
+    let points: Vec<[f64; 2]> = points
+        .into_iter()
+        .map(|point| transform.apply(point))
+        .collect();
+    if points.is_empty() || !points.iter().all(|point| finite(point)) {
+        return None;
+    }
+    let mut box_ = (points[0][0], points[0][1], points[0][0], points[0][1]);
+    for point in &points[1..] {
+        box_.0 = box_.0.min(point[0]);
+        box_.1 = box_.1.min(point[1]);
+        box_.2 = box_.2.max(point[0]);
+        box_.3 = box_.3.max(point[1]);
+    }
+    let stroke_pad = node
+        .paint
+        .stroke
+        .as_ref()
+        .map_or(0.0, |stroke| stroke.width.abs());
+    let pad = stroke_pad + 1.0;
+    if !pad.is_finite() || !finite(&[box_.0, box_.1, box_.2, box_.3]) {
+        return None;
+    }
+    Some((box_.0 - pad, box_.1 - pad, box_.2 + pad, box_.3 + pad))
+}
+
 fn cap_code(cap: StrokeCap) -> u8 {
     match cap {
         StrokeCap::Butt => 0,
@@ -1049,6 +1254,10 @@ fn is_finite(node: &ResolvedNode) -> bool {
             .as_ref()
             .is_none_or(|stroke| stroke.width.is_finite())
         && node.geometry.as_ref().is_none_or(geometry_is_finite)
+        && node
+            .shading
+            .as_ref()
+            .is_none_or(|shading| geometry_is_finite(&shading.geometry))
 }
 
 fn geometry_is_finite(shape: &Shape) -> bool {
@@ -1189,6 +1398,7 @@ mod tests {
             transform: Affine::IDENTITY,
             raster: None,
             paint: NodePaint::default(),
+            shading: None,
             opacity: 1.0,
             visible: true,
         }
@@ -1225,6 +1435,39 @@ mod tests {
         (text, diagnostics)
     }
 
+    /// A rect node carrying one flat shading layer over its lower half.
+    fn shaded(id: &str, fill: &str, shade: &str) -> ResolvedNode {
+        let mut shape = node(id, rect(0.0, 0.0, 10.0, 10.0));
+        shape.paint.fill = Some(Paint::Color {
+            value: fill.to_string(),
+        });
+        shape.shading = Some(crate::render::NodeShading {
+            geometry: Shape::Path(PathGeometry {
+                subpaths: vec![crate::primitives::SubPath {
+                    start: [0.0, 5.0],
+                    segments: vec![
+                        Segment::Line { to: [10.0, 5.0] },
+                        Segment::Line { to: [10.0, 10.0] },
+                        Segment::Line { to: [0.0, 10.0] },
+                    ],
+                    closed: true,
+                }],
+            }),
+            paint: Paint::Color {
+                value: shade.to_string(),
+            },
+        });
+        shape
+    }
+
+    /// The content stream of the document's first form XObject, if any.
+    fn form_content(text: &str) -> Option<&str> {
+        let start = text.find("/Subtype /Form")?;
+        let stream = start + text[start..].find("stream\n")? + "stream\n".len();
+        let end = stream + text[stream..].find("\nendstream")?;
+        Some(&text[stream..end])
+    }
+
     #[test]
     fn a_rect_becomes_vector_path_operators() {
         let mut shape = node("e1", rect(1.0, 2.0, 30.0, 40.0));
@@ -1235,6 +1478,215 @@ mod tests {
         assert!(text.contains("1 2 30 40 re"), "{text}");
         assert!(text.contains("1 0 0 rg"), "{text}");
         assert!(!text.contains("/Subtype /Image"), "{text}");
+    }
+
+    #[test]
+    fn a_shaded_node_paints_its_fill_then_its_shading_layer_then_its_stroke() {
+        let mut shape = node("e1", rect(0.0, 0.0, 10.0, 10.0));
+        shape.paint = NodePaint {
+            fill: Some(Paint::Color {
+                value: "#ff0000".to_string(),
+            }),
+            stroke: Some(NodeStroke {
+                paint: Paint::Color {
+                    value: "#0000ff".to_string(),
+                },
+                width: 1.0,
+                cap: StrokeCap::Butt,
+                join: StrokeJoin::Miter,
+            }),
+        };
+        shape.shading = Some(crate::render::NodeShading {
+            geometry: Shape::Path(PathGeometry {
+                subpaths: vec![crate::primitives::SubPath {
+                    start: [0.0, 5.0],
+                    segments: vec![
+                        Segment::Line { to: [10.0, 5.0] },
+                        Segment::Line { to: [10.0, 10.0] },
+                        Segment::Line { to: [0.0, 10.0] },
+                    ],
+                    closed: true,
+                }],
+            }),
+            paint: Paint::Color {
+                value: "#111111".to_string(),
+            },
+        });
+
+        let (text, _) = content(&model(vec![shape]), Profile::Srgb);
+        let fill = text.find("1 0 0 rg").expect("the base fill");
+        let shade = text
+            .find("0.066667 0.066667 0.066667 rg")
+            .expect("the shading layer");
+        let stroke = text.find("0 0 1 RG").expect("the stroke");
+        assert!(
+            fill < shade && shade < stroke,
+            "the shading paints between the fill and the stroke: {text}"
+        );
+    }
+
+    #[test]
+    fn a_shaded_node_below_full_opacity_composites_as_one_element_paint() {
+        let mut shape = shaded("e1", "#ff0000", "#0000ff");
+        shape.opacity = 0.5;
+        let (text, diagnostics) = content(&model(vec![shape]), Profile::Srgb);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+
+        // The element opacity is the group's alpha, applied once to the whole
+        // composite, and the group is invoked once.
+        assert!(text.contains("/ca 0.5 /CA 0.5"), "{text}");
+        assert!(text.contains("/GS1 gs"), "{text}");
+        assert!(text.contains("/Fx1 Do"), "{text}");
+        assert!(text.contains("/XObject << /Fx1"), "{text}");
+        assert!(
+            text.contains("/Group << /Type /Group /S /Transparency"),
+            "the node is drawn into a transparency group: {text}"
+        );
+
+        let form = form_content(&text).expect("a transparency group");
+        // Inside the group each paint carries only its own alpha: the element
+        // opacity is not folded into either paint, and the fill precedes the
+        // shading layer.
+        let fill = form.find("1 0 0 rg").expect("the base fill");
+        let shade = form.find("0 0 1 rg").expect("the shading layer");
+        assert!(fill < shade, "the shading paints above the fill: {form}");
+        assert!(
+            !form.contains("/ca 0.5"),
+            "the element opacity is not applied per paint: {form}"
+        );
+    }
+
+    #[test]
+    fn a_shaded_node_at_full_opacity_paints_without_a_group() {
+        let shape = shaded("e1", "#ff0000", "#0000ff");
+        let (text, _) = content(&model(vec![shape]), Profile::Srgb);
+        assert!(!text.contains("/Subtype /Form"), "{text}");
+        assert!(text.contains("1 0 0 rg"), "{text}");
+        assert!(text.contains("0 0 1 rg"), "{text}");
+    }
+
+    #[test]
+    fn a_shade_token_with_alpha_keeps_its_own_alpha_inside_the_group() {
+        let mut shape = shaded("e1", "#ff0000", "#0000ff80");
+        shape.opacity = 0.5;
+        let (text, _) = content(&model(vec![shape]), Profile::Srgb);
+        let form = form_content(&text).expect("a transparency group");
+        assert!(
+            text.contains("/ca 0.501961"),
+            "the shade tone's own alpha applies to its own paint: {text}"
+        );
+        assert!(
+            form.contains("/GS1 gs"),
+            "the shade's alpha is set inside the group: {form}"
+        );
+        assert!(
+            text.contains("/ca 0.5 /CA 0.5"),
+            "the element opacity is the group's alpha: {text}"
+        );
+        assert!(
+            !text.contains("/ca 0.250980"),
+            "the element opacity is not folded into the shade's alpha: {text}"
+        );
+    }
+
+    #[test]
+    fn a_group_covers_the_node_it_composites() {
+        let mut shape = shaded("e1", "#ff0000", "#0000ff");
+        shape.opacity = 0.5;
+        let (text, _) = content(&model(vec![shape]), Profile::Srgb);
+        assert!(
+            text.contains("/BBox [-1 -1 11 11]"),
+            "the group spans the node with a hair of margin: {text}"
+        );
+    }
+
+    #[test]
+    fn a_gradient_base_fill_keeps_its_shading_resource_inside_the_group() {
+        let mut shape = shaded("e1", "#ff0000", "#0000ff");
+        shape.paint.fill = Some(Paint::Gradient(GradientPaint {
+            gradient_type: GradientType::Linear,
+            stops: vec![
+                crate::render::ResolvedStop {
+                    offset: 0.0,
+                    color: "#ff0000".to_string(),
+                    opacity: 1.0,
+                },
+                crate::render::ResolvedStop {
+                    offset: 1.0,
+                    color: "#0000ff".to_string(),
+                    opacity: 1.0,
+                },
+            ],
+            spread: Spread::Pad,
+            x1: Some(0.0),
+            y1: Some(0.0),
+            x2: Some(1.0),
+            y2: Some(0.0),
+            cx: None,
+            cy: None,
+            r: None,
+            fx: None,
+            fy: None,
+        }));
+        shape.opacity = 0.5;
+        let (text, diagnostics) = content(&model(vec![shape]), Profile::Srgb);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        let form = form_content(&text).expect("a transparency group");
+        assert!(
+            form.contains("/Sh1 sh"),
+            "the gradient paints inside the group: {form}"
+        );
+        // The form's own resources resolve the shading it references.
+        assert!(
+            text.contains("/Shading << /Sh1"),
+            "the group's resources carry the shading: {text}"
+        );
+    }
+
+    #[test]
+    fn a_shaded_node_stroke_paints_inside_the_group() {
+        let mut shape = shaded("e1", "#ff0000", "#0000ff");
+        shape.paint.stroke = Some(NodeStroke {
+            paint: Paint::Color {
+                value: "#00ff00".to_string(),
+            },
+            width: 2.0,
+            cap: StrokeCap::Butt,
+            join: StrokeJoin::Miter,
+        });
+        shape.opacity = 0.5;
+        let (text, _) = content(&model(vec![shape]), Profile::Srgb);
+        let form = form_content(&text).expect("a transparency group");
+        let fill = form.find("1 0 0 rg").expect("the base fill");
+        let shade = form.find("0 0 1 rg").expect("the shading layer");
+        let stroke = form.find("0 1 0 RG").expect("the stroke");
+        assert!(
+            fill < shade && shade < stroke,
+            "the group paints the fill, then the shading, then the stroke: {form}"
+        );
+        // The bounding box is padded for the 2pt stroke so it is not clipped.
+        assert!(
+            text.contains("/BBox [-3 -3 13 13]"),
+            "the group covers the stroke: {text}"
+        );
+    }
+
+    #[test]
+    fn a_profile_without_transparency_flattens_a_shaded_composite_per_paint() {
+        let mut shape = shaded("e1", "#ff0000", "#0000ff");
+        shape.opacity = 0.5;
+        let (text, diagnostics) = content(&model(vec![shape]), Profile::Cmyk);
+        assert!(
+            !text.contains("/Subtype /Form"),
+            "a profile without transparency cannot carry a group: {text}"
+        );
+        assert!(
+            diagnostics
+                .warnings()
+                .any(|w| w.code == TRANSPARENCY_FLATTENED),
+            "{diagnostics:?}"
+        );
+        assert!(text.contains(" k\n"), "{text}");
     }
 
     #[test]

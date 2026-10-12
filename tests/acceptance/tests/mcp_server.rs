@@ -375,6 +375,46 @@ fn a_project_scene_resolves_its_style_assets_through_mcp() {
 }
 
 #[test]
+fn a_shading_recipe_reaches_the_render_model_over_mcp() {
+    // The MCP compile tool returns the render model, and a project's
+    // single-layer shading recipe resolves through the shared loader, so a
+    // shaded node crosses the tool boundary as data (C-005, FEAT-028).
+    let dir = TempDir::new("mcp-shading");
+    dir.write("vectr.project.json", "{}");
+    dir.write(
+        "palettes/brand.json",
+        &palette("brand", &[("accent", "#ff0000"), ("shadow", "#111111")]),
+    );
+    dir.write(
+        "recipes/shaded.json",
+        &json!({
+            "id": "shaded", "projectId": "p", "name": "flat",
+            "parameters": { "shading": "single-layer", "lightDirection": "top", "shadeToken": "shadow" }
+        })
+        .to_string(),
+    );
+    let mut card = rect("card", 0, 0.0, 0.0, 100.0, 100.0);
+    card["fill"] = token_paint("accent");
+    let mut document = scene_with(vec![card], None, Some("brand"));
+    document["recipeId"] = json!("shaded");
+    write_scene_as(&dir, "logo", document);
+
+    let run = run_mcp_session(
+        dir.path(),
+        &[],
+        &[mcp_tool_call(1, "compile", json!({ "scene": "logo" }))],
+    );
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let result = &response(&run, 1)["result"];
+    assert_eq!(result["isError"], false, "{:?}", run.responses);
+    let node = &result["structuredContent"]["model"]["nodes"][0];
+    assert_eq!(
+        node["shading"]["paint"]["value"], "#111111",
+        "the shading layer resolves over MCP: {node}"
+    );
+}
+
+#[test]
 fn the_cli_and_the_mcp_server_resolve_a_project_identically() {
     // The project loader is shared between the two front ends, so the same
     // scene against the same project yields the same render model through both

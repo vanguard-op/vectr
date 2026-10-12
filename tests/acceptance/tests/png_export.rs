@@ -37,6 +37,7 @@ fn half_red() -> RenderModel {
             }),
             stroke: None,
         },
+        shading: None,
         opacity: 1.0,
         visible: true,
     };

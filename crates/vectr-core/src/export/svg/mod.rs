@@ -267,6 +267,7 @@ mod tests {
             transform: Affine::IDENTITY,
             raster: None,
             paint: NodePaint::default(),
+            shading: None,
             opacity: 1.0,
             visible: true,
         }
@@ -317,6 +318,7 @@ mod tests {
                 }),
                 stroke: None,
             },
+            shading: None,
             opacity: 1.0,
             visible: true,
         }
@@ -428,6 +430,54 @@ mod tests {
         assert!(svg.contains("stroke-linejoin=\"bevel\""), "{svg}");
         assert!(svg.contains("<g id=\"e1\" data-name=\"Box\">"), "{svg}");
         assert!(svg.contains("<title>Box</title>"), "{svg}");
+    }
+
+    #[test]
+    fn a_shaded_node_emits_its_fill_then_its_shading_layer_then_its_stroke() {
+        let mut shape = node("e1", Some("Box"), rect(0.0, 0.0, 10.0, 10.0));
+        shape.paint = NodePaint {
+            fill: Some(Paint::Color {
+                value: "#ff0000".to_string(),
+            }),
+            stroke: Some(NodeStroke {
+                paint: Paint::Color {
+                    value: "#0000ff".to_string(),
+                },
+                width: 1.0,
+                cap: StrokeCap::Butt,
+                join: StrokeJoin::Miter,
+            }),
+        };
+        shape.shading = Some(crate::render::NodeShading {
+            geometry: Shape::Path(PathGeometry {
+                subpaths: vec![SubPath {
+                    start: [0.0, 5.0],
+                    segments: vec![
+                        Segment::Line { to: [10.0, 5.0] },
+                        Segment::Line { to: [10.0, 10.0] },
+                        Segment::Line { to: [0.0, 10.0] },
+                    ],
+                    closed: true,
+                }],
+            }),
+            paint: Paint::Color {
+                value: "#111111".to_string(),
+            },
+        });
+
+        let svg = export(&model(vec![shape]));
+        let fill = svg.find("fill=\"#ff0000\"").expect("the base fill");
+        let shade = svg.find("fill=\"#111111\"").expect("the shading layer");
+        let stroke = svg.find("stroke=\"#0000ff\"").expect("the stroke");
+        assert!(
+            fill < shade && shade < stroke,
+            "the shading paints between the fill and the stroke: {svg}"
+        );
+        // The shading layer is the derived region, a filled shape with no stroke.
+        assert!(
+            svg.contains("<path d=\"M 0 5 L 10 5 L 10 10 L 0 10 Z\" fill=\"#111111\"/>"),
+            "{svg}"
+        );
     }
 
     #[test]

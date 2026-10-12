@@ -289,6 +289,7 @@ mod tests {
             transform: Affine::IDENTITY,
             raster: None,
             paint: NodePaint::default(),
+            shading: None,
             opacity: 1.0,
             visible: true,
         }
@@ -345,6 +346,46 @@ mod tests {
         assert_eq!(
             (outside.red(), outside.green(), outside.blue()),
             (255, 255, 255)
+        );
+    }
+
+    #[cfg(feature = "rasterizer")]
+    #[test]
+    fn a_shading_layer_composites_above_the_base_fill() {
+        let mut shape = node("e1", rect(0.0, 0.0, 100.0, 50.0));
+        shape.paint.fill = Some(Paint::Color {
+            value: "#ff0000".to_string(),
+        });
+        shape.shading = Some(crate::render::NodeShading {
+            geometry: Shape::Path(crate::primitives::Path {
+                subpaths: vec![crate::primitives::SubPath {
+                    start: [0.0, 25.0],
+                    segments: vec![
+                        crate::primitives::Segment::Line { to: [100.0, 25.0] },
+                        crate::primitives::Segment::Line { to: [100.0, 50.0] },
+                        crate::primitives::Segment::Line { to: [0.0, 50.0] },
+                    ],
+                    closed: true,
+                }],
+            }),
+            paint: Paint::Color {
+                value: "#0000ff".to_string(),
+            },
+        });
+
+        let bytes = export_png(&model(vec![shape]), &RasterOptions::default()).expect("exports");
+        let image = decode(&bytes);
+        let lit = image.pixel(10, 10).expect("in bounds").demultiply();
+        assert_eq!(
+            (lit.red(), lit.green(), lit.blue()),
+            (255, 0, 0),
+            "the half toward the light keeps the base fill"
+        );
+        let shaded = image.pixel(10, 40).expect("in bounds").demultiply();
+        assert_eq!(
+            (shaded.red(), shaded.green(), shaded.blue()),
+            (0, 0, 255),
+            "the far half is shaded"
         );
     }
 
@@ -474,6 +515,7 @@ mod tests {
                 }),
                 stroke: None,
             },
+            shading: None,
             opacity: 1.0,
             visible: true,
         };

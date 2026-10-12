@@ -124,6 +124,9 @@ impl GradientDefs {
             if let Some(stroke) = &node.paint.stroke {
                 defs.register(&stroke.paint, ids);
             }
+            if let Some(shading) = &node.shading {
+                defs.register(&shading.paint, ids);
+            }
         }
         defs
     }
@@ -242,7 +245,7 @@ fn emit_nodes(
 ) {
     let mut open: Vec<String> = Vec::new();
     for node in nodes {
-        let Some(shape) = render_node(node, fonts, defs, mode, diagnostics) else {
+        let Some(shapes) = render_node(node, fonts, defs, mode, diagnostics) else {
             continue;
         };
 
@@ -281,7 +284,7 @@ fn emit_nodes(
             open.push(group.id.clone());
         }
 
-        emit_node(out, node, &shape, &indent(open.len() + 1), ids);
+        emit_node(out, node, &shapes, &indent(open.len() + 1), ids);
     }
     while !open.is_empty() {
         open.pop();
@@ -299,21 +302,22 @@ fn unsupported(node: &ResolvedNode) -> Option<&'static str> {
     }
 }
 
-/// The SVG for one node, or `None` when it draws nothing (FEAT-015).
+/// The SVG shapes for one node, or `None` when it draws nothing (FEAT-015).
 ///
 /// A raster layer is omitted with a warning naming the element and its asset
 /// when the document is the user's SVG, and skipped silently when the PNG
 /// exporter rasterizes the vector content, because that exporter composites the
 /// image itself. A raster node carrying no placed image is a generic omission
 /// in either mode, mirroring the other unrepresentable content. Every other node
-/// uses its shape or outlined glyphs.
+/// uses its shape or outlined glyphs, and a shaded node emits its fill, its
+/// shading layer, and its stroke in that order.
 fn render_node(
     node: &ResolvedNode,
     fonts: &FontLibrary<'_>,
     defs: &GradientDefs,
     mode: RasterMode,
     diagnostics: &mut Diagnostics,
-) -> Option<String> {
+) -> Option<Vec<String>> {
     if node.kind == "raster" {
         if !is_finite(node) {
             omit(
@@ -341,29 +345,82 @@ fn render_node(
         omit(diagnostics, node, reason);
         return None;
     }
-    shape_for(node, fonts, defs, diagnostics)
+    node_shapes(node, fonts, defs, diagnostics)
 }
 
-/// The SVG shape for a node: a text node's outlined glyphs, or a shape's native
-/// element. `None` when the node draws nothing, in which case its warnings have
-/// already been recorded.
-fn shape_for(
+/// The SVG shapes a node draws, in paint order: a text node's outlined glyphs,
+/// or a shape's native element. `None` when the node draws nothing, in which
+/// case its warnings have already been recorded.
+///
+/// A node carrying a shading layer emits its fill, then the shading layer, then
+/// its stroke, so the layer composites above the base fill and below any stroke
+/// (C-003, FEAT-028). Every other node emits one shape carrying its fill and
+/// stroke together.
+fn node_shapes(
     node: &ResolvedNode,
     fonts: &FontLibrary<'_>,
     defs: &GradientDefs,
     diagnostics: &mut Diagnostics,
-) -> Option<String> {
-    match &node.text {
-        Some(run) => {
-            let outlined = fonts.outline(run, &node.id);
-            diagnostics.extend(outlined.diagnostics);
-            if outlined.path.is_empty() {
-                None
-            } else {
-                Some(text_element(node, &outlined.path, defs))
-            }
+) -> Option<Vec<String>> {
+    if let Some(run) = &node.text {
+        let outlined = fonts.outline(run, &node.id);
+        diagnostics.extend(outlined.diagnostics);
+        if outlined.path.is_empty() {
+            return None;
         }
-        None => shape_element(node, defs),
+        return Some(vec![text_element(node, &outlined.path, defs)]);
+    }
+
+    let shape = node.geometry.as_ref()?;
+    if node.shading.is_none() {
+        return shape_element(node, defs).map(|element| vec![element]);
+    }
+
+    let transform = transform_attr(node.transform);
+    let mut pieces = Vec::new();
+
+    // The base fill first.
+    let mut fill_attrs = String::new();
+    match &node.paint.fill {
+        Some(fill) => write_paint(&mut fill_attrs, "fill", fill, defs),
+        None => fill_attrs.push_str(" fill=\"none\""),
+    }
+    fill_attrs.push_str(&transform);
+    if let Some(element) = geometry_element(shape, &fill_attrs) {
+        pieces.push(element);
+    }
+
+    // Then the one shading layer, between the fill and the stroke.
+    if let Some(shading) = &node.shading {
+        let mut shade_attrs = String::new();
+        write_paint(&mut shade_attrs, "fill", &shading.paint, defs);
+        shade_attrs.push_str(&transform);
+        if let Some(element) = geometry_element(&shading.geometry, &shade_attrs) {
+            pieces.push(element);
+        }
+    }
+
+    // Then the base stroke, so the shading stays below it.
+    if let Some(stroke) = &node.paint.stroke {
+        let mut stroke_attrs = String::from(" fill=\"none\"");
+        write_paint(&mut stroke_attrs, "stroke", &stroke.paint, defs);
+        let _ = write!(
+            stroke_attrs,
+            " stroke-width=\"{}\" stroke-linecap=\"{}\" stroke-linejoin=\"{}\"",
+            number(stroke.width),
+            cap_name(stroke.cap),
+            join_name(stroke.join),
+        );
+        stroke_attrs.push_str(&transform);
+        if let Some(element) = geometry_element(shape, &stroke_attrs) {
+            pieces.push(element);
+        }
+    }
+
+    if pieces.is_empty() {
+        None
+    } else {
+        Some(pieces)
     }
 }
 
@@ -371,7 +428,7 @@ fn shape_for(
 fn emit_node(
     out: &mut String,
     node: &ResolvedNode,
-    shape: &str,
+    shapes: &[String],
     indent: &str,
     ids: &mut IdAllocator,
 ) {
@@ -401,7 +458,9 @@ fn emit_node(
     if let Some(text) = &node.text {
         let _ = writeln!(out, "{indent}  <desc>{}</desc>", escape_text(&text.value));
     }
-    let _ = writeln!(out, "{indent}  {shape}");
+    for shape in shapes {
+        let _ = writeln!(out, "{indent}  {shape}");
+    }
     let _ = writeln!(out, "{indent}</g>");
 }
 
@@ -422,22 +481,15 @@ fn omit(diagnostics: &mut Diagnostics, node: &ResolvedNode, reason: &str) {
 fn shape_element(node: &ResolvedNode, defs: &GradientDefs) -> Option<String> {
     let shape = node.geometry.as_ref()?;
     let mut attrs = paint_attributes(node, defs);
-    if node.transform != Affine::IDENTITY {
-        let transform = node.transform;
-        let _ = write!(
-            attrs,
-            " transform=\"matrix({} {} {} {} {} {})\"",
-            number(transform.a),
-            number(transform.b),
-            number(transform.c),
-            number(transform.d),
-            number(transform.e),
-            number(transform.f),
-        );
-    }
+    attrs.push_str(&transform_attr(node.transform));
+    geometry_element(shape, &attrs)
+}
 
+/// One SVG geometry element for a shape, with the given attributes (which carry
+/// the transform) applied. `None` when the shape draws nothing — an empty path.
+fn geometry_element(shape: &Shape, attrs: &str) -> Option<String> {
     let element = match shape {
-        Shape::Rect(rect) => rect_element(rect, &attrs),
+        Shape::Rect(rect) => rect_element(rect, attrs),
         Shape::Ellipse(ellipse) => format!(
             "<ellipse cx=\"{}\" cy=\"{}\" rx=\"{}\" ry=\"{}\"{attrs}/>",
             number(ellipse.cx),
@@ -462,6 +514,22 @@ fn shape_element(node: &ResolvedNode, defs: &GradientDefs) -> Option<String> {
     Some(element)
 }
 
+/// The transform attribute for a node, empty when the transform is the identity.
+fn transform_attr(transform: Affine) -> String {
+    if transform == Affine::IDENTITY {
+        return String::new();
+    }
+    format!(
+        " transform=\"matrix({} {} {} {} {} {})\"",
+        number(transform.a),
+        number(transform.b),
+        number(transform.c),
+        number(transform.d),
+        number(transform.e),
+        number(transform.f),
+    )
+}
+
 /// The SVG path element for an outlined text node (FEAT-024).
 ///
 /// The glyph contours are concrete geometry by the time they reach here, so a
@@ -470,19 +538,7 @@ fn shape_element(node: &ResolvedNode, defs: &GradientDefs) -> Option<String> {
 fn text_element(node: &ResolvedNode, path: &PathGeometry, defs: &GradientDefs) -> String {
     let data = path_data(path);
     let mut attrs = paint_attributes(node, defs);
-    if node.transform != Affine::IDENTITY {
-        let transform = node.transform;
-        let _ = write!(
-            attrs,
-            " transform=\"matrix({} {} {} {} {} {})\"",
-            number(transform.a),
-            number(transform.b),
-            number(transform.c),
-            number(transform.d),
-            number(transform.e),
-            number(transform.f),
-        );
-    }
+    attrs.push_str(&transform_attr(node.transform));
     format!("<path d=\"{data}\"{attrs}/>")
 }
 
@@ -683,6 +739,10 @@ fn is_finite(node: &ResolvedNode) -> bool {
             .as_ref()
             .is_none_or(|stroke| stroke.width.is_finite())
         && node.geometry.as_ref().is_none_or(geometry_is_finite)
+        && node
+            .shading
+            .as_ref()
+            .is_none_or(|shading| geometry_is_finite(&shading.geometry))
 }
 
 fn geometry_is_finite(shape: &Shape) -> bool {

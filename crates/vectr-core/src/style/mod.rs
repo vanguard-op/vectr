@@ -15,6 +15,7 @@
 pub mod gradient;
 pub mod palette;
 pub mod recipe;
+pub mod shading;
 pub mod stroke;
 
 pub use gradient::{
@@ -24,11 +25,12 @@ pub use gradient::{
 };
 pub use palette::{Palette, PaletteToken};
 pub use recipe::{
-    LightDirection, RecipeName, RecipeParameters, Shading, StyleRecipe, SHADING_UNSUPPORTED,
-    TEXTURE_UNSUPPORTED,
+    LightDirection, RecipeName, RecipeParameters, Shading, StyleRecipe, SHADING,
+    SHADING_UNSUPPORTED, TEXTURE_UNSUPPORTED,
 };
 pub use recipe::{FREEFORM_CURVE, GRID_SNAPPED, GRID_TOO_FINE, ISOMETRIC_OFF_AXIS, MIN_GRID_SIZE};
 pub use recipe::{LINE_ART_EMPTY, MIN_STROKE_WEIGHT, STROKE_WEIGHT_CLAMPED};
+pub use shading::{light_vector, region as shading_region, Unavailable as ShadingUnavailable};
 pub use stroke::{ResolvedStroke, StrokeCap, StrokeJoin, StrokeProfile};
 
 pub use palette::validate_usage as validate_palette_usage;
@@ -36,9 +38,9 @@ pub use palette::{
     parse as parse_palette, resolve_canvas_background, validate as validate_palette,
 };
 pub use recipe::{
-    check_expressible as check_recipe_expressible, check_grid as check_recipe_grid,
-    check_line_art as check_recipe_line_art, check_raster_shading as check_recipe_raster_shading,
-    parse as parse_style_recipe, validate as validate_style_recipe,
+    check_grid as check_recipe_grid, check_line_art as check_recipe_line_art,
+    check_raster_shading as check_recipe_raster_shading, parse as parse_style_recipe,
+    validate as validate_style_recipe,
 };
 pub use stroke::{parse as parse_stroke_profile, validate as validate_stroke_profile};
 

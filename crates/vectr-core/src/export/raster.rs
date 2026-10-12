@@ -225,6 +225,7 @@ mod tests {
             }),
             transform: Affine::IDENTITY,
             paint: Default::default(),
+            shading: None,
             opacity: 1.0,
             visible: true,
         }

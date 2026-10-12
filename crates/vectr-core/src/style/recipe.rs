@@ -75,7 +75,11 @@ pub struct RecipeParameters {
     /// Direction the scene's light comes from when shading is single-layer; the
     /// shading falls on the opposite side. Defaults to top-left when unset
     /// (FEAT-028).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_light_direction"
+    )]
     pub light_direction: Option<LightDirection>,
     /// Name of the palette token supplying the single shading layer's colour;
     /// carried with the request and required when shading is single-layer
@@ -123,12 +127,89 @@ pub enum LightDirection {
     TopLeft,
 }
 
+impl Default for LightDirection {
+    /// The documented default when a recipe does not state one (FEAT-028).
+    fn default() -> Self {
+        Self::TopLeft
+    }
+}
+
+impl LightDirection {
+    /// The eight compass directions, in a fixed order.
+    pub const ALL: [LightDirection; 8] = [
+        LightDirection::Top,
+        LightDirection::TopRight,
+        LightDirection::Right,
+        LightDirection::BottomRight,
+        LightDirection::Bottom,
+        LightDirection::BottomLeft,
+        LightDirection::Left,
+        LightDirection::TopLeft,
+    ];
+
+    /// The direction a name spells, or `None` when it is not one of the eight
+    /// compass directions (FEAT-028).
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|direction| direction.as_str() == name)
+    }
+
+    /// The direction as it appears in the scene language.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LightDirection::Top => "top",
+            LightDirection::TopRight => "topRight",
+            LightDirection::Right => "right",
+            LightDirection::BottomRight => "bottomRight",
+            LightDirection::Bottom => "bottom",
+            LightDirection::BottomLeft => "bottomLeft",
+            LightDirection::Left => "left",
+            LightDirection::TopLeft => "topLeft",
+        }
+    }
+}
+
+/// Reads `lightDirection`, naming the field and the allowed directions when the
+/// value is not one of the eight compass points.
+///
+/// The enum alone would report the value without the field it sat in; naming the
+/// field keeps the failure located at the setting a scene author must edit
+/// (FEAT-028).
+fn deserialize_light_direction<'de, D>(deserializer: D) -> Result<Option<LightDirection>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<String>::deserialize(deserializer)?;
+    let Some(name) = value else {
+        return Ok(None);
+    };
+    LightDirection::from_name(&name).map(Some).ok_or_else(|| {
+        let allowed = LightDirection::ALL
+            .iter()
+            .map(|direction| direction.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        serde::de::Error::custom(format!(
+            "`lightDirection` must be one of {allowed}; found `{name}`"
+        ))
+    })
+}
+
 /// The flat recipe renders even fills and no texture (FEAT-007).
 pub const TEXTURE_UNSUPPORTED: DiagnosticCode = DiagnosticCode::new("W_TEXTURE_UNSUPPORTED");
 
-/// The flat recipe requests single-layer shading, a look it does not apply
-/// (FEAT-007, FEAT-028).
+/// A filled shape's single-layer shading cannot be derived: the shape encloses
+/// no fill area, its region comes out empty, or its transform cannot be
+/// inverted (FEAT-028).
+///
+/// The shape renders with its base fill and the cause is named, rather than the
+/// shading request being silently dropped.
 pub const SHADING_UNSUPPORTED: DiagnosticCode = DiagnosticCode::new("W_SHADING_UNSUPPORTED");
+
+/// A recipe requests single-layer shading without a usable shade tone: the tone
+/// is absent, or it does not resolve against the palette (FEAT-028).
+pub const SHADING: DiagnosticCode = DiagnosticCode::new("E_SHADING");
 
 /// The smallest stroke weight a line-art scene renders: a thinner line does not
 /// survive rasterization, so it is clamped up and reported rather than drawn
@@ -206,6 +287,32 @@ impl StyleRecipe {
     /// Whether this is the isometric recipe.
     pub fn is_isometric(&self) -> bool {
         self.name == RecipeName::Isometric
+    }
+
+    /// The shading model the recipe applies (FEAT-028).
+    ///
+    /// A recipe that states none derives no shading; `single-layer` derives one
+    /// vector shading layer per filled shape; `raster` derives none and
+    /// designates that the scene's raster layers supply the shading (FEAT-015).
+    pub fn shading(&self) -> Shading {
+        self.parameters.shading.unwrap_or(Shading::None)
+    }
+
+    /// The direction the scene's light comes from when shading is single-layer
+    /// (FEAT-028). A recipe that states none uses the documented default.
+    pub fn light_direction(&self) -> LightDirection {
+        self.parameters.light_direction.unwrap_or_default()
+    }
+
+    /// The palette token that supplies the single shading layer's colour, when
+    /// the recipe names one (FEAT-028).
+    pub fn shade_token(&self) -> Option<&str> {
+        self.parameters.shade_token.as_deref()
+    }
+
+    /// Whether the recipe requests single-layer vector shading (FEAT-028).
+    pub fn requests_single_layer_shading(&self) -> bool {
+        self.shading() == Shading::SingleLayer
     }
 
     /// The recipe's grid spacing, when it declares one (FEAT-009, FEAT-010).
@@ -398,7 +505,8 @@ pub fn parse(source: &str) -> Result<StyleRecipe, Diagnostics> {
 }
 
 /// Checks a recipe's values: the grid size and stroke weight must be finite and
-/// non-negative where present.
+/// non-negative where present, and a single-layer shading request must name the
+/// palette token its shading layer draws from (FEAT-028).
 pub fn validate(recipe: &StyleRecipe) -> Diagnostics {
     let mut diagnostics = Diagnostics::new();
     validate_non_negative(
@@ -413,33 +521,20 @@ pub fn validate(recipe: &StyleRecipe) -> Diagnostics {
         "/parameters/strokeWeight",
         "strokeWeight",
     );
-    diagnostics
-}
-
-/// Reports where a recipe asks for a shading look it does not apply.
-///
-/// The flat recipe draws even, solid fills (FEAT-007). It does not apply
-/// single-layer shading — that look ships as its own feature (FEAT-028) — so a
-/// request for it is reported and the shape renders with its base fill rather
-/// than being left silently unshaded. Raster shading is settled separately, by
-/// [`check_raster_shading`], because whether it is honored depends on the
-/// compiled scene (FEAT-015).
-pub fn check_expressible(recipe: &StyleRecipe) -> Diagnostics {
-    let mut diagnostics = Diagnostics::new();
-    if !recipe.is_flat() {
-        return diagnostics;
-    }
-    if recipe.parameters.shading == Some(Shading::SingleLayer) {
-        diagnostics.push(
-            Diagnostic::warning(
-                SHADING_UNSUPPORTED,
-                format!(
-                    "recipe `{}` requests single-layer shading, which the flat recipe does not apply; the shape renders with its base fill",
-                    recipe.id
-                ),
-            )
-            .at_path("/parameters/shading"),
-        );
+    if recipe.requests_single_layer_shading() {
+        match recipe.shade_token() {
+            Some(token) if !token.is_empty() => {}
+            _ => diagnostics.push(
+                Diagnostic::error(
+                    SHADING,
+                    format!(
+                        "recipe `{}` requests single-layer shading but declares no `shadeToken`; the shading layer needs a palette token to draw from",
+                        recipe.id
+                    ),
+                )
+                .at_path("/parameters/shadeToken"),
+            ),
+        }
     }
     diagnostics
 }
@@ -544,7 +639,7 @@ mod tests {
   "id": "recipe-1",
   "projectId": "project-1",
   "name": "line-art",
-  "parameters": { "gridSize": 8, "snap": true, "shading": "single-layer", "strokeWeight": 1.5 }
+  "parameters": { "gridSize": 8, "snap": true, "shading": "single-layer", "shadeToken": "shadow", "strokeWeight": 1.5 }
 }"#
     }
 
@@ -604,38 +699,56 @@ mod tests {
         let unshaded =
             parse(r#"{"id":"r","projectId":"p","name":"flat","parameters":{"shading":"none"}}"#)
                 .unwrap();
-        assert!(check_expressible(&unshaded).is_empty());
         assert!(check_raster_shading(&unshaded, false).is_empty());
     }
 
     #[test]
-    fn a_flat_recipe_reports_single_layer_shading_it_does_not_apply() {
-        let mut recipe = parse(
+    fn a_single_layer_request_needs_a_shade_token() {
+        // The shade tone is required alongside a single-layer request, so the
+        // recipe is refused by name rather than compiled without one (FEAT-028).
+        let missing = parse(
             r#"{"id":"r","projectId":"p","name":"flat","parameters":{"shading":"single-layer"}}"#,
         )
         .unwrap();
-        // The request parses with the light direction and shade tone the schema
-        // describes, so it reaches the check rather than being refused as an
-        // unknown property.
-        recipe.parameters.light_direction = Some(LightDirection::TopRight);
-        recipe.parameters.shade_token = Some("shadow".to_string());
-
-        let diagnostics = check_expressible(&recipe);
-        let warning = diagnostics.warnings().next().expect("a warning");
-        assert_eq!(warning.code, SHADING_UNSUPPORTED);
+        let diagnostics = validate(&missing);
+        let error = diagnostics.errors().next().expect("an error");
+        assert_eq!(error.code, SHADING);
         assert!(
-            warning.message.contains("single-layer"),
-            "the warning names the request: {}",
-            warning.message
+            error.message.contains("shadeToken"),
+            "the error names the missing setting: {}",
+            error.message
         );
-        assert!(!diagnostics.has_errors(), "shading is reported, not fatal");
         assert_eq!(
-            warning
+            error
                 .location
                 .as_ref()
                 .and_then(|location| location.json_path.as_deref()),
-            Some("/parameters/shading")
+            Some("/parameters/shadeToken")
         );
+
+        // A named tone satisfies the requirement, and a recipe that draws no
+        // single-layer shading needs none.
+        let named = parse(
+            r#"{"id":"r","projectId":"p","name":"flat","parameters":{"shading":"single-layer","shadeToken":"shadow"}}"#,
+        )
+        .unwrap();
+        assert!(validate(&named).is_empty());
+        let unshaded =
+            parse(r#"{"id":"r","projectId":"p","name":"flat","parameters":{"shading":"none"}}"#)
+                .unwrap();
+        assert!(validate(&unshaded).is_empty());
+    }
+
+    #[test]
+    fn a_single_layer_request_defaults_its_light_direction() {
+        let recipe = parse(
+            r#"{"id":"r","projectId":"p","name":"flat","parameters":{"shading":"single-layer","shadeToken":"shadow"}}"#,
+        )
+        .unwrap();
+        assert!(recipe.requests_single_layer_shading());
+        assert_eq!(recipe.shading(), Shading::SingleLayer);
+        assert_eq!(recipe.light_direction(), LightDirection::TopLeft);
+        assert_eq!(recipe.shade_token(), Some("shadow"));
     }
 
     #[test]
@@ -650,6 +763,7 @@ mod tests {
             Some(LightDirection::BottomLeft)
         );
         assert_eq!(recipe.parameters.shade_token.as_deref(), Some("shadow"));
+        assert_eq!(recipe.light_direction(), LightDirection::BottomLeft);
 
         // The request survives its camelCase JSON round trip (C-002).
         let reparsed = parse(&recipe.to_json_string().unwrap()).expect("round-trips");
@@ -657,15 +771,41 @@ mod tests {
     }
 
     #[test]
-    fn a_non_flat_recipe_is_not_checked_as_flat() {
-        // Single-layer shading is the flat recipe's concern; a non-flat recipe
-        // settles its own look, so `check_expressible` leaves it alone.
-        let recipe = parse(
-            r#"{"id":"r","projectId":"p","name":"geometric","parameters":{"shading":"single-layer"}}"#,
+    fn a_light_direction_that_is_not_a_compass_point_is_refused_naming_it() {
+        // The eight compass directions are the whole vocabulary, so any other
+        // value is refused at the field rather than silently defaulted
+        // (FEAT-028).
+        let diagnostics = parse(
+            r#"{"id":"r","projectId":"p","name":"flat","parameters":{"shading":"single-layer","lightDirection":"diagonal","shadeToken":"shadow"}}"#,
         )
-        .unwrap();
-        assert!(!recipe.is_flat());
-        assert!(check_expressible(&recipe).is_empty());
+        .expect_err("an unknown direction");
+        let error = diagnostics.errors().next().expect("an error");
+        assert_eq!(error.code, DiagnosticCode::SCHEMA);
+        assert!(
+            error.message.contains("lightDirection"),
+            "the error names the invalid setting: {}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn every_compass_direction_maps_to_its_name() {
+        let names = [
+            "top",
+            "topRight",
+            "right",
+            "bottomRight",
+            "bottom",
+            "bottomLeft",
+            "left",
+            "topLeft",
+        ];
+        assert_eq!(LightDirection::ALL.len(), names.len());
+        for (direction, name) in LightDirection::ALL.into_iter().zip(names) {
+            assert_eq!(direction.as_str(), name);
+            assert_eq!(LightDirection::from_name(name), Some(direction));
+        }
+        assert_eq!(LightDirection::from_name("diagonal"), None);
     }
 
     #[test]

@@ -48,6 +48,7 @@ fn plain_node(id: &str, kind: &str, geometry: Shape) -> ResolvedNode {
         transform: Affine::IDENTITY,
         raster: None,
         paint: NodePaint::default(),
+        shading: None,
         opacity: 1.0,
         visible: true,
     }

@@ -199,10 +199,31 @@ pub struct ResolvedNode {
     pub transform: Affine,
     /// The node's fill and stroke.
     pub paint: NodePaint,
+    /// The single shading layer single-layer shading derives for a filled shape,
+    /// alongside the node's own geometry and paint; absent when the recipe
+    /// requests no shading or the shape cannot be shaded (C-003, FEAT-028).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shading: Option<NodeShading>,
     /// The node's effective opacity, from 0 to 1, composed down the element tree.
     pub opacity: f64,
     /// Whether the node is visible, composed down the element tree.
     pub visible: bool,
+}
+
+/// The single shading layer a node carries (C-003, FEAT-028).
+///
+/// The geometry is the node's own fill area clipped to the far side of the line
+/// through its bounding-box centre perpendicular to the light vector, in the
+/// node's local coordinates, and the paint is the resolved flat shade colour.
+/// Every exporter paints the node's fill, then this layer, then the node's
+/// stroke, so the shading composites above the base fill and below any stroke.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeShading {
+    /// The derived region, in the node's local coordinates.
+    pub geometry: Shape,
+    /// The resolved flat shade paint.
+    pub paint: Paint,
 }
 
 /// The paint applied to a node (C-003).
@@ -644,6 +665,7 @@ mod tests {
                 transform: crate::composition::Affine::IDENTITY,
                 raster: None,
                 paint: NodePaint::default(),
+                shading: None,
                 opacity: 1.0,
                 visible: true,
             }],
